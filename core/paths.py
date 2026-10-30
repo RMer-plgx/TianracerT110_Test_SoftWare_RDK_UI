@@ -52,13 +52,23 @@ def app_dir() -> Path:
 
 
 def records_root() -> Path:
-    """test records 目录，与程序目录**同级**（不是它内部）。
+    """test records 目录位置。
 
-    开发态：D:\\Tianbot\\产品测试\\TianracerT110_Test_SoftWare_RDK\\..\\test records
-    打包态：exe 所在目录的上一级
+    开发态（跑源码）：与程序目录**同级**
+        D:\\Tianbot\\产品测试\\TianracerT110_Test_SoftWare_RDK\\..\\test records
 
-    目录名含空格，后续拼接必须用 pathlib，不要手动拼命令行。
+    打包态（exe）：**紧挨 exe**
+        <exe 所在目录>\\test records
+
+    两者为何不同：开发态的“同级”是按用户最早的要求定的
+    （与源码目录并列）；但打包后 app_dir() 已经是 exe 所在目录，
+    如果再用 .parent，用户把 exe 放桌面，报告会跑到桌面的上一级，
+    很反直觉。对最终用户而言“exe 旁边就是报告”才是预期。
+
+    目录名含空格，后续拼接必须用 pathlib。
     """
+    if is_frozen():
+        return app_dir() / "test records"
     return app_dir().parent / "test records"
 
 
@@ -106,9 +116,16 @@ def lock_file_path() -> Path:
 
 
 def ensure_utf8_env() -> None:
-    """Windows 控制台默认 GBK，直接 print 中文以外的符号会抛异常。
+    """Windows 控制台默认 GBK，中文输出可能乱码或抛异常。
 
-    在程序入口调用一次，尽量让输出编码稳定。
+    只重配 **输出流**（stdout / stderr），**不动 stdin**。
+
+    为什么不能设 PYTHONIOENCODING：它同时影响 stdin。
+    exe 启动时 stdin 继承自父进程（Windows 下通常是 GBK），
+    若改成 UTF-8 解读，连单个 `n` 都会被读成乱字符，
+    导致交互问答陷入「请输入 y 或 n」死循环（实测踩过）。
+
+    输入侧保持系统默认编码，用户用键盘或管道输入都能正确读。
     """
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
@@ -118,4 +135,3 @@ def ensure_utf8_env() -> None:
                 reconfigure(encoding="utf-8", errors="replace")
             except (ValueError, OSError):
                 pass
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")

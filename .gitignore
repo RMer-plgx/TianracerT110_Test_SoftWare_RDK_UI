@@ -9,6 +9,11 @@ test records/
 # 并发锁文件，运行时会生成
 .tianracer_test.lock
 
+# PyInstaller 构建产物（用 build.py 重新生成，不进版本控制）
+build/
+dist/
+*.spec
+
 # Python
 __pycache__/
 *.py[cod]

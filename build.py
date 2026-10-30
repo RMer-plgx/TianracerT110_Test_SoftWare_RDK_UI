@@ -114,6 +114,9 @@ def main() -> int:
     smoke = subprocess.run(
         [str(exe), "--help"], cwd=ROOT,
         capture_output=True, text=True, timeout=120,
+        # Windows 默认用 GBK 解码子进程输出，exe 里含有非 GBK 字节就会
+        # UnicodeDecodeError 崩在打包完成之后（实测踩过）。
+        encoding="utf-8", errors="replace",
     )
     # --help 会打印用法并退出，不连车、不启动任何 ROS
     if smoke.returncode not in (0, 2):

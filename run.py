@@ -13,7 +13,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
+
+# paramiko 依赖的 cryptography 会自己报 DeprecationWarning，
+# 用的是 cryptography 内部旧算法（TripleDES / Blowfish），与本项目无关，
+# 但会刷满终端，对最终用户毫无意义。在 import paramiko 之前屏蔽掉。
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*CryptographyDeprecationWarning.*")
+warnings.filterwarnings("ignore", message=".*TripleDES.*")
+warnings.filterwarnings("ignore", message=".*Blowfish.*")
 
 # 允许直接 python run.py 运行（把项目根加入模块搜索路径）
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -78,11 +87,11 @@ def ask_choice(prompt: str, options, default: str) -> str:
 
 def main() -> int:
     ensure_utf8_env()
-    # stdin 也显式设 UTF-8，否则 Windows 管道会把中文变成 ?
-    try:
-        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError, OSError):
-        pass
+    # 注意：**不要**把 stdin 强制改成 UTF-8。
+    # 父进程（PowerShell / 管道）按系统默认编码（简体中文 Windows 是 GBK）写入，
+    # 这边按 UTF-8 解读就会读出乱字符，连单个 `n` 都无法识别
+    # （实测：交互问答陷入「请输入 y 或 n」死循环）。
+    # stdin 保持系统默认即可；输出侧由 ensure_utf8_env() 处理。
 
     # 先解析参数：--help 应该只输出帮助，不先刷 banner
     parser = argparse.ArgumentParser(
