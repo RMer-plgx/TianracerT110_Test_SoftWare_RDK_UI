@@ -92,9 +92,12 @@ class InstanceLock:
 
 
 def _pid_alive(pid: int) -> bool:
-    """已弃用：保留仅为兼容旧调用，请用 InstanceLock 的心跳机制。
+    """**未被使用**。仅作启发式参考保留，不参与任何判定。
 
-    在 Windows 上这个函数的语义不可靠（见 InstanceLock 文档）。
+    为什么不删：历史版本用它做并发锁的陈旧判断；在 Windows 上
+    `os.kill(pid, 0)` 不是探活（会走 GenerateConsoleCtrlEvent），
+    所以改用 `InstanceLock` 的心跳时间。此函数已无调用点，
+    保留只为让看过旧版本的人能对上号。
     """
     if pid <= 0:
         return False
@@ -257,6 +260,11 @@ class Runner:
                 ctx.say("清理残留 ROS 进程…")
                 ros_remote.kill_all(self._remote, wait=3)
 
+            # 无条件清掉上次运行残留的电压文件（不只 auto）。
+            # 否则本次可能读到旧值，导致低电压车被当成合格并放行运动测试
+            # （Round 3 审查发现）。
+            ctx.remote.run(f"rm -f {ros_remote.VOLTAGE_TAP_PATH}", record=False)
+
             self._run_static_phase(ctx)
             if self._should_abort():
                 return
@@ -311,9 +319,12 @@ class Runner:
             ros_remote.start_launch(
                 ctx.remote, "tianracer_bringup", "tianracer_bringup.launch"
             )
-            # 立刻抢订阅电压，把「订阅时机」和「检测顺序」解耦
-            # （Round 2 第 5 条：voltage 排在第 6 位仍可能错过）
-            ros_remote.start_voltage_tap(ctx.remote)
+            # 先等 rosmaster 真的监听 11311，再抢订阅电压。
+            # 直接 tap 会立即报 Unable to communicate 并退出，tap 白做（Round 3）。
+            if ros_remote.wait_for_master(ctx.remote, timeout=40):
+                ros_remote.start_voltage_tap(ctx.remote)
+            else:
+                ctx.say("    ⚠ rosmaster 未在预期时间内就绪，跳过电压抢订阅")
             status = ros_remote.wait_for_nodes(ctx.remote, timeout=60)
             if not status["ready"]:
                 missing = "、".join(status["missing"])  # type: ignore[arg-type]
@@ -436,6 +447,12 @@ class Runner:
 
     def _finalize(self) -> None:
         self.report.finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 清掉车上的临时电压文件，避免下次运行读到旧值
+        if self._remote is not None:
+            try:
+                self._remote.run(f"rm -f {ros_remote.VOLTAGE_TAP_PATH}", record=False)
+            except Exception:
+                pass
         if self.record_dir is None:
             return
         _write_raw_log(self.record_dir, self._remote, self._ctx)

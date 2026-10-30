@@ -10,11 +10,8 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from core.remote import ros
+from core.remote import VOLTAGE_TAP_PATH, ros
 from core.verdict import CheckResult, Status, judge_voltage
-
-# 与 core/remote.py 的 start_voltage_tap() 保持一致
-VOLTAGE_TAP_PATH = "/tmp/tt_voltage.txt"
 
 
 # 车用电池的合理电压范围。超出这个范围的一定不是电压值。
@@ -61,31 +58,41 @@ def run(ctx) -> CheckResult:
         result.status = Status.FAIL
         result.summary = "底盘节点 /tianracer/tianracer 未运行，无法读取电压"
         result.detail = (
-            "电压话量由底盘节点发布。节点不在，说明串口可能没打开。\n"
+            "电压话题由底盘节点发布。节点不在，说明串口可能没打开。\n"
             "检查：sudo lsof /dev/ttyUSB0，以及环境变量 TIANRACER_BASE_PORT 是否指向真实设备。"
         )
         return result
 
-    # 优先读 runner 在 roslaunch 后立刻抢到的值（voltage tap）
-    tapped = ctx.remote.run(f"cat {VOLTAGE_TAP_PATH} 2>/dev/null",
-                            timeout=15, record=False).stdout
-    volts = _strict_float(tapped)
-    source = "启动时抢订阅"
+    # 先现订阅。这是唯一可靠的来源——
+    # tap 文件可能残留上次运行的旧值（Round 3 审查发现：低电压车会拿到旧值并放行运动）。
+    raw = ctx.remote.run(
+        ros(f"timeout {timeout} rostopic echo -n 1 /tianracer/voltage/data 2>&1"),
+        timeout=timeout + 15,
+    )
+    volts = _strict_float(raw.stdout)
+    source = "现订阅"
+    tap_note = ""
 
-    if volts is None:
-        raw = ctx.remote.run(
-            ros(f"timeout {timeout} rostopic echo -n 1 /tianracer/voltage/data 2>&1"),
-            timeout=timeout + 15,
-        )
-        volts = _strict_float(raw.stdout)
-        source = "现订阅"
+    # 现订阅失败时才看 tap。前提：runner 本次已删旧文件（见 runner._run_inner）。
+    if volts is None and getattr(ctx, "owns_bringup", False):
+        tapped = ctx.remote.run(f"cat {VOLTAGE_TAP_PATH} 2>/dev/null",
+                                timeout=15, record=False).stdout
+        volts = _strict_float(tapped)
+        if volts is not None:
+            source = "启动时抢订阅"
+        else:
+            tap_note = ("后台抢订阅未取到有效值（"
+                        + ("文件不存在" if not tapped.strip() else "文件无电压数值")
+                        + "）")
 
     elapsed = time.time() - started
-
     result.add("采样耗时", f"{elapsed:.1f}", "s")
+
     if volts is not None:
         result.add("取值方式", source,
-                   note="启动时抢订阅不受检测顺序影响，更可靠")
+                   note="现订阅更可靠；tap 仅在现订阅失败时作为补充")
+        if tap_note:
+            result.add("tap 状态", tap_note)
 
     if volts is None:
         result.status = Status.FAIL
@@ -94,6 +101,7 @@ def run(ctx) -> CheckResult:
         result.detail = (
             "rosclean 后重新启动 bringup 再试一次。\n"
             "如果仍然读不到，用 debug_cmd_srv 查询，或检查 /dev/ttyUSB0 是否被占用。"
+            + (f"\n后台抢订阅：{tap_note}" if tap_note else "")
         )
         return result
 

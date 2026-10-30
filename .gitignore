@@ -1,9 +1,10 @@
 # 测试记录包含车辆 IP、内网拓扑等信息，不纳入版本控制。
-# 注意：记录目录实际在仓库**上一级**（与程序目录同级）：
-#   <workspace>/test records/
-# 所以下面两行都写上，防止有人把记录目录挪进仓库后失控。
+# 实际位置在仓库**上一级**（与程序目录同级）：<workspace>/test records/
+# 因为它本来就在仓外，git 根本看不到，本来就无需忽略。
+# 下面这条是为了防止将来有人把记录目录**挪进仓库**——挪进来后路径就是
+# `test records/`，这条就会生效。
+# （注：`../test records/` 是无效写法，gitignore 不支持 `..`，已删除。）
 test records/
-../test records/
 
 # 并发锁文件，运行时会生成
 .tianracer_test.lock

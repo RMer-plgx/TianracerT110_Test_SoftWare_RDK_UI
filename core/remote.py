@@ -120,10 +120,14 @@ def kill_all(remote: Remote, wait: int = 5) -> None:
 
     先 INT 让 roslaunch 正常收尾（它会自己 kill 子节点），再 KILL 兜底。
 
-    注意匹配范围：只清 `roslaunch tianracer*`，**不要**用 `pkill -f roslaunch`
-    全面杀——那会干掉车上其他人正在跑的其他包（Round 2 审查指出）。
-    如果真有三方 roslaunch 占着 11311，靠下面的 fuser 兜底，
-    但不动它的进程本体。
+    注意匹配范围：
+      - roslaunch / tianbot_core 只按 `tianracer` 匹配，不会误杀其他包
+      - ros­master **会全杀**（它只是个名字），因为本工具要求独占 11311
+      - 最后 `fuser -k 11311/tcp` 再兜一层
+
+    也就是说：会动其他包的 rosmaster，但只在 11311 这个端口上。
+    如果车上有其他人正在用这个 master，他们会被踢掉——这是刻意的，
+    因为我们马上就要自己起一个。
     """
     remote.run("pkill -INT -f 'roslaunch tianracer' || true", record=False)
     time.sleep(wait)
@@ -139,23 +143,45 @@ def kill_all(remote: Remote, wait: int = 5) -> None:
     time.sleep(1)
 
 
+# 电压抢订阅的输出文件。checks/voltage.py 也引用这个常量，
+# 两边必须一致。runner 在启动前和收尾时各清一次，防止跨会话读到旧值。
+VOLTAGE_TAP_PATH = "/tmp/tt_voltage.txt"
+
+
 def is_master_running(remote: Remote) -> bool:
     result = remote.run(ros("rosnode list >/dev/null 2>&1 && echo UP"), record=False)
     return "UP" in result.stdout
 
 
-def start_voltage_tap(remote: Remote, out_path: str = "/tmp/tt_voltage.txt") -> None:
-    """roslaunch 后立刻抢订阅电压，把结果存到文件。
+def wait_for_master(remote: Remote, timeout: int = 40) -> bool:
+    """等 rosmaster 真的开始监听。
 
-    为什么需要这一步：无论 `/tianracer/voltage` 是「只发一次」还是
-    「周期性发布」，早订阅都不吃亏；而如果是只发一次，80 秒后再来订阅
-    就一定错过（Round 2 审查指出这个风险未消除）。
-
-    用一个独立的后台通道抢包，check 的时候直接读文件，
-    就把「订阅时机」和「检测顺序」解耦了。
+    `start_launch` 返回时 roslaunch 刚 fork，rosmaster 还要 1~3 秒才监听 11311。
+    在此之前跑 `rostopic echo` 会**立即**报 `Unable to communicate with master!`
+    并退出，不是等待重试——tap 就白做了（Round 3 审查发现）。
     """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if is_master_running(remote):
+            return True
+        time.sleep(1)
+    return False
+
+
+def start_voltage_tap(remote: Remote, out_path: str = VOLTAGE_TAP_PATH) -> None:
+    """在 rosmaster 就绪后抢订阅电压，把结果存到文件。
+
+    调用前**必须**已经 wait_for_master() 成功。
+
+    为什么需要这一步：如果 `/tianracer/voltage` 真的只发一次，
+    晚订阅就必错过；早订阅在周期发布的情况下也不吃亏。
+    但它是**补充手段**，checks/voltage.py 以现订阅为主。
+    """
+    # 先清旧文件，避免上次运行的残留值被当成本次结果
+    remote.run(f"rm -f {out_path}", record=False)
+
     cmd = ros(
-        f"( setsid nohup timeout 120 rostopic echo -n 1 /tianracer/voltage/data "
+        f"( setsid nohup timeout 240 rostopic echo -n 1 /tianracer/voltage/data "
         f"> {out_path} 2>&1 < /dev/null & ) > /dev/null 2>&1; echo tapped"
     )
     try:

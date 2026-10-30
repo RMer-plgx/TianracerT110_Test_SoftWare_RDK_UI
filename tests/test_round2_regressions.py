@@ -197,7 +197,7 @@ class TestVoltageTap:
         source = inspect.getsource(remote_mod.start_voltage_tap)
         # 必须把输出落到文件，并抢 /voltage/data
         assert "/tianracer/voltage/data" in source
-        assert "/tmp/tt_voltage.txt" in source
+        assert "VOLTAGE_TAP_PATH" in source or "/tmp/tt_voltage.txt" in source
         # 后台启动必须断掉所有 fd，避免 SSH 通道挂死
         assert "< /dev/null" in source
 
