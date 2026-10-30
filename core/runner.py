@@ -217,9 +217,29 @@ class Runner:
         except AlreadyRunning as exc:
             self.report.aborted_reason = str(exc)
             print(f"\n❌ {exc}", flush=True)
+        except SystemExit:
+            # 用户 Ctrl-C 等场景：照样要留下记录
+            self.report.aborted_reason = self.report.aborted_reason or "用户中断"
+            raise
+        except BaseException as exc:
+            # 兵库捕获：任何未预期异常都不能让程序“默默消失”
+            # 之前只捕 AlreadyRunning，其他异常会让 finally 执行完后继续向上抛，
+            # 而 run.py 没有对应 try，结果就是目录建了但里面空无一物。
+            detail = str(exc) or repr(exc)
+            self.report.aborted_reason = (
+                self.report.aborted_reason
+                or f"程序异常：{type(exc).__name__} — {detail}"
+            )
+            print(f"\n❌ {self.report.aborted_reason}", flush=True)
+            traceback.print_exc()
         finally:
             self._lock = None
-            self._finalize()
+            # _finalize 自己也可能出错（磁盘满、权限、编码），
+            # 不能让它把主流程的异常盖掉，也不能让报告静默丢失。
+            try:
+                self._finalize()
+            except Exception as exc:
+                print(f"\n⚠ 写原始记录失败：{type(exc).__name__}: {exc}", flush=True)
         return self.report
 
     def _run_inner(self) -> None:

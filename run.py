@@ -249,13 +249,33 @@ def main() -> int:
         pause_for_ground=pause_for_ground if motion_level == "full" else None,
     )
     runner_ref[0] = runner
-    report = runner.run()
+    try:
+        report = runner.run()
+    except BaseException as exc:
+        # 兜底：runner.run() 自己已有兵库捕获，走到这里说明是极端情况。
+        # 无论如何也要告诉用户发生了什么，不能静默退出。
+        print(f"\n❌ 程序异常退出：{type(exc).__name__}: {exc}")
+        import traceback as _tb
+        _tb.print_exc()
+        print(f"\n报告目录：{runner.record_dir}")
+        return 3
 
     # 渲染报告
     try:
         md_path, html_path = render(report, runner.record_dir)
     except Exception as exc:
-        print(f"\n❌ 报告渲染失败：{exc}")
+        # 渲染失败不能让结果丢失：至少写一份纯文本，把判定和各项结论留下
+        print(f"\n⚠ 报告渲染失败：{type(exc).__name__}: {exc}")
+        fallback = runner.record_dir / "report.txt"
+        lines = [f"判定：{report.verdict}", ""]
+        for item in sorted(report.results, key=lambda r: r.number):
+            lines.append(f"{item.number}. {item.title} [{item.status.value}] {item.summary}")
+        try:
+            fallback.write_text("\n".join(lines), encoding="utf-8")
+            print(f"已写出降级文本报告：{fallback}")
+        except Exception as exc2:
+            print(f"降级报告也写不出来：{exc2}")
+        print(f"报告目录：{runner.record_dir}")
         return 2
 
     print("\n" + "=" * 62)
