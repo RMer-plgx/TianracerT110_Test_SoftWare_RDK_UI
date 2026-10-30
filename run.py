@@ -27,7 +27,7 @@ warnings.filterwarnings("ignore", message=".*Blowfish.*")
 # 允许直接 python run.py 运行（把项目根加入模块搜索路径）
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core.paths import ensure_utf8_env, records_root  # noqa: E402
+from core.paths import ensure_utf8_env, is_frozen, records_root  # noqa: E402
 from core.reporting import render  # noqa: E402
 from core.runner import Runner  # noqa: E402
 
@@ -311,5 +311,39 @@ def main() -> int:
     return 0
 
 
+def _pause_if_needed() -> None:
+    """双击运行的 exe 退出前暂停，否则窗口一闪而过、错误看不到。
+
+    现象：用户双击 exe，程序中途崩溃或跑完，控制台窗口立即关闭，
+    使用者看到的是“跑着跑着自己关了”，完全不知道发生了什么。
+
+    只在**打包后且非管道输入**时暂停：脚本化调用和单元测试不受影响。
+    """
+    if not is_frozen():
+        return
+    try:
+        if not sys.stdin.isatty():
+            return
+    except (ValueError, OSError):
+        return
+    print()
+    try:
+        input("按 Enter 键关闭窗口…")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+    except BaseException as exc:
+        # 兜底：任何逃到最外层的异常都要让用户看到
+        import traceback as _tb
+        print(f"\n❌ 程序异常退出：{type(exc).__name__}: {exc}")
+        _tb.print_exc()
+        code = 3
+    finally:
+        _pause_if_needed()
+    raise SystemExit(code)
