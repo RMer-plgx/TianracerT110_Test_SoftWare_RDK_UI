@@ -94,6 +94,15 @@ def main() -> int:
         "--name", APP_NAME,
         "--console",
     ]
+    # 图标：只对 Windows 有意义，其他平台跳过
+    icon_path = ROOT / "assets" / "app.ico"
+    if sys.platform == "win32" and icon_path.exists():
+        args += ["--icon", str(icon_path)]
+        print(f"    使用图标：{icon_path.name}")
+    elif sys.platform == "win32":
+        print("    ⚠ 未找到 assets/app.ico，使用默认图标")
+        print("      可用 python tools/make_icon.py 重新生成")
+
     for directory in DATA_DIRS:
         args += ["--add-data", f"{directory}{separator}{directory}"]
     for module in HIDDEN_IMPORTS:
