@@ -1,0 +1,16 @@
+# 测试记录包含车辆 IP、内网拓扑等信息，不纳入版本控制
+test records/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store

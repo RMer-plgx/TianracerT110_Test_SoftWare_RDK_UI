@@ -1,0 +1,202 @@
+"""ROS 环境管理：前缀、生命周期、进程清理。
+
+这一层封装了 2026-10-30 排查中踩过的所有坑：
+
+1. 非交互 shell 不加载 .bashrc 末尾的 ros1_setup()，必须显式 source。
+2. devel/etc/catkin/profile.d/99.my_tianracer.sh 的错误默认值会覆盖
+   ~/.bashrc 的正确值，导致底盘打不开（BASE_PORT=/dev/tianbot_base）。
+   这里在会话内临时覆盖，不改车辆文件。
+3. bringup 退出不干净会残留 rosmaster 占住 11311 端口，
+   下次启动直接失败。
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+from .ssh import CommandResult, Remote
+
+WORKSPACE = "~/tianracer_ros1_ws"
+
+# 这些是 2026-10-30 验证过的正确值。顺序重要：先 source 再覆盖，
+# 因为 setup.bash 会在 source 过程中把错误默认值写进环境。
+_ENV_SETUP = [
+    "source /opt/ros/noetic/setup.bash",
+    "source {ws}/devel/setup.bash".format(ws=WORKSPACE),
+    "export ROS_MASTER_URI=http://localhost:11311",
+    "export DISABLE_ROS1_EOL_WARNINGS=True",
+    # --- 下面这些覆盖掉 env-hooks 的错误默认值 ---
+    "export TIANRACER_BASE_PORT=/dev/ttyUSB0",
+    "export TIANRACER_BASE_BAUDRATE=115200",
+    "export TIANRACER_LIDAR=richbeam_lidar",
+    "export TIANRACER_LIDAR_IP=192.168.198.2",
+    "export TIANRACER_LIDAR_PORT=/dev/tianbot_lidar",
+    "export TIANRACER_NAME=tianracer",
+]
+
+# 「先 source 再把 ROS_IP 设成实际地址」——ROS_IP 必须指向本机可被访问的网卡
+ROS_ENV_PREFIX = (
+    "source /opt/ros/noetic/setup.bash >/dev/null 2>&1; "
+    f"source {WORKSPACE}/devel/setup.bash >/dev/null 2>&1; "
+    "export ROS_MASTER_URI=http://localhost:11311; "
+    "export DISABLE_ROS1_EOL_WARNINGS=True; "
+    "export TIANRACER_BASE_PORT=/dev/ttyUSB0; "
+    "export TIANRACER_BASE_BAUDRATE=115200; "
+    "export TIANRACER_LIDAR=richbeam_lidar; "
+    "export TIANRACER_LIDAR_IP=192.168.198.2; "
+    "export TIANRACER_LIDAR_PORT=/dev/tianbot_lidar; "
+    "export TIANRACER_NAME=tianracer; "
+)
+
+
+def ros(cmd: str) -> str:
+    """给一条 ROS 命令加上环境前缀。"""
+    return ROS_ENV_PREFIX + cmd
+
+
+@dataclass
+class EnvVarDiff:
+    name: str
+    expected: str
+    actual: Optional[str]
+    known_deviation_reason: str = ""
+
+    @property
+    def matches(self) -> bool:
+        return self.actual == self.expected
+
+
+def read_env_vars(remote: Remote) -> Dict[str, str]:
+    """读取当前进程环境里的 TIAN* 变量（source devel/setup.bash 之后）。"""
+    result = remote.run(ros("env | grep '^TIAN' | sort"))
+    vars_: Dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, _, value = line.partition("=")
+            vars_[key.strip()] = value.strip()
+    return vars_
+
+
+def diff_env_vars(actual: Dict[str, str], expected: Dict[str, str],
+                  known: Optional[Dict[str, dict]] = None) -> List[EnvVarDiff]:
+    """逐项比对期望值与实际值。"""
+    known = known or {}
+    diffs: List[EnvVarDiff] = []
+    for name, want in expected.items():
+        got = actual.get(name)
+        if got == want:
+            continue
+        reason = ""
+        if name in known and known[name].get("actual") == got:
+            reason = known[name].get("reason", "")
+        diffs.append(EnvVarDiff(name=name, expected=want, actual=got,
+                                known_deviation_reason=reason))
+    return diffs
+
+
+# ---------------------------------------------------------------------------
+# roslaunch 生命周期
+# ---------------------------------------------------------------------------
+
+def kill_all(remote: Remote, wait: int = 5) -> None:
+    """清掉所有 roslaunch / rosmaster，确保端口释放。
+
+    先 INT 让 roslaunch 正常收尾（它会自己 kill 子节点），
+    再 KILL 兜底，最后确认 11311 真的空了。
+    """
+    remote.run("pkill -INT -f 'roslaunch tianracer' || true", record=False)
+    time.sleep(wait)
+    remote.run(
+        "pkill -9 -f 'roslaunch tianracer' || true; "
+        "pkill -9 -f rosmaster || true; "
+        "pkill -9 -f tianbot_core || true",
+        record=False,
+    )
+    time.sleep(2)
+
+
+def is_master_running(remote: Remote) -> bool:
+    result = remote.run(ros("rosnode list >/dev/null 2>&1 && echo UP"), record=False)
+    return "UP" in result.stdout
+
+
+def start_launch(remote: Remote, package: str, launch_file: str,
+                 extra_args: str = "", log_path: str = "/tmp/tt_launch.log") -> str:
+    """后台启动一个 roslaunch，返回它的日志路径。
+
+    这里踩过两个坑，均已在实车验证：
+
+    1. 不加 `< /dev/null`，roslaunch 会继承 SSH 通道 stdin，exec_command 不返回。
+    2. 只用 `& disown` 还不够——后台进程仍然继承了 stdout/stderr 管道，
+       paramiko 的 stdout.read() 会一直阻塞到 PipeTimeout（实测 60 秒）。
+
+    可靠写法：把启动动作封在子 shell 里 `( ... & )`，让父 shell 立即退出，
+    同时把后台进程的三路 fd 全部重定向掉。
+    """
+    launcher = (
+        f"cd ~ && setsid nohup roslaunch {package} {launch_file} {extra_args} "
+        f"> {log_path} 2>&1 < /dev/null &"
+    )
+    cmd = ros(f"( {launcher} ) > /dev/null 2>&1 < /dev/null; echo launched")
+
+    # 即使如此，加一层容错：超时也当作已启动，后续 wait_for_nodes 会验证
+    try:
+        remote.run(cmd, timeout=25, record=False)
+    except Exception:
+        pass
+    return log_path
+
+
+# bringup 启动后必须有这些节点。用名字而不是数量判断，
+# 因为节点数会随版本变化，光数数会把「起来 8 个但缺关键的那个」当成正常。
+REQUIRED_NODES = [
+    "/tianracer/tianracer",
+    "/robot_state_publisher",
+    "/joint_state_publisher",
+    "/tianracer/ekf_se",
+    "/tianracer/complementary_filter_gain_node",
+]
+
+OPTIONAL_NODES = [
+    "/tianracer/richbeam_lidar",
+    "/tianracer/complementary_filter_gain_node",
+    "/webrtc_ros_bridge",
+]
+
+
+def list_nodes(remote: Remote) -> List[str]:
+    """当前所有节点名。master 没起时返回空列表。"""
+    result = remote.run(ros("rosnode list 2>/dev/null"), record=False)
+    return [n.strip() for n in result.stdout.splitlines()
+            if n.strip().startswith("/")]
+
+
+def wait_for_nodes(remote: Remote, timeout: int = 60) -> Dict[str, object]:
+    """等必需节点全部出现。
+
+    返回 {ready, nodes, missing, waited_sec}。
+    中途就判断清楚缺哪个，不用干等满超时才告诉用户。
+    """
+    started = time.time()
+    missing: List[str] = list(REQUIRED_NODES)
+    nodes: List[str] = []
+    while time.time() - started < timeout:
+        nodes = list_nodes(remote)
+        missing = [n for n in REQUIRED_NODES if n not in nodes]
+        if not missing:
+            return {
+                "ready": True, "nodes": nodes, "missing": [],
+                "waited_sec": round(time.time() - started, 1),
+            }
+        time.sleep(2)
+    return {
+        "ready": False, "nodes": nodes, "missing": missing,
+        "waited_sec": round(time.time() - started, 1),
+    }
+
+
+def stop_launch(remote: Remote) -> None:
+    """停止由本程序启动的 roslaunch。"""
+    kill_all(remote, wait=4)
