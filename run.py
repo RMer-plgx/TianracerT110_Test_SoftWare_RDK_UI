@@ -31,7 +31,10 @@ from core.paths import ensure_utf8_env, records_root  # noqa: E402
 from core.reporting import render  # noqa: E402
 from core.runner import Runner  # noqa: E402
 
-DEFAULT_HOST = "192.168.1.128"
+# 故意不设默认 IP。
+# 车辆有多个地址：eth0 静态有线、wlan0 为 DHCP 动态、l4tbr0 为 USB 网桥，
+# 任何一个当默认值都会把人带偏（尤其 wlan0 重连就变）。
+# 使用者自己知道接的是哪根线、哪个地址，直接输入最可靠。
 DEFAULT_USER = "sunrise"
 DEFAULT_PASSWORD = "sunrise"
 
@@ -58,6 +61,19 @@ def ask(prompt: str, default: str = "") -> str:
         print("  （输入编码异常，使用默认值）")
         return default
     return answer or default
+
+
+def ask_required(prompt: str) -> str:
+    """必须输入非空值的提问。
+
+    用于车辆 IP 这类没有合理默认值的参数：
+    回车直接重问，不会静默采用任何预设地址。
+    """
+    while True:
+        answer = ask(prompt, "").strip()
+        if answer:
+            return answer
+        print("  必须输入，不能留空")
 
 
 def ask_yes_no(prompt: str, default: bool = False) -> bool:
@@ -110,7 +126,7 @@ def main() -> int:
 
     print(BANNER)
 
-    host = args.host or ask("车辆 IP 地址", DEFAULT_HOST)
+    host = args.host or ask_required("车辆 IP 地址")
     user = args.user or ask("SSH 用户名", DEFAULT_USER)
     password = args.password or ask("SSH 密码", DEFAULT_PASSWORD)
 
