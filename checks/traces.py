@@ -28,7 +28,10 @@ def run(ctx) -> CheckResult:
     hist = r.run("wc -l < ~/.bash_history 2>/dev/null || echo 0", timeout=20)
     hist_lines = _to_int(hist.stdout)
     warn_lines = int(baseline.get("bash_history_lines_warn", 800))
-    result.add("bash_history", hist_lines if hist_lines is not None else 0, "行",
+    # 读不到就写「读取失败」，不要写成 0 行——那会让报告看起来像干净的
+    result.add("bash_history",
+               hist_lines if hist_lines is not None else "读取失败",
+               "行" if hist_lines is not None else "",
                expected=f"< {warn_lines} 行")
 
     viminfo = r.run("ls -l ~/.viminfo 2>/dev/null | wc -l", timeout=15)

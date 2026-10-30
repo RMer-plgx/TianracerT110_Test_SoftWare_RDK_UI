@@ -36,11 +36,14 @@ _ENV_SETUP = [
     "export TIANRACER_NAME=tianracer",
 ]
 
-# 「先 source 再把 ROS_IP 设成实际地址」——ROS_IP 必须指向本机可被访问的网卡
+# 「先 source，再把 ROS_IP 设成本机地址」——多网卡机器上 rosnode/rostopic
+# 需要知道对端能访问哪个地址，否则可能选错网卡。
+# ROS_IP 用第一块网卡的地址，与车上 ros1_setup() 的做法保持一致。
 ROS_ENV_PREFIX = (
     "source /opt/ros/noetic/setup.bash >/dev/null 2>&1; "
     f"source {WORKSPACE}/devel/setup.bash >/dev/null 2>&1; "
     "export ROS_MASTER_URI=http://localhost:11311; "
+    "export ROS_IP=$(hostname -I | awk '{print $1}'); "
     "export DISABLE_ROS1_EOL_WARNINGS=True; "
     "export TIANRACER_BASE_PORT=/dev/ttyUSB0; "
     "export TIANRACER_BASE_BAUDRATE=115200; "
@@ -69,8 +72,20 @@ class EnvVarDiff:
 
 
 def read_env_vars(remote: Remote) -> Dict[str, str]:
-    """读取当前进程环境里的 TIAN* 变量（source devel/setup.bash 之后）。"""
-    result = remote.run(ros("env | grep '^TIAN' | sort"))
+    """读取当前进程环境里的 TIAN* 变量。
+
+    **不能用 ros() 前缀**：ROS_ENV_PREFIX 里已经 export 了
+    TIANRACER_BASE_PORT / BAUDRATE / LIDAR 的正确值，
+    用它去读只会读到自己的修正结果，永远检不出车辆的真实配置偏差。
+    （审查发现的漏洞：第 4 项永远 PASS，“已临时修正”永不触发。）
+
+    这里只 source，不 export，让车辆自己的值原样透出。
+    """
+    read_only_prefix = (
+        "source /opt/ros/noetic/setup.bash >/dev/null 2>&1; "
+        f"source {WORKSPACE}/devel/setup.bash >/dev/null 2>&1; "
+    )
+    result = remote.run(read_only_prefix + "env | grep '^TIAN' | sort")
     vars_: Dict[str, str] = {}
     for line in result.stdout.splitlines():
         if "=" in line:
@@ -104,17 +119,21 @@ def kill_all(remote: Remote, wait: int = 5) -> None:
     """清掉所有 roslaunch / rosmaster，确保端口释放。
 
     先 INT 让 roslaunch 正常收尾（它会自己 kill 子节点），
-    再 KILL 兜底，最后确认 11311 真的空了。
+    再 KILL 兜底，最后按端口再清一次——
+    用户可能用别的包名启动过 roslaunch，光匹配 tianracer 清不掉（审查建议）。
     """
-    remote.run("pkill -INT -f 'roslaunch tianracer' || true", record=False)
+    remote.run("pkill -INT -f 'roslaunch' || true", record=False)
     time.sleep(wait)
     remote.run(
-        "pkill -9 -f 'roslaunch tianracer' || true; "
+        "pkill -9 -f 'roslaunch' || true; "
         "pkill -9 -f rosmaster || true; "
         "pkill -9 -f tianbot_core || true",
         record=False,
     )
-    time.sleep(2)
+    time.sleep(1)
+    # 按端口清残留 master，避免 11311 被占用导致下次启动失败
+    remote.run("fuser -k 11311/tcp 2>/dev/null || true", record=False)
+    time.sleep(1)
 
 
 def is_master_running(remote: Remote) -> bool:

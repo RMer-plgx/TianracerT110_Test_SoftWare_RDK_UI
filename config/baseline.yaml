@@ -71,10 +71,11 @@ voltage:
 health:
   temp_warn_c: 75.0
   temp_fail_c: 85.0
-  disk_used_warn_pct: 85.0
+  disk_warn_pct: 85.0
+  disk_fail_pct: 95.0
   mem_available_min_gib: 0.5
   load_warn: 3.0
-  note: "4 核平台建议 load < 3.0；update-manager 后台更新是常见高负载来源"
+  note: "磁盘超过 85% 警告、超过 95% 才失败；load 阈值针对 4 核平台"
 
 traces:
   ros_log_size_warn_mb: 200
@@ -106,6 +107,7 @@ motion:
     reverse_duration: 2.0
     steer_angle: 0.30
     steer_duration: 1.5
+    steer_speed: 0.05          # 架空转向需叠加小前进速度，否则轮子不转、无 yaw 变化
     note: "架空时轮子空转，不校验行驶距离，只验证电机响应对称性"
 
   ground:

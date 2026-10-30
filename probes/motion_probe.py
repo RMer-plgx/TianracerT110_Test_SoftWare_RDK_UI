@@ -22,6 +22,13 @@ from nav_msgs.msg import Odometry
 TOPIC = "/tianracer/ackermann_cmd"
 ODOM = "/tianracer/odom"
 
+# 硬编码上限。命令行传进来的值只能更严格，不能更宽松。
+# 安全上限不能由被保护对象自己提供（审查发现：
+# 之前 baseline.yaml 改成 5 m/s × 60 s 探针就会照做）。
+HARD_MAX_SPEED = 0.5      # m/s
+HARD_MAX_DURATION = 10.0  # s
+HARD_MAX_STEER = 0.6      # rad，约 34°
+
 
 def yaw_of(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y),
@@ -42,15 +49,25 @@ def main():
     steer = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0
     duration = float(sys.argv[3]) if len(sys.argv) > 3 else 0.3
     label = sys.argv[4] if len(sys.argv) > 4 else "pulse"
-    max_speed = float(sys.argv[5]) if len(sys.argv) > 5 else 0.5
-    max_duration = float(sys.argv[6]) if len(sys.argv) > 6 else 10.0
+    max_speed = float(sys.argv[5]) if len(sys.argv) > 5 else HARD_MAX_SPEED
+    max_duration = float(sys.argv[6]) if len(sys.argv) > 6 else HARD_MAX_DURATION
 
-    # 硬性上限，即使配置被改错也不执行
+    # 双重保险：配置值只能收紧，不能放宽硬上限
+    max_speed = min(max_speed, HARD_MAX_SPEED)
+    max_duration = min(max_duration, HARD_MAX_DURATION)
+
     if abs(speed) > max_speed or duration > max_duration or duration <= 0:
         print("RESULT " + json.dumps({
             "ok": False, "reason": "safety_limit",
             "detail": f"speed={speed} dur={duration} 超出上限 "
                       f"({max_speed} m/s, {max_duration}s)",
+        }))
+        return
+
+    if abs(steer) > HARD_MAX_STEER:
+        print("RESULT " + json.dumps({
+            "ok": False, "reason": "safety_limit",
+            "detail": f"steer={steer} rad 超出上限 {HARD_MAX_STEER}",
         }))
         return
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.verdict import CheckResult, Status, judge_range
+from core.verdict import CheckResult, Status, judge_all, judge_range
 
 from ._util import run_probe
 
@@ -40,16 +40,22 @@ def run(ctx) -> CheckResult:
     result.add("位置 y", f"{end.get('y', 0):.4f}", "m")
 
     statuses = [hz_status, drift_status]
-    if any(s is Status.FAIL for s in statuses):
-        result.status = Status.FAIL
+    result.status = judge_all(statuses)
+
+    if result.status is Status.FAIL:
         if hz_status is Status.FAIL:
             result.summary = f"频率异常 {hz} Hz（期望 {low}–{high}）"
         else:
             result.summary = f"静止漂移 {drift:.3f} m 超过 {max_drift} m"
-    elif any(s is Status.WARN for s in statuses):
-        result.status = Status.WARN
+    elif result.status is Status.WARN:
         result.summary = "里程计指标接近阈值"
+    elif result.status is Status.SKIP:
+        missing = []
+        if hz is None:
+            missing.append("频率")
+        if drift is None:
+            missing.append("静止漂移")
+        result.summary = "未取得数据：" + "、".join(missing)
     else:
-        result.summary = (f"{hz:.1f} Hz，{window:.0f} 秒静止漂移 {drift:.4f} m"
-                          if None not in (hz, drift) else "里程计正常")
+        result.summary = f"{hz:.1f} Hz，{window:.0f} 秒静止漂移 {drift:.4f} m"
     return result

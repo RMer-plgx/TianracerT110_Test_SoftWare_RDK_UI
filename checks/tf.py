@@ -22,7 +22,11 @@ def run(ctx) -> CheckResult:
     result.add("frame 总数", data.get("frame_count", 0))
 
     missing = [f for f in required if f not in frames]
+    # TF 树必然有恰好一个根节点（map / world / odom），它没有父节点是正常的。
+    # 只有出现 2 个以上无父 frame 才是真的断链（审查建议，虽实测本车
+    # all_frames_as_yaml 不列根节点，但加固后可避版本差异导致的误报）。
     orphans = [f for f, parent in frames.items() if not parent]
+    real_orphans = orphans if len(orphans) > 1 else []
 
     if required:
         result.add("必需 frame", f"{len(required) - len(missing)}/{len(required)}",
@@ -53,9 +57,9 @@ def run(ctx) -> CheckResult:
     elif missing_tf:
         result.status = Status.FAIL
         result.summary = "关键变换缺失：" + "、".join(missing_tf)
-    elif orphans:
+    elif real_orphans:
         result.status = Status.WARN
-        result.summary = f"{len(orphans)} 个 frame 无父节点（可能是断链）"
+        result.summary = f"{len(real_orphans)} 个 frame 无父节点（可能是断链）"
     else:
         for frame in ("tianracer/laser", "tianracer/base_footprint", "tianracer/imu_link"):
             if frame in frames:

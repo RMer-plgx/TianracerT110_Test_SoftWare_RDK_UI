@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from core.verdict import CheckResult, Status, judge_range
+from core.verdict import CheckResult, Status, judge_all, judge_range
 
 from ._util import echo_once, measure_hz, parse_float
 
@@ -71,13 +71,20 @@ def run(ctx) -> CheckResult:
         fmt_status = Status.WARN
 
     statuses = [hz_status, fmt_status]
-    if any(s is Status.FAIL for s in statuses):
-        result.status = Status.FAIL
-        result.summary = f"图像话题无数据（{topic}）"
-    elif any(s is Status.WARN for s in statuses):
-        result.status = Status.WARN
+    # 统一收口，避免「子项 SKIP 但初始 PASS 没被覆盖」（审查发现）
+    result.status = judge_all(statuses)
+
+    if result.status is Status.FAIL:
+        result.summary = "图像参数或频率不合格"
+    elif result.status is Status.WARN:
         result.summary = "图像参数与期望不符或频率偏低"
+    elif result.status is Status.SKIP:
+        missing = []
+        if width is None or height is None:
+            missing.append("分辨率")
+        if not encoding:
+            missing.append("编码")
+        result.summary = "未取得数据：" + "、".join(missing or ["图像参数"])
     else:
-        result.summary = (f"{int(width)}×{int(height)} {encoding} @ {hz:.1f} Hz"
-                          if None not in (width, height, hz) else "摄像头正常")
+        result.summary = f"{int(width)}×{int(height)} {encoding} @ {hz:.1f} Hz"
     return result

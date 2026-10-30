@@ -8,10 +8,37 @@
 from __future__ import annotations
 
 import time
+from typing import Optional
 
 from core.verdict import CheckResult, Status, judge_voltage
 
-from ._util import parse_float
+
+# 车用电池的合理电压范围。超出这个范围的一定不是电压值。
+PLAUSIBLE_MIN_V = 6.0
+PLAUSIBLE_MAX_V = 16.0
+
+
+def _strict_float(text: str) -> Optional[float]:
+    """严格解析电压值。
+
+    不能用通用的 parse_float——它会把日志里的时间戳当成电压：
+    `2026-10-30 17:15:00 ERROR` → 2026.0，
+    `[INFO] [1698700000.123]` → 1698700000.123。
+    那样底盘完全不发电压时，报告反而会给出一个「合格」值（审查发现）。
+
+    规则：只接受单行纯数字，且必须在电池合理范围内。
+    """
+    for line in (text or "").splitlines():
+        candidate = line.strip()
+        if not candidate or candidate == "---":
+            continue
+        try:
+            value = float(candidate)
+        except ValueError:
+            continue
+        if PLAUSIBLE_MIN_V <= value <= PLAUSIBLE_MAX_V:
+            return value
+    return None
 
 
 def run(ctx) -> CheckResult:
@@ -41,19 +68,18 @@ def run(ctx) -> CheckResult:
     raw = ctx.remote.run(
         "source /opt/ros/noetic/setup.bash >/dev/null 2>&1; "
         "source ~/tianracer_ros1_ws/devel/setup.bash >/dev/null 2>&1; "
-        f"timeout {timeout} rostopic echo -n 1 /tianracer/voltage 2>&1",
+        f"timeout {timeout} rostopic echo -n 1 /tianracer/voltage/data 2>&1",
         timeout=timeout + 15,
     )
     elapsed = time.time() - started
-    volts = parse_float(raw.stdout)
+    volts = _strict_float(raw.stdout)
 
-    result.add("采样耗时", f"{elapsed:.1f}", "s",
-               note="该话题只发布一次，订阅晚了读不到")
+    result.add("采样耗时", f"{elapsed:.1f}", "s")
 
     if volts is None:
         result.status = Status.FAIL
-        result.summary = (f"{timeout} 秒内未收到电压消息。"
-                          f"可能原因：底盘未连接、话题已错过发布时刻")
+        result.summary = (f"{timeout} 秒内未收到有效电压值。"
+                          f"可能原因：底盘未连接、话题未发布")
         result.detail = (
             "rosclean 后重新启动 bringup 再试一次。\n"
             "如果仍然读不到，用 debug_cmd_srv 查询，或检查 /dev/ttyUSB0 是否被占用。"

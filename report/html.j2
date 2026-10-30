@@ -86,9 +86,12 @@
   <span style="width: {{ '%.0f' % (report.pass_ratio * 100) }}%"></span>
 </div>
 <div class="muted">
-  通过 {{ report.passed | length }} 项 / 已执行 {{ report.executed | length }} 项
-  （{{ '%.0f' % (report.pass_ratio * 100) }}%）
-  {% if report.skipped %}· 跳过 {{ report.skipped | length }} 项{% endif %}
+  已执行项通过 {{ report.passed | length }} / {{ report.executed | length }}
+  （{{ '%.0f' % (report.pass_ratio * 100) }}%，仅供参考）
+  {% if report.skipped %}
+  · <strong>未验证 {{ report.skipped | length }} / {{ report.judged | length }} 项
+  （{{ '%.0f' % (report.skip_ratio * 100) }}%）</strong>
+  {% endif %}
   {% if report.warned %}· 告警 {{ report.warned | length }} 项{% endif %}
   {% if report.failed %}· 失败 {{ report.failed | length }} 项{% endif %}
 </div>

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.verdict import CheckResult, Status, judge_range
+from core.verdict import CheckResult, Status, judge_all, judge_range
 
 from ._util import measure_hz, run_probe
 
@@ -61,8 +61,12 @@ def run(ctx) -> CheckResult:
         result.add("姿态数据", "探针未取得数据")
 
     statuses = [hz_status, accel_status, gyro_status, tilt_status]
-    if any(s is Status.FAIL for s in statuses):
-        result.status = Status.FAIL
+
+    # 用 judge_all 统一收口。手写 if/elif 链会漏掉
+    # 「部分 PASS + 部分 SKIP」这种组合，导致探针全失败仍报 PASS（审查发现）。
+    result.status = judge_all(statuses)
+
+    if result.status is Status.FAIL:
         if hz_status is Status.FAIL:
             result.summary = f"频率异常：{hz} Hz（期望 {low}–{high}）"
         elif accel_status is Status.FAIL:
@@ -71,15 +75,24 @@ def run(ctx) -> CheckResult:
             result.summary = "静止时角速度偏大，IMU 有噪声或车在动"
         else:
             result.summary = "车体姿态倾斜过大，检查 IMU 安装"
-    elif any(s is Status.WARN for s in statuses):
-        result.status = Status.WARN
+    elif result.status is Status.WARN:
         if accel_status is Status.WARN:
-            result.summary = f"z 轴 {az:.2f} m/s² 偏高（标称 9.8），标度待确认" if az is not None else "IMU 数据接近阈值"
+            result.summary = (f"z 轴 {az:.2f} m/s² 偏高（标称 9.8），标度待确认"
+                              if az is not None else "IMU 数据接近阈值")
         else:
             result.summary = "IMU 数据接近阈值，需关注"
-    elif all(s is Status.SKIP for s in statuses):
-        result.status = Status.SKIP
-        result.summary = "IMU 无数据"
+    elif result.status is Status.SKIP:
+        # 指出具体哪几项没验证，否则读者不知道是频率还是姿态没测到
+        not_verified = []
+        if hz_status is Status.SKIP:
+            not_verified.append("频率")
+        if accel_status is Status.SKIP:
+            not_verified.append("加速度")
+        if gyro_status is Status.SKIP:
+            not_verified.append("角速度")
+        if tilt_status is Status.SKIP:
+            not_verified.append("姿态")
+        result.summary = "未取得数据：" + "、".join(not_verified)
     else:
         parts = []
         if hz is not None:

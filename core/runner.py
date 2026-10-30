@@ -38,9 +38,14 @@ class InstanceLock:
 
     没有这层保护，两个实例会互相 pkill roslaunch，
     表现为「明明启动了却立刻消失」，极难排查。
+
+    陈旧判定用**心跳时间**而不是探测进程是否存在。
+    原因：Windows 上 `os.kill(pid, 0)` 不是标准意义上的「探活」，
+    CPython 会把它当 CTRL_C_EVENT 走 GenerateConsoleCtrlEvent，
+    对非控制台进程组会失败抛 OSError → 误判为已死，锁形同虚设（审查发现）。
     """
 
-    def __init__(self, path: Optional[Path] = None, stale_seconds: int = 7200):
+    def __init__(self, path: Optional[Path] = None, stale_seconds: int = 600):
         self.path = path or lock_file_path()
         self.stale_seconds = stale_seconds
         self.acquired = False
@@ -49,22 +54,34 @@ class InstanceLock:
         if self.path.exists():
             try:
                 info = json.loads(self.path.read_text(encoding="utf-8"))
-                age = time.time() - float(info.get("created", 0))
-                pid = int(info.get("pid", 0))
+                age = time.time() - float(info.get("updated", 0))
+                pid = info.get("pid", "?")
             except (ValueError, OSError, json.JSONDecodeError):
-                age, pid = self.stale_seconds + 1, 0
-            if age < self.stale_seconds and _pid_alive(pid):
+                age, pid = self.stale_seconds + 1, "?"
+            if age < self.stale_seconds:
                 raise AlreadyRunning(
-                    f"已有另一个测试进程在运行（PID {pid}，"
-                    f"已运行 {age/60:.0f} 分钟）。\n"
+                    f"另一个测试进程正在运行（PID {pid}，"
+                    f"{age:.0f} 秒前还有活动）。\n"
                     f"如果确认没有，删除 {self.path} 后重试。"
                 )
-        self.path.write_text(
-            json.dumps({"pid": os.getpid(), "created": time.time()}),
-            encoding="utf-8",
-        )
+        self._write_heartbeat()
         self.acquired = True
         return self
+
+    def _write_heartbeat(self) -> None:
+        self.path.write_text(
+            json.dumps({"pid": os.getpid(), "updated": time.time()}),
+            encoding="utf-8",
+        )
+
+    def heartbeat(self) -> None:
+        """每个检测项开始时调用，刷新活动时间。"""
+        if not self.acquired:
+            return
+        try:
+            self._write_heartbeat()
+        except OSError:
+            pass
 
     def __exit__(self, *_exc) -> None:
         if self.acquired:
@@ -75,14 +92,18 @@ class InstanceLock:
 
 
 def _pid_alive(pid: int) -> bool:
+    """已弃用：保留仅为兼容旧调用，请用 InstanceLock 的心跳机制。
+
+    在 Windows 上这个函数的语义不可靠（见 InstanceLock 文档）。
+    """
     if pid <= 0:
         return False
+    if os.name == "nt":
+        return True  # 不对 Windows 进程做任何探测，交给心跳超时判断
     try:
         os.kill(pid, 0)
     except (OSError, ProcessLookupError):
         return False
-    except Exception:
-        return True
     return True
 
 
@@ -104,8 +125,12 @@ class Context:
     voltage_v: Optional[float] = None
     # 运动测试等级：none / bench（仅架空）/ full（架空+落地）
     motion_level: str = "none"
-    # 用户是否已确认安全条件（未确认则一项都不发）
+    # 用户是否已允许车辆微动（未确认则一项都不发）
     motion_armed: bool = False
+    # 用户是否显式选择忽略电压未知/过低继续运动（会写进报告）
+    force_motion: bool = False
+    # 电压是否确实取到了（未知不能当成安全）
+    voltage_known: bool = False
     # 架空段结束后调用，返回值决定是否继续落地段。None 表示不询问。
     pause_for_ground: Optional[Callable[[], bool]] = None
     log: List[str] = field(default_factory=list)
@@ -176,23 +201,37 @@ class Runner:
         self.record_dir: Optional[Path] = None
         self._remote: Optional[Remote] = None
         self._ctx: Optional[Context] = None
+        self._lock: Optional[InstanceLock] = None
 
     # -- 主流程 -----------------------------------------------------------
 
     def run(self) -> Report:
         self.record_dir = make_record_dir(self.host)
         try:
-            with InstanceLock():
+            with InstanceLock() as lock:
+                self._lock = lock
                 self._run_inner()
         except AlreadyRunning as exc:
             self.report.aborted_reason = str(exc)
             print(f"\n❌ {exc}", flush=True)
         finally:
+            self._lock = None
             self._finalize()
         return self.report
 
     def _run_inner(self) -> None:
-        baseline = _load_baseline()
+        try:
+            baseline = _load_baseline()
+        except Exception as exc:
+            # 配置读不到时也要给出可读错误并生成报告，
+            # 不能只抛一个 ModuleNotFoundError 就没了（审查发现）
+            self.report.add(CheckResult(
+                number=1, title="加载配置", status=Status.FAIL,
+                summary=f"无法读取 config/baseline.yaml：{exc}", fatal=True,
+            ))
+            self.report.aborted_reason = "配置加载失败"
+            print(f"\n❌ 配置加载失败：{exc}", flush=True)
+            return
 
         try:
             self._remote = Remote(self.host, self.user, self._password)
@@ -209,6 +248,7 @@ class Runner:
                       answers=self.answers, owns_bringup=(self.mode == "auto"),
                       motion_level=self.motion,
                       motion_armed=bool(self.answers.get("motion_armed")),
+                      force_motion=bool(self.answers.get("force_motion")),
                       pause_for_ground=self.pause_for_ground)
         self._ctx = ctx
 
@@ -333,15 +373,26 @@ class Runner:
 
     def _execute(self, ctx: Context, entry) -> None:
         number, title, module_name, func_name, fatal, _phase = entry
-        if module_name == "motion" and self.motion == "none":
+
+        # 运动项即使 motion_level == "none" 也要跑：微脉冲需要验证底盘响应（D11）。
+        # 只有用户连「允许微动」都没同意时才直接跳过，但要在报告里说清楚后果。
+        if module_name == "motion" and not ctx.motion_armed:
             self.report.add(CheckResult(
-                number=number, title=title, status=Status.SKIP,
-                summary="未启用运动测试（需要用户明确确认）", fatal=fatal,
+                number=number, title=title, status=Status.SKIP, fatal=fatal,
+                summary="用户未允许车辆微动，底盘响应未验证",
+                detail=(
+                    "串口有数据、里程计有输出，并不代表电机能转。\n"
+                    "2026-10-30 实例：通信全绿，但电调未开，车完全不动。\n"
+                    "若需完整验证，请重新运行并允许车辆微动。"
+                ),
             ))
-            ctx.say(f"  [{number:02d}] {title} — 跳过（未启用）")
+            ctx.say(f"  [{number:02d}] {title} — 跳过（未允许微动）")
             return
 
         ctx.say(f"  [{number:02d}] {title} …")
+        # 刷新锁心跳，证明本进程还活着
+        if getattr(self, "_lock", None) is not None:
+            self._lock.heartbeat()
         started = time.time()
         try:
             module = __import__(f"checks.{module_name}", fromlist=[func_name])
@@ -365,6 +416,7 @@ class Runner:
             volts = _extract_voltage(result)
             if volts is not None:
                 ctx.voltage_v = volts
+                ctx.voltage_known = True
                 self.report.voltage_v = volts
                 stop_below = ctx.baseline.get("voltage", {}).get(
                     "stop_test_below_v", 11.0)
@@ -372,6 +424,10 @@ class Runner:
                     ctx.voltage_stop = True
                     ctx.say(f"       ⚠ 电压 {volts:.2f} V 低于 {stop_below} V，"
                             f"后续运动测试将被跳过")
+            else:
+                # 电压未知 → 按安全规则禁止运动（未知不能当成安全）
+                ctx.voltage_known = False
+                ctx.say("       ⚠ 未取得电压，后续运动测试将默认跳过")
 
     # -- 收尾 -------------------------------------------------------------
 
@@ -383,9 +439,14 @@ class Runner:
 
 
 def _load_baseline() -> Dict:
-    import yaml
-
     path = resource_path("config/baseline.yaml")
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError(
+            "缺少 PyYAML。请先执行：pip install -r requirements.txt"
+        ) from exc
+
     with open(path, encoding="utf-8") as handle:
         return yaml.safe_load(handle)
 

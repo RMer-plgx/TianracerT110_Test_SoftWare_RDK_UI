@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from core.verdict import CheckResult, Status, judge_range
+from core.verdict import CheckResult, Status, judge_all, judge_range
 
 from ._util import run_probe
 
@@ -66,21 +66,29 @@ def run(ctx) -> CheckResult:
                    note="后方为 0 属正常（物理视场 270°）")
 
     statuses = [hz_status, point_status, angle_status, ratio_status]
-    if any(s is Status.FAIL for s in statuses):
-        result.status = Status.FAIL
+    result.status = judge_all(statuses)
+
+    if result.status is Status.FAIL:
         if hz_status is Status.FAIL:
             result.summary = f"频率异常 {hz} Hz（期望 {low}–{high}）"
         elif ratio_status is Status.FAIL:
             result.summary = f"有效点仅 {valid_ratio:.0%}，低于 {min_ratio:.0%}"
         else:
             result.summary = "雷达数据异常"
-    elif any(s is Status.WARN for s in statuses):
-        result.status = Status.WARN
+    elif result.status is Status.WARN:
         result.summary = "雷达数据偏离预期，需关注"
+    elif result.status is Status.SKIP:
+        missing = []
+        if hz is None:
+            missing.append("频率")
+        if valid_ratio is None:
+            missing.append("有效点占比")
+        result.summary = "未取得数据：" + "、".join(missing or ["雷达数据"])
     else:
-        result.summary = (f"{hz:.1f} Hz，{points} 点，有效 {valid_ratio:.0%}，"
-                          f"最远 {observed:.1f} m" if None not in (hz, points, valid_ratio, observed)
-                          else "雷达正常")
+        parts = [f"{hz:.1f} Hz", f"{points} 点", f"有效 {valid_ratio:.0%}"]
+        if observed is not None:
+            parts.append(f"最远 {observed:.1f} m")
+        result.summary = "，".join(parts)
 
     result.detail = (
         "LakiBeam1 自报扫描范围 45~315°，折算约 ±135°。\n"

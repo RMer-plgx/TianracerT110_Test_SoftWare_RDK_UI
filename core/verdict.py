@@ -199,7 +199,12 @@ class Report:
 
     @property
     def verdict_class(self) -> str:
-        """给 HTML 模板用的 CSS class。"""
+        """给 HTML 模板用的 CSS class。
+
+        中止的报告不能用绿色，否则读者只看颜色会误以为合格（审查发现）。
+        """
+        if self.aborted_reason:
+            return "bad"
         if self.failed or self.skip_ratio > MAX_SKIP_RATIO:
             return "bad"
         if self.warned or self.skipped:
@@ -300,10 +305,13 @@ def judge_distance(actual_m: Optional[float], expected_m: float,
 
 def judge_repeats(values: List[Optional[float]], low: float, high: float,
                   warn_margin: float = 0.0) -> Status:
-    """多次测量取最差值判定。
+    """多次测量取最差判定。
 
     用于「左右转向各测一次」这类场景：任一次不合格即整体不合格，
-    避免单向测了合格就放行。
+    避免单向测了合格就放行（D23）。
+
+    关键：部分 SKIP 意味着「有一项没验证」，不能当通过，
+    否则 `[None, 12.0]` 会被判 PASS——审查发现的实际缺陷。
     """
     if not values:
         return Status.SKIP
@@ -312,7 +320,8 @@ def judge_repeats(values: List[Optional[float]], low: float, high: float,
         return Status.FAIL
     if any(s is Status.WARN for s in statuses):
         return Status.WARN
-    if all(s is Status.SKIP for s in statuses):
+    # 有任何一项没拿到数据，整体就是未验证完
+    if any(s is Status.SKIP for s in statuses):
         return Status.SKIP
     return Status.PASS
 
@@ -320,7 +329,15 @@ def judge_repeats(values: List[Optional[float]], low: float, high: float,
 def judge_all(statuses: List[Status], fail_is_warn: bool = False) -> Status:
     """把多个子项的判定合成一个总判定。
 
-    fail_is_warn=True 时，子项的 FAIL 降级为 WARN（用于已知偏差场景）。
+    语义：
+      - 任一 FAIL → FAIL（除非 fail_is_warn 降级）
+      - 任一 WARN（无 FAIL）→ WARN
+      - **部分 PASS + 部分 SKIP → SKIP**（部分验证不算通过）
+      - 全 PASS → PASS
+      - 全 SKIP → SKIP
+
+    最后一条是审查发现的核心漏洞：之前写的是「任一 PASS 就 PASS」，
+    导致 `[PASS, SKIP, SKIP, SKIP]` 被判通过。
     """
     if not statuses:
         return Status.SKIP
@@ -328,6 +345,6 @@ def judge_all(statuses: List[Status], fail_is_warn: bool = False) -> Status:
         return Status.WARN if fail_is_warn else Status.FAIL
     if any(s is Status.WARN for s in statuses):
         return Status.WARN
-    if any(s is Status.PASS for s in statuses):
-        return Status.PASS
-    return Status.SKIP
+    if any(s is Status.SKIP for s in statuses):
+        return Status.SKIP
+    return Status.PASS

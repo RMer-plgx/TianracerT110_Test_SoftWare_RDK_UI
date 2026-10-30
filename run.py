@@ -83,17 +83,23 @@ def main() -> int:
         sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError, OSError):
         pass
-    print(BANNER)
 
-    parser = argparse.ArgumentParser(add_help=True)
+    # 先解析参数：--help 应该只输出帮助，不先刷 banner
+    parser = argparse.ArgumentParser(
+        description="Tianracer T110（RDK）整车自动测试",
+    )
     parser.add_argument("--host", default="", help="车辆 IP")
     parser.add_argument("--user", default="", help="SSH 用户名")
     parser.add_argument("--password", default="", help="SSH 密码")
     parser.add_argument("--mode", choices=["auto", "attach"], default="",
                         help="auto=程序自己启停 ROS；attach=车已启动")
     parser.add_argument("--no-motion", action="store_true",
-                        help="强制不测运动")
+                        help="强制不测运动（含微脉冲）")
+    parser.add_argument("--force-motion", action="store_true",
+                        help="即使电压未知/过低也执行运动测试（危险，会写进报告）")
     args = parser.parse_args()
+
+    print(BANNER)
 
     host = args.host or ask("车辆 IP 地址", DEFAULT_HOST)
     user = args.user or ask("SSH 用户名", DEFAULT_USER)
@@ -115,56 +121,76 @@ def main() -> int:
     print(f"\nROS 启动方式：{'程序自动启停 bringup' if mode == 'auto' else '检测已运行的 ROS 环境'}")
 
     print("\n" + "-" * 62)
-    print("运动测试安全确认")
+    print("硬件状态确认")
     print("-" * 62)
-    print("程序会向底盘发送低速指令（≤0.5 m/s），车辆会真实移动。")
 
-    motion_level = "none"
-    motion_armed = False
     answers: dict = {}
 
-    if args.no_motion:
-        print("已通过命令行强制跳过运动测试。")
-    else:
-        if ask_yes_no("是否执行运动测试？", default=False):
-            level = ask_choice(
-                "选择测试范围",
-                [("a", "仅架空段：轮子离地，验证电机与编码器响应（安全）"),
-                 ("b", "架空段 + 落地段：再加真实行驶距离与转向验证")],
-                "a",
-            )
-            print()
-            print("=" * 62)
-            print("  ⚠  请确认以下条件，全部满足后再继续：")
-            print("     1. 车辆周围 1 米内无人、无障碍物")
-            print("     2. 遥控器在你手上，可随时接管")
-            print("     3. 电调（ESC）电源开关已打开")
-            if level == "a":
-                print("     4. 车轮已离地（架空）")
-            print("=" * 62)
-            if ask_yes_no("以上条件已满足，可以开始？", default=False):
-                motion_armed = True
-                motion_level = "bench" if level == "a" else "full"
-            else:
-                print("未确认安全条件，运动测试跳过。")
+    # 电调状态必须先问：它是运动测试能否成立的前提，
+    # 之前放在运动确认之后，用户答「未开」时 motion_armed 已经为 True（审查发现）。
+    esc_on = ask_yes_no("电调（ESC）电源开关当前是打开的吗？", default=True)
+    answers["电调（ESC）是否已开启"] = "是" if esc_on else "否"
 
-    # 硬件状态自述，写进报告
-    answers["电调（ESC）是否已开启"] = "是" if ask_yes_no(
-        "电调（ESC）电源开关当前是打开的吗？", default=True) else "否"
-    answers["车辆状态"] = ask_choice(
+    state = ask_choice(
         "车辆当前状态",
         [("a", "架空（轮子离地）"), ("b", "落地，周围空旷")],
         "a",
     )
-    answers["车辆状态"] = "架空" if answers["车辆状态"] == "a" else "落地空旷"
+    answers["车辆状态"] = "架空" if state == "a" else "落地空旷"
+
+    if not esc_on:
+        print("\n⚠ 电调未开启。此时车辆无法运动，运动测试将只用于验证这个事实。")
+
+    # ---- 第一道：允许微动（微脉冲，约 1.5 cm）----
+    print("\n" + "-" * 62)
+    print("运动测试安全确认")
+    print("-" * 62)
+
+    motion_armed = False
+    motion_level = "none"
+
+    if args.no_motion:
+        print("已通过命令行强制跳过全部运动测试。")
+    else:
+        print("程序需要向底盘发一次极短的指令（0.3 秒 × 0.05 m/s，约 1.5 cm），")
+        print("验证电机是否真的能转。这一步能发现「通信正常但电调没开」。")
+        if ask_yes_no("允许车辆微动 2 cm 以内做响应检测？", default=True):
+            print()
+            print("=" * 62)
+            print("  ⚠  请确认：")
+            print("     1. 车辆周围 1 米内无人、无障碍物")
+            print("     2. 遥控器在你手上，可随时接管")
+            print("=" * 62)
+            if ask_yes_no("以上条件已满足，可以开始？", default=False):
+                motion_armed = True
+            else:
+                print("未确认安全条件，跳过全部运动测试。")
+
+        # ---- 第二道：完整运动测试 ----
+        if motion_armed:
+            print()
+            if ask_yes_no("除微脉冲外，是否还要做完整的运动测试？", default=False):
+                level = ask_choice(
+                    "选择测试范围",
+                    [("a", "仅架空段：前进/后退/左右转向，验证响应与对称性"),
+                     ("b", "架空段 + 落地段：再加真实行驶距离与转向弧度")],
+                    "a",
+                )
+                if level == "b" and answers["车辆状态"] != "落地空旷":
+                    print("\n  注意：当前标记为「架空」，落地段开始前程序会暂停，")
+                    print("        提醒你把车放到开阔平地。")
+                motion_level = "bench" if level == "a" else "full"
+
+    # 硬件状态自述，写进报告
+    if motion_armed:
+        answers["motion_armed"] = "yes"
+    if args.force_motion:
+        answers["force_motion"] = "yes"
 
     print("\n人工检查项（会写进报告，可留空）：")
     answers["开关机"] = ask("  长按电源 3 秒能否正常启动到桌面？", "未测")
     answers["电调模式"] = ask("  电调是否为 Li 电模式 + F/R 模式？", "未测")
     answers["遥控手感"] = ask("  遥控油门是否线性、松杆能否停稳？", "未测")
-
-    if motion_armed:
-        answers["motion_armed"] = "yes"
 
     def pause_for_ground() -> bool:
         """架空段完成后，问用户是否把车放下继续。"""
@@ -200,16 +226,29 @@ def main() -> int:
     print(f"  原始记录 : {runner.record_dir / 'raw.log'}")
     print("=" * 62)
 
+    # 退出码供脚本化调用：
+    #   0 = 全通过
+    #   1 = 有 FAIL
+    #   2 = 中途终止 / 未验证比例超限
+
     if report.failed:
         print("\n失败项：")
         for item in report.failed:
             print(f"  ❌ {item.number}. {item.title} — {item.summary}")
+    if report.skipped:
+        print("\n未验证项：")
+        for item in report.skipped:
+            print(f"  ⏭️  {item.number}. {item.title} — {item.summary}")
     if report.warned:
         print("\n告警项：")
         for item in report.warned:
             print(f"  ⚠️  {item.number}. {item.title} — {item.summary}")
 
-    return 0 if not report.failed else 1
+    if report.failed:
+        return 1
+    if report.aborted_reason or report.skip_ratio > 0.2:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

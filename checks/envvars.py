@@ -51,15 +51,12 @@ def run(ctx) -> CheckResult:
             corrected.append(name)
             result.add(name, got, expected=str(want), note="已临时修正")
 
-    # 记录 remote.py 实际生效的修正值
-    effective = {
-        "/dev/ttyUSB0": "TIANRACER_BASE_PORT",
-        "115200": "TIANRACER_BASE_BAUDRATE",
-        "richbeam_lidar": "TIANRACER_LIDAR",
-    }
-    overridden = [k for k in effective if k in corrected or
-                  effective[k] in corrected]
+    # 记录实际被修正的变量名（之前用值当键去比对，逻辑绕且 detail 里什么都不列）
+    overridden_names = []
+    if corrected:
+        overridden_names = list(corrected)
 
+    # 已知偏差 / 不符项的判定
     if unknown_bad:
         result.status = Status.WARN
         result.summary = (
@@ -74,9 +71,11 @@ def run(ctx) -> CheckResult:
     else:
         result.summary = f"{len(expected)} 项环境变量全部符合期望"
 
-    if overridden:
+    if overridden_names:
         result.detail = (
-            "本次测试在子 shell 内临时覆盖了以下变量，未修改车辆任何文件。\n"
-            "根本修复方式：把 env-hooks/99.my_tianracer.sh.em 的默认值改成正确值后重新编译。\n"
+            "本次测试在子 shell 内临时覆盖了以下变量：\n"
+            + "\n".join(f"  - {name}" for name in overridden_names)
+            + "\n\n未修改车辆任何文件。根本修复方式："
+            "把 env-hooks/99.my_tianracer.sh.em 的默认值改成正确值后重新编译。"
         )
     return result

@@ -89,17 +89,29 @@ class Remote:
 
     def run(self, command: str, timeout: int = 60,
             record: bool = True) -> CommandResult:
-        """执行一条 bash 命令，返回结果。不抛异常，靠 exit_code 判断。"""
+        """执行一条 bash 命令，返回结果。
+
+    超时/断线时**不抛异常**，返回 exit_code=-1 和 stderr 里的错误描述。
+    调用方统一看 exit_code，不用写满 try/except。
+    """
         if self._client is None:
             raise SSHError("会话未建立，先调用 connect()")
 
         started = time.time()
-        _stdin, stdout, stderr = self._client.exec_command(
-            f"bash -c {_shquote(command)}", timeout=timeout
-        )
-        out = stdout.read().decode("utf-8", "replace")
-        err = stderr.read().decode("utf-8", "replace")
-        code = stdout.channel.recv_exit_status()
+        try:
+            _stdin, stdout, stderr = self._client.exec_command(
+                f"bash -c {_shquote(command)}", timeout=timeout
+            )
+            out = stdout.read().decode("utf-8", "replace")
+            err = stderr.read().decode("utf-8", "replace")
+            code = stdout.channel.recv_exit_status()
+        except Exception as exc:
+            # socket.timeout / paramiko.SSHException / EOFError / PipeTimeout
+            # 统一转成可读的失败，不让上层抛到 runner 导致整轮中止
+            out = ""
+            err = f"[远程执行失败] {type(exc).__name__}: {exc or '无详细信息'}"
+            code = -1
+
         result = CommandResult(
             command=command, exit_code=code, stdout=out, stderr=err,
             duration_sec=time.time() - started,

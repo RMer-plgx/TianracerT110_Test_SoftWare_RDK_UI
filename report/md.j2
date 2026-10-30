@@ -47,8 +47,13 @@
 | {{ item.number }} | {{ item.title }} | {{ item.status.marker }} {{ item.status.value | upper }} | {{ item.summary | replace('\n', ' ') }} |
 {% endfor %}
 
-**通过率**：{{ report.passed | length }} / {{ report.executed | length }}
-（{{ '%.0f' % (report.pass_ratio * 100) }}%）
+**已执行项通过率**：{{ report.passed | length }} / {{ report.executed | length }}
+（{{ '%.0f' % (report.pass_ratio * 100) }}%，仅供参考，不用于判定）
+
+{% if report.skipped %}
+**未验证**：{{ report.skipped | length }} / {{ report.judged | length }} 项
+（未验证比例 {{ '%.0f' % (report.skip_ratio * 100) }}%，超过 20% 即不具备交付条件）
+{% endif %}
 
 ---
 

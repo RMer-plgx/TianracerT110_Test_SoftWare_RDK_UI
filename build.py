@@ -25,11 +25,20 @@ APP_NAME = "TianracerT110_Test_SoftWare_RDK"
 # 需要一起打包的只读资源
 DATA_DIRS = ["config", "report", "probes"]
 
+# core/runner.py 用 __import__(f"checks.{name}") 动态导入，
+# PyInstaller 的静态分析看不到它们。不显式列出，打包后每个检测项都会
+# ModuleNotFoundError（审查发现）。
+CHECK_MODULES = [
+    "network", "identity", "rustdesk", "envvars", "devices", "hardware",
+    "source", "lannet", "teb", "health", "traces", "imu", "lidar",
+    "camera", "odom", "tf", "voltage", "mapping", "motion",
+]
+
 HIDDEN_IMPORTS = [
     "paramiko",
     "jinja2",
     "yaml",
-]
+] + [f"checks.{name}" for name in CHECK_MODULES]
 
 
 def check_pyinstaller() -> bool:
@@ -100,6 +109,19 @@ def main() -> int:
     if not exe.exists():
         print(f"\n❌ 未找到产物：{exe}")
         return 1
+
+    print("\n[4/4] 打包产物冒烟检查…")
+    smoke = subprocess.run(
+        [str(exe), "--help"], cwd=ROOT,
+        capture_output=True, text=True, timeout=120,
+    )
+    # --help 会打印用法并退出，不连车、不启动任何 ROS
+    if smoke.returncode not in (0, 2):
+        print(f"\n⚠ 冒烟检查返回码 {smoke.returncode}")
+        print(f"  stderr: {smoke.stderr[:400]}")
+        print("  打包产物可能不可用，请手动双击验证。")
+    else:
+        print("✅ 冒烟检查通过（--help 正常响应）")
 
     size_mb = exe.stat().st_size / (1024 * 1024)
     print("\n" + "=" * 60)

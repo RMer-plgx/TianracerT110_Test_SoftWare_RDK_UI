@@ -32,16 +32,33 @@ def run(ctx) -> CheckResult:
     max_dur = float(safety.get("max_duration_sec", 10.0))
     level = getattr(ctx, "motion_level", "bench")
 
-    # 电压不足时不允许让车动
-    if getattr(ctx, "voltage_stop", False):
+    # 电压未知视为禁止运动（审查发现：之前未知即放行）
+    voltage_stop = getattr(ctx, "voltage_stop", False)
+    voltage_known = getattr(ctx, "voltage_known", False)
+    if not voltage_known and not getattr(ctx, "force_motion", False):
+        result.status = Status.SKIP
+        result.summary = "电压未知，按安全规则跳过全部运动测试"
+        result.detail = (
+            "无法确认电池电压时不应驱动车辆。\n"
+            "请查看第 14 项电压检测的失败原因，或加 --force-motion 显式覆盖（会写进报告）。"
+        )
+        return result
+
+    if voltage_stop and not getattr(ctx, "force_motion", False):
         result.status = Status.SKIP
         result.summary = (f"电压 {ctx.voltage_v:.2f} V 低于安全阈值，"
                           f"已跳过全部运动测试")
         return result
 
+    # 微脉冲只需要 motion_armed（允许车辆微动），与是否做完整运动测试无关。
+    # 这是 D11 的落地：即使运动测试关闭，也要验证底盘到底响不响应。
     if not getattr(ctx, "motion_armed", False):
         result.status = Status.SKIP
-        result.summary = "用户未确认运动测试安全条件"
+        result.summary = "用户未允许车辆微动，无法验证底盘响应"
+        result.detail = (
+            "本次未做微脉冲。这意味着「电机能不能转」未被验证——\n"
+            "历史教训：串口有数据、里程计有 100 Hz 输出，但电调未开，车完全不动。"
+        )
         return result
 
     pulse_cfg = cfg.get("micro_pulse", {})
@@ -78,6 +95,21 @@ def run(ctx) -> CheckResult:
             "4. 遥控器是否抢占了控制权\n\n"
             "注意：串口有数据 ≠ 电机能转。上位机↔主控通信正常，"
             "不代表主控↔电机通了。"
+        )
+        return result
+
+    # level == "none"：用户只允许微动，不做完整运动测试。
+    # 这仍然是有效的检测——微脉冲能证明底盘到底响不响应。
+    if level == "none":
+        result.status = pulse_status
+        if pulse_status is Status.PASS:
+            result.summary = (f"微脉冲响应正常（位移 {dist:.4f} m）。"
+                              f"本次未做完整运动测试。")
+        else:
+            result.summary = f"微脉冲位移 {dist:.4f} m，低于阈值"
+        result.detail = (
+            "只验证了「电机能转」这一点。要验证前进/后退/转向的准确度，\n"
+            "请在下次运行时选择完整运动测试。"
         )
         return result
 
@@ -151,7 +183,7 @@ def _run_bench(ctx, cfg, result, max_speed, max_dur):
         statuses.append(st)
         result.add("架空·前进位移", f"{d:.4f}" if d is not None else "?", "m",
                    expected=f"≥ {min_dist} m")
-        ok = ok and st is not Status.FAIL
+        ok = ok and st is Status.PASS   # SKIP 也是未验证，不能带着它进落地段
 
     reverse = _run_motion(
         ctx, speed=float(cfg.get("reverse_speed", -0.10)), steer=0.0,
@@ -168,16 +200,21 @@ def _run_bench(ctx, cfg, result, max_speed, max_dur):
         statuses.append(st)
         result.add("架空·后退位移", f"{d:.4f}" if d is not None else "?", "m",
                    expected=f"≥ {min_dist} m")
-        ok = ok and st is not Status.FAIL
+        ok = ok and st is Status.PASS
         # 方向校验：后退应与前进相反。架空时用 dyaw 不可靠，只看位移存在
 
     # 左右转向各测一次——只测一个方向会漏掉单侧电机故障
+    #
+    # 必须叠加一个小的前进速度：speed=0 时轮子不转，编码器无变化，
+    # 也就不会有 yaw 变化，正常车也会被误判失败（审查发现）。
+    # 架空时轮子空转，里程计由编码器推算，所以仍能观察 yaw 变化。
     steer = float(cfg.get("steer_angle", 0.30))
     steer_dur = float(cfg.get("steer_duration", 1.5))
+    steer_speed = float(cfg.get("steer_speed", 0.05))
     yaw_changes = []
     for label, angle in (("bench_steer_left", steer), ("bench_steer_right", -steer)):
         data = _run_motion(
-            ctx, speed=0.0, steer=angle, duration=steer_dur,
+            ctx, speed=steer_speed, steer=angle, duration=steer_dur,
             label=label, max_speed=max_speed, max_dur=max_dur,
         )
         side = "左" if angle > 0 else "右"

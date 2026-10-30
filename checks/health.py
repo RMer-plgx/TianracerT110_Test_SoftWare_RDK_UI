@@ -51,9 +51,18 @@ def run(ctx) -> CheckResult:
     match = re.search(r"(\d+)%", disk.stdout)
     if match:
         disk_pct = float(match.group(1))
-        warn_pct = float(baseline.get("disk_used_warn_pct", 85.0))
-        result.add("根分区占用", f"{disk_pct:.0f}", "%", expected=f"< {warn_pct:.0f}%")
-        disk_status = judge_range(disk_pct, 0, warn_pct, warn_margin=10)
+        disk_warn = float(baseline.get("disk_warn_pct", 85.0))
+        disk_fail = float(baseline.get("disk_fail_pct", 95.0))
+        result.add("根分区占用", f"{disk_pct:.0f}", "%",
+                   expected=f"< {disk_warn:.0f}%",
+                   note=f"{disk_warn:.0f}% 警告，{disk_fail:.0f}% 失败")
+        # 超过 fail 才是 FAIL，在 warn..fail 之间是 WARN
+        if disk_pct >= disk_fail:
+            disk_status = Status.FAIL
+        elif disk_pct >= disk_warn:
+            disk_status = Status.WARN
+        else:
+            disk_status = Status.PASS
     else:
         result.add("磁盘", "读取失败")
         disk_status = Status.SKIP
