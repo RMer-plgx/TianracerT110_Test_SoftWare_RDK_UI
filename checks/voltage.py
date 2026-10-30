@@ -91,10 +91,12 @@ def run(ctx) -> CheckResult:
     if volts is not None:
         result.add("取值方式", source,
                    note="现订阅更可靠；tap 仅在现订阅失败时作为补充")
-        if tap_note:
-            result.add("tap 状态", tap_note)
 
     if volts is None:
+        # tap_note 只在 volts 为 None 时被赋值，原来放在
+        # `if volts is not None` 分支里，永远不可达（Round 4 审查发现）。
+        if tap_note:
+            result.add("tap 状态", tap_note)
         result.status = Status.FAIL
         result.summary = (f"{timeout} 秒内未收到有效电压值。"
                           f"可能原因：底盘未连接、话题未发布")

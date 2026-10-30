@@ -290,6 +290,18 @@ class Runner:
                     ros_remote.stop_launch(self._remote)
                 except Exception as exc:
                     ctx.say(f"⚠ 停止 roslaunch 时出错（可能需要手动清理）：{exc}")
+
+            # 收尾清 tap 文件。必须放在 close() **之前**——
+            # _finalize() 由 run() 的 finally 在本函数返回后才调用，
+            # 那时连接已关闭，里面的 run() 会直接 raise 并被吞掉，
+            # 等于写了个永不执行的清理（Round 4 审查发现）。
+            try:
+                self._remote.run(
+                    f"rm -f {ros_remote.VOLTAGE_TAP_PATH}", record=False
+                )
+            except Exception:
+                pass
+
             self._remote.close()
 
     def _should_abort(self) -> bool:
@@ -447,12 +459,6 @@ class Runner:
 
     def _finalize(self) -> None:
         self.report.finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # 清掉车上的临时电压文件，避免下次运行读到旧值
-        if self._remote is not None:
-            try:
-                self._remote.run(f"rm -f {ros_remote.VOLTAGE_TAP_PATH}", record=False)
-            except Exception:
-                pass
         if self.record_dir is None:
             return
         _write_raw_log(self.record_dir, self._remote, self._ctx)

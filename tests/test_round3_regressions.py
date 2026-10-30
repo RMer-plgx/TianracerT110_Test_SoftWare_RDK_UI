@@ -120,11 +120,41 @@ class TestTapTiming:
         assert "rm -f" in source, "tap 启动前必须先删旧文件"
 
     def test_runner_clears_tap_at_start_and_end(self):
+        """收尾清理必须位于 close() 之前。
+
+        上一版这个测试只断言 `source.count("VOLTAGE_TAP_PATH") >= 2`，
+        而收尾那段其实是死代码（连接已关，run() 直接 raise），
+        测试依旧是绿的（Round 4 审查发现）。
+        现在改成结构断言：检查 _run_inner 的 finally 里，
+        rm 的语句位置必须在 close 之前。
+        """
         import inspect
-        from core import runner
-        source = inspect.getsource(runner)
-        # _run_inner 开头清一次、_finalize 里再清一次
-        assert source.count("VOLTAGE_TAP_PATH") >= 2
+        from core.runner import Runner
+
+        source = inspect.getsource(Runner._run_inner)
+        close_at = source.rfind("self._remote.close()")
+        assert close_at != -1, "_run_inner 里找不到 close()"
+
+        # close 之前的所有 rm 里，必须有一处在收尾的 finally 段（而不是只靠开头那次）
+        before = source[:close_at]
+        rm_positions = [i for i in range(len(before))
+                        if before.startswith("VOLTAGE_TAP_PATH", i)]
+        assert len(rm_positions) >= 2, (
+            f"close() 之前只有 {len(rm_positions)} 处 tap 清理，"
+            "应该有开头 + 收尾两处；只有一处说明收尾那段不在 finally 里"
+        )
+        # 离 close 最近的那处，必须在 finally 块内（即 close 之前不远处）
+        last_rm = rm_positions[-1]
+        assert close_at - last_rm < 600, (
+            "最近的 tap 清理离 close() 太远，可能在函数开头而不是收尾 finally"
+        )
+
+    def test_no_cleanup_in_finalize(self):
+        """_finalize 在连接关闭后才调用，里面不能有 rm（会是死代码）。"""
+        import inspect
+        from core.runner import Runner
+        source = inspect.getsource(Runner._finalize)
+        assert "rm -f" not in source
 
     def test_tap_timeout_is_long_enough(self):
         import inspect

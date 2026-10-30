@@ -177,7 +177,10 @@ def start_voltage_tap(remote: Remote, out_path: str = VOLTAGE_TAP_PATH) -> None:
     晚订阅就必错过；早订阅在周期发布的情况下也不吃亏。
     但它是**补充手段**，checks/voltage.py 以现订阅为主。
     """
-    # 先清旧文件，避免上次运行的残留值被当成本次结果
+    # 这里再清一次是刻意的冗余：
+    # runner 开头已清过，但若上次运行异常退出没走到收尾，
+    # 那处清理是唯一保障；tap 自身再清一次保证「启动即干净」。
+    # 三次 rm 代价可忽略，比误判电压便宜得多。
     remote.run(f"rm -f {out_path}", record=False)
 
     cmd = ros(
