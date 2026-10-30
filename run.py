@@ -126,9 +126,9 @@ def main() -> int:
 
     answers: dict = {}
 
-    # 电调状态必须先问：它是运动测试能否成立的前提，
-    # 之前放在运动确认之后，用户答「未开」时 motion_armed 已经为 True（审查发现）。
-    esc_on = ask_yes_no("电调（ESC）电源开关当前是打开的吗？", default=True)
+    # 电调状态必须先问：它是运动测试能否成立的前提。
+    # 默认值不能写 True——这是事实性提问，应该让人主动确认而非默认「已开」。
+    esc_on = ask_yes_no("电调（ESC）电源开关当前是打开的吗？", default=False)
     answers["电调（ESC）是否已开启"] = "是" if esc_on else "否"
 
     state = ask_choice(
@@ -154,7 +154,9 @@ def main() -> int:
     else:
         print("程序需要向底盘发一次极短的指令（0.3 秒 × 0.05 m/s，约 1.5 cm），")
         print("验证电机是否真的能转。这一步能发现「通信正常但电调没开」。")
-        if ask_yes_no("允许车辆微动 2 cm 以内做响应检测？", default=True):
+        # 默认 False：D4 定的是「运动项默认关闭」，
+        # 不能出现「连按回车就让车动」的路径（Round 2 审查发现）。
+        if ask_yes_no("允许车辆微动 2 cm 以内做响应检测？", default=False):
             print()
             print("=" * 62)
             print("  ⚠  请确认：")
@@ -192,8 +194,17 @@ def main() -> int:
     answers["电调模式"] = ask("  电调是否为 Li 电模式 + F/R 模式？", "未测")
     answers["遥控手感"] = ask("  遥控油门是否线性、松杆能否停稳？", "未测")
 
+    # 用一个可变的引用让闭包能看到后面才创建的 runner
+    runner_ref: list = [None]
+
     def pause_for_ground() -> bool:
-        """架空段完成后，问用户是否把车放下继续。"""
+        """架空段完成后，问用户是否把车放下继续。
+
+        等待期间刷新锁心跳：用户可能要想几分钟，
+        若超过 InstanceLock 的陈旧阈值（600 秒），另一个实例就能抢锁。
+        """
+        if runner_ref[0] is not None and runner_ref[0]._lock is not None:
+            runner_ref[0]._lock.heartbeat()
         print()
         print("=" * 62)
         print("  架空段已通过。如需测落地段：")
@@ -201,7 +212,10 @@ def main() -> int:
         print("  2. 确认周围 1 米内无人、无障碍")
         print("  3. 遥控器在手")
         print("=" * 62)
-        return ask_yes_no("现在执行落地段吗？", default=False)
+        answer = ask_yes_no("现在执行落地段吗？", default=False)
+        if runner_ref[0] is not None and runner_ref[0]._lock is not None:
+            runner_ref[0]._lock.heartbeat()
+        return answer
 
     print("\n开始检测，请勿关闭窗口…\n")
     runner = Runner(
@@ -209,6 +223,7 @@ def main() -> int:
         answers=answers, mode=mode, motion=motion_level,
         pause_for_ground=pause_for_ground if motion_level == "full" else None,
     )
+    runner_ref[0] = runner
     report = runner.run()
 
     # 渲染报告

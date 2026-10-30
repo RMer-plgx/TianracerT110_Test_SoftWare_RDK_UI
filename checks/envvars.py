@@ -15,6 +15,18 @@ from __future__ import annotations
 from core.remote import diff_env_vars, read_env_vars
 from core.verdict import CheckResult, Status, judge_envvar
 
+# ROS_ENV_PREFIX 真正 export 的变量。
+# 必须与 core/remote.py 的 ROS_ENV_PREFIX 保持一致——
+# 那里多一个 export，这里就要多一项；否则报告会声称覆盖了实际没覆盖的变量。
+OVERRIDDEN_BY_PREFIX = {
+    "TIANRACER_BASE_PORT",
+    "TIANRACER_BASE_BAUDRATE",
+    "TIANRACER_LIDAR",
+    "TIANRACER_LIDAR_IP",
+    "TIANRACER_LIDAR_PORT",
+    "TIANRACER_NAME",
+}
+
 
 def run(ctx) -> CheckResult:
     result = CheckResult(number=4, title="环境变量", status=Status.PASS)
@@ -32,7 +44,8 @@ def run(ctx) -> CheckResult:
     result.add("检测到的 TIAN* 变量", len(actual), "项",
                expected=f"{len(expected)} 项")
 
-    corrected = []
+    corrected = []       # 真正被 ROS_ENV_PREFIX 覆盖的
+    not_fixed = []       # 不符但不在覆盖白名单里
     known_hits = []
     unknown_bad = []
 
@@ -48,19 +61,26 @@ def run(ctx) -> CheckResult:
                        note=f"已知偏差：{reason}")
         else:
             unknown_bad.append(name)
-            corrected.append(name)
-            result.add(name, got, expected=str(want), note="已临时修正")
-
-    # 记录实际被修正的变量名（之前用值当键去比对，逻辑绕且 detail 里什么都不列）
-    overridden_names = []
-    if corrected:
-        overridden_names = list(corrected)
+            # 只有 ROS_ENV_PREFIX 真的 export 了的才算「已修正」。
+            # 否则 detail 会声称覆盖了实际没覆盖的变量（Round 2 审查发现）。
+            if name in OVERRIDDEN_BY_PREFIX:
+                corrected.append(name)
+                result.add(name, got, expected=str(want), note="已临时修正")
+            else:
+                not_fixed.append(name)
+                result.add(name, got, expected=str(want),
+                           note="不符，但不在自动修正白名单")
 
     # 已知偏差 / 不符项的判定
     if unknown_bad:
         result.status = Status.WARN
+        parts = []
+        if corrected:
+            parts.append(f"{len(corrected)} 项已临时修正")
+        if not_fixed:
+            parts.append(f"{len(not_fixed)} 项未修正")
         result.summary = (
-            f"{len(unknown_bad)} 项与期望不符，已临时修正为正确值继续测试："
+            f"{len(unknown_bad)} 项与环境期望不符（{'，'.join(parts)}）："
             + "、".join(unknown_bad[:4])
         )
         if len(unknown_bad) > 4:
@@ -71,11 +91,20 @@ def run(ctx) -> CheckResult:
     else:
         result.summary = f"{len(expected)} 项环境变量全部符合期望"
 
-    if overridden_names:
-        result.detail = (
-            "本次测试在子 shell 内临时覆盖了以下变量：\n"
-            + "\n".join(f"  - {name}" for name in overridden_names)
-            + "\n\n未修改车辆任何文件。根本修复方式："
-            "把 env-hooks/99.my_tianracer.sh.em 的默认值改成正确值后重新编译。"
-        )
+    lines = []
+    if corrected:
+        lines.append("本次测试在子 shell 内临时覆盖了以下变量（仅本次会话生效）：")
+        lines.extend(f"  - {name}" for name in corrected)
+        lines.append("")
+        lines.append("未修改车辆任何文件。根本修复方式：把 "
+                     "env-hooks/99.my_tianracer.sh.em 的默认值改成正确值后重新编译。")
+    if not_fixed:
+        if lines:
+            lines.append("")
+        lines.append("以下变量与环境期望不符，但**不在自动修正白名单**内，"
+                     "程序未修改它们，可能影响后续检测结果：")
+        lines.extend(f"  - {name}" for name in not_fixed)
+
+    if lines:
+        result.detail = "\n".join(lines)
     return result

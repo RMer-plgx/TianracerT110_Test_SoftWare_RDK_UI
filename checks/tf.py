@@ -7,6 +7,10 @@ from core.verdict import CheckResult, Status
 
 from ._util import run_probe
 
+# TF 树合法的根节点名称（去命名空间后比较）。
+# 它们没有父节点是正常的，不应报断链。
+LEGAL_ROOT_NAMES = {"map", "world", "odom"}
+
 
 def run(ctx) -> CheckResult:
     result = CheckResult(number=13, title="TF 树", status=Status.PASS)
@@ -22,11 +26,21 @@ def run(ctx) -> CheckResult:
     result.add("frame 总数", data.get("frame_count", 0))
 
     missing = [f for f in required if f not in frames]
-    # TF 树必然有恰好一个根节点（map / world / odom），它没有父节点是正常的。
-    # 只有出现 2 个以上无父 frame 才是真的断链（审查建议，虽实测本车
-    # all_frames_as_yaml 不列根节点，但加固后可避版本差异导致的误报）。
-    orphans = [f for f, parent in frames.items() if not parent]
-    real_orphans = orphans if len(orphans) > 1 else []
+
+    # 无父 frame 分两类：
+    #   - 合法根（map / world / odom 等）→ 正常，TF 树必然有一个根
+    #   - 其他 → 真断链
+    # 不能用「数量≤1 就豁免」——单个真断链会被吞掉，
+    # 而且报告会写「全部连通」与事实相反（Round 2 审查发现）。
+    roots, dangling = [], []
+    for frame, parent in frames.items():
+        if parent:
+            continue
+        short = frame.split("/")[-1]
+        if short in LEGAL_ROOT_NAMES:
+            roots.append(frame)
+        else:
+            dangling.append(frame)
 
     if required:
         result.add("必需 frame", f"{len(required) - len(missing)}/{len(required)}",
@@ -57,13 +71,15 @@ def run(ctx) -> CheckResult:
     elif missing_tf:
         result.status = Status.FAIL
         result.summary = "关键变换缺失：" + "、".join(missing_tf)
-    elif real_orphans:
+    elif dangling:
         result.status = Status.WARN
-        result.summary = f"{len(real_orphans)} 个 frame 无父节点（可能是断链）"
+        result.summary = "疑似断链：" + "、".join(dangling[:3]) + " 无父节点"
     else:
         for frame in ("tianracer/laser", "tianracer/base_footprint", "tianracer/imu_link"):
             if frame in frames:
                 result.add(frame, f"← {frames[frame]}")
+        if roots:
+            result.add("根节点", "、".join(roots))
         result.summary = f"{len(frames)} 个 frame 全部连通，必需项齐全"
 
     return result

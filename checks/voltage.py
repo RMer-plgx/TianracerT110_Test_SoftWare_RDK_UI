@@ -10,7 +10,11 @@ from __future__ import annotations
 import time
 from typing import Optional
 
+from core.remote import ros
 from core.verdict import CheckResult, Status, judge_voltage
+
+# 与 core/remote.py 的 start_voltage_tap() 保持一致
+VOLTAGE_TAP_PATH = "/tmp/tt_voltage.txt"
 
 
 # 车用电池的合理电压范围。超出这个范围的一定不是电压值。
@@ -50,31 +54,38 @@ def run(ctx) -> CheckResult:
 
     # 先确认底盘节点在不在。不在的话电压话题肯定没发布，
     # 没必要干等 90 秒超时。
-    nodes = ctx.remote.run(
-        "source /opt/ros/noetic/setup.bash >/dev/null 2>&1; "
-        "source ~/tianracer_ros1_ws/devel/setup.bash >/dev/null 2>&1; "
-        "rosnode list 2>/dev/null",
-        timeout=20, record=False,
-    ).stdout
+    # 用 ros() 前缀而不是手写，保证多网卡时 ROS_IP 也是一致的（Round 2 建议）。
+    nodes = ctx.remote.run(ros("rosnode list 2>/dev/null"),
+                           timeout=20, record=False).stdout
     if "/tianracer/tianracer" not in nodes:
         result.status = Status.FAIL
         result.summary = "底盘节点 /tianracer/tianracer 未运行，无法读取电压"
         result.detail = (
-            "电压话题由底盘节点发布。节点不在，说明串口可能没打开。\n"
+            "电压话量由底盘节点发布。节点不在，说明串口可能没打开。\n"
             "检查：sudo lsof /dev/ttyUSB0，以及环境变量 TIANRACER_BASE_PORT 是否指向真实设备。"
         )
         return result
 
-    raw = ctx.remote.run(
-        "source /opt/ros/noetic/setup.bash >/dev/null 2>&1; "
-        "source ~/tianracer_ros1_ws/devel/setup.bash >/dev/null 2>&1; "
-        f"timeout {timeout} rostopic echo -n 1 /tianracer/voltage/data 2>&1",
-        timeout=timeout + 15,
-    )
+    # 优先读 runner 在 roslaunch 后立刻抢到的值（voltage tap）
+    tapped = ctx.remote.run(f"cat {VOLTAGE_TAP_PATH} 2>/dev/null",
+                            timeout=15, record=False).stdout
+    volts = _strict_float(tapped)
+    source = "启动时抢订阅"
+
+    if volts is None:
+        raw = ctx.remote.run(
+            ros(f"timeout {timeout} rostopic echo -n 1 /tianracer/voltage/data 2>&1"),
+            timeout=timeout + 15,
+        )
+        volts = _strict_float(raw.stdout)
+        source = "现订阅"
+
     elapsed = time.time() - started
-    volts = _strict_float(raw.stdout)
 
     result.add("采样耗时", f"{elapsed:.1f}", "s")
+    if volts is not None:
+        result.add("取值方式", source,
+                   note="启动时抢订阅不受检测顺序影响，更可靠")
 
     if volts is None:
         result.status = Status.FAIL

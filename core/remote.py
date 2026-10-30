@@ -116,16 +116,19 @@ def diff_env_vars(actual: Dict[str, str], expected: Dict[str, str],
 # ---------------------------------------------------------------------------
 
 def kill_all(remote: Remote, wait: int = 5) -> None:
-    """清掉所有 roslaunch / rosmaster，确保端口释放。
+    """清掉 tianracer 相关的 roslaunch / rosmaster，确保端口释放。
 
-    先 INT 让 roslaunch 正常收尾（它会自己 kill 子节点），
-    再 KILL 兜底，最后按端口再清一次——
-    用户可能用别的包名启动过 roslaunch，光匹配 tianracer 清不掉（审查建议）。
+    先 INT 让 roslaunch 正常收尾（它会自己 kill 子节点），再 KILL 兜底。
+
+    注意匹配范围：只清 `roslaunch tianracer*`，**不要**用 `pkill -f roslaunch`
+    全面杀——那会干掉车上其他人正在跑的其他包（Round 2 审查指出）。
+    如果真有三方 roslaunch 占着 11311，靠下面的 fuser 兜底，
+    但不动它的进程本体。
     """
-    remote.run("pkill -INT -f 'roslaunch' || true", record=False)
+    remote.run("pkill -INT -f 'roslaunch tianracer' || true", record=False)
     time.sleep(wait)
     remote.run(
-        "pkill -9 -f 'roslaunch' || true; "
+        "pkill -9 -f 'roslaunch tianracer' || true; "
         "pkill -9 -f rosmaster || true; "
         "pkill -9 -f tianbot_core || true",
         record=False,
@@ -139,6 +142,26 @@ def kill_all(remote: Remote, wait: int = 5) -> None:
 def is_master_running(remote: Remote) -> bool:
     result = remote.run(ros("rosnode list >/dev/null 2>&1 && echo UP"), record=False)
     return "UP" in result.stdout
+
+
+def start_voltage_tap(remote: Remote, out_path: str = "/tmp/tt_voltage.txt") -> None:
+    """roslaunch 后立刻抢订阅电压，把结果存到文件。
+
+    为什么需要这一步：无论 `/tianracer/voltage` 是「只发一次」还是
+    「周期性发布」，早订阅都不吃亏；而如果是只发一次，80 秒后再来订阅
+    就一定错过（Round 2 审查指出这个风险未消除）。
+
+    用一个独立的后台通道抢包，check 的时候直接读文件，
+    就把「订阅时机」和「检测顺序」解耦了。
+    """
+    cmd = ros(
+        f"( setsid nohup timeout 120 rostopic echo -n 1 /tianracer/voltage/data "
+        f"> {out_path} 2>&1 < /dev/null & ) > /dev/null 2>&1; echo tapped"
+    )
+    try:
+        remote.run(cmd, timeout=20, record=False)
+    except Exception:
+        pass
 
 
 def start_launch(remote: Remote, package: str, launch_file: str,

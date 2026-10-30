@@ -1,5 +1,12 @@
-# 测试记录包含车辆 IP、内网拓扑等信息，不纳入版本控制
+# 测试记录包含车辆 IP、内网拓扑等信息，不纳入版本控制。
+# 注意：记录目录实际在仓库**上一级**（与程序目录同级）：
+#   <workspace>/test records/
+# 所以下面两行都写上，防止有人把记录目录挪进仓库后失控。
 test records/
+../test records/
+
+# 并发锁文件，运行时会生成
+.tianracer_test.lock
 
 # Python
 __pycache__/

@@ -99,17 +99,30 @@ def run(ctx) -> CheckResult:
         return result
 
     # level == "none"：用户只允许微动，不做完整运动测试。
-    # 这仍然是有效的检测——微脉冲能证明底盘到底响不响应。
+    #
+    # 微脉冲能证明「电机能转」，但前进/后退/转向的准确度一次都没测。
+    # 所以即使 pulse 通过也只能判 WARN，不能判 PASS——
+    # 否则报告会出现绿色的「运动控制 ✅」和「具备交付条件」，
+    # 而实际上行驶精度未经任何验证（Round 2 审查发现）。
     if level == "none":
-        result.status = pulse_status
         if pulse_status is Status.PASS:
-            result.summary = (f"微脉冲响应正常（位移 {dist:.4f} m）。"
-                              f"本次未做完整运动测试。")
+            result.status = Status.WARN
+            result.summary = (
+                f"仅验证了电机响应（微脉冲位移 {dist:.4f} m），"
+                f"前进/后退/转向均未测"
+            )
         else:
-            result.summary = f"微脉冲位移 {dist:.4f} m，低于阈值"
+            result.status = pulse_status
+            result.summary = (
+                f"微脉冲位移 {dist:.4f} m，低于阈值" if dist is not None
+                else "微脉冲未取得位移数据"
+            )
         result.detail = (
-            "只验证了「电机能转」这一点。要验证前进/后退/转向的准确度，\n"
-            "请在下次运行时选择完整运动测试。"
+            "本次只做了微脉冲，能证明底盘会响应该指令，但无法证明：\n"
+            "  - 前进/后退的方向与距离准确\n"
+            "  - 左右转向都能动且方向正确\n"
+            "  - 左右轮转速差符合转向几何\n\n"
+            "要让第 18 项判 PASS，必须选择完整运动测试（架空段或架空+落地）。"
         )
         return result
 

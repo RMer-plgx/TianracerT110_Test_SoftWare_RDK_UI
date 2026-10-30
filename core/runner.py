@@ -311,6 +311,9 @@ class Runner:
             ros_remote.start_launch(
                 ctx.remote, "tianracer_bringup", "tianracer_bringup.launch"
             )
+            # 立刻抢订阅电压，把「订阅时机」和「检测顺序」解耦
+            # （Round 2 第 5 条：voltage 排在第 6 位仍可能错过）
+            ros_remote.start_voltage_tap(ctx.remote)
             status = ros_remote.wait_for_nodes(ctx.remote, timeout=60)
             if not status["ready"]:
                 missing = "、".join(status["missing"])  # type: ignore[arg-type]
