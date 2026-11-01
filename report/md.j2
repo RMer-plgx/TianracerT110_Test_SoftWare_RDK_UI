@@ -1,0 +1,163 @@
+# Tianracer T110（RDK）整车自动检测记录
+
+**记录编号**：TTR-AUTO-{{ report.started_at | replace('-','') | replace(':','') | replace(' ','-') }}
+**检测日期**：{{ report.started_at }}
+**执行方式**：自动化脚本（TianracerT110_Test_SoftWare_RDK），SSH 远程检测
+**目标车辆**：{{ report.host }}（用户 {{ report.user }}）
+**完成时间**：{{ report.finished_at or '未完成' }}
+
+> 本记录由程序生成。每个数值都能在 `raw.log` 里找到原始命令输出。
+> 标注 ✅ 通过 / ⚠️ 告警 / ❌ 失败 / ⏭️ 跳过 / 👤 人工。
+
+{% if report.aborted_reason %}
+> ⚠ **本次测试未完整执行**：{{ report.aborted_reason }}
+{% endif %}
+
+---
+
+## 一、检测对象
+
+| 项目 | 值 |
+|---|---|
+| IP 地址 | {{ report.host }} |
+| 登录用户 | {{ report.user }} |
+| 开始时间 | {{ report.started_at }} |
+| 结束时间 | {{ report.finished_at or '—' }} |
+{% for key, value in report.environment.items() %}
+| {{ key }} | {{ value }} |
+{% endfor %}
+
+### 运行时确认的条件
+
+{% if report.answers %}
+{% for key, value in report.answers.items() %}
+- **{{ key }}**：{{ value }}
+{% endfor %}
+{% else %}
+- 未记录
+{% endif %}
+
+---
+
+## 二、结果汇总
+
+| # | 检测项 | 结果 | 摘要 |
+|---|---|---|---|
+{% for item in report.results | sort(attribute='number') %}
+| {{ item.number }} | {{ item.title }} | {{ item.status.marker }} {{ item.status.value | upper }} | {{ item.summary | replace('\n', ' ') }} |
+{% endfor %}
+
+**已执行项通过率**：{{ report.passed | length }} / {{ report.executed | length }}
+（{{ '%.0f' % (report.pass_ratio * 100) }}%，仅供参考，不用于判定）
+
+{% if report.skipped %}
+**未验证**：{{ report.skipped | length }} / {{ report.judged | length }} 项
+（未验证比例 {{ '%.0f' % (report.skip_ratio * 100) }}%，超过 20% 即不具备交付条件）
+{% endif %}
+
+---
+
+## 三、逐项记录
+
+{% for item in report.results | sort(attribute='number') %}
+### {{ item.number }}. {{ item.title }} — {{ item.status.marker }} {{ item.status.value | upper }}
+
+{% if item.summary %}
+**结论**：{{ item.summary }}
+{% endif %}
+{% if item.duration_sec %}
+*耗时 {{ '%.1f' % item.duration_sec }} 秒*
+{% endif %}
+
+{% if item.measurements %}
+| 测量项 | 实测值 | 期望 | 说明 |
+|---|---|---|---|
+{% for m in item.measurements %}
+| {{ m.name }} | {{ m.display() }} | {{ m.expected or '—' }} | {{ m.note | replace('\n', ' ') or '—' }} |
+{% endfor %}
+{% endif %}
+
+{% if item.detail %}
+```text
+{{ item.detail }}
+```
+{% endif %}
+
+{% if item.commands %}
+执行过的命令：
+{% for c in item.commands %}
+- `{{ c }}`
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+
+---
+
+## 四、未执行 / 未验证项
+
+{% if report.skipped %}
+| # | 项目 | 原因 |
+|---|---|---|
+{% for item in report.skipped | sort(attribute='number') %}
+| {{ item.number }} | {{ item.title }} | {{ item.summary }} |
+{% endfor %}
+{% else %}
+无。所有检测项均已执行。
+{% endif %}
+
+### 需要人工确认的项目
+
+以下内容程序无法自动判定，需在报告上手工补充：
+
+| 项目 | 结果 | 说明 |
+|---|---|---|
+| 开关机（长按 3 秒） | ☐ | 正常上电到桌面 |
+| 电调模式 | ☐ | Li 电模式 + F/R 模式 |
+| 遥控手感（油门线性） | ☐ | 无顿挫、无突变 |
+| 遥控转向（回中、对称） | ☐ | 无卡滞、无异响 |
+| 建图实际效果 | ☐ | 需遥控低速走场 |
+| teb 导航到点 | ☐ | 需下发目标点 |
+| 异响 / 异味 / 线缆松动 / 电池鼓包 | ☐ | 目视与手感 |
+
+---
+
+## 五、交付判定
+
+### {{ report.verdict }}
+
+{% if report.failed %}
+**失败项**
+
+{% for item in report.failed %}
+- **{{ item.number }}. {{ item.title }}** — {{ item.summary }}
+{% endfor %}
+{% endif %}
+
+{% if report.warned %}
+**告警项（需确认，不阻断交付）**
+
+{% for item in report.warned %}
+- **{{ item.number }}. {{ item.title }}** — {{ item.summary }}
+{% endfor %}
+{% endif %}
+
+{% if report.voltage_v is not none %}
+**电池电压**：{{ '%.2f' % report.voltage_v }} V
+{% endif %}
+
+---
+
+## 六、记录局限性
+
+1. 传感器均为短时采样（5–10 秒），未做长时稳定性测试（如 10 分钟掉帧率）。
+2. 建图与导航的**实际效果**需人工遥控验证，程序只验证链路能起。
+3. 报告中的「人工项」来自运行时问答，程序无法替代人的判断。
+4. 雷达有效视场约 ±120° 是 LakiBeam1 物理特性，后方无数据属正常，不作为故障。
+5. 若报告中出现「已临时修正」字样，说明车辆环境变量配置有误，
+   程序仅在本次会话内覆盖，**未修改车辆任何文件**。
+
+---
+
+*本报告由 TianracerT110_Test_SoftWare_RDK 自动生成*
+*原始命令记录见同目录 `raw.log`*

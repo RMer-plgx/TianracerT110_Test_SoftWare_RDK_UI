@@ -1,0 +1,758 @@
+"""主窗口：左侧配置、中间仪表盘、右侧日志。
+
+线程模型：
+测试跑在后台 QThread 里，通过 pyqtSignal 把事件送回界面线程。
+绝不从工作线程直接改控件——那是 Qt 里最常见的崩溃来源。
+"""
+
+from __future__ import annotations
+
+import traceback
+from datetime import datetime
+from pathlib import Path
+
+from PyQt5.QtCore import QThread, Qt, pyqtSignal
+from PyQt5.QtGui import QIcon
+from PyQt5.QtWidgets import (
+    QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+    QPushButton, QScrollArea, QVBoxLayout, QWidget,
+)
+
+from core.paths import resource_path
+from core.reporting import render
+from core.runner import REGISTRY, Runner
+from core.verdict import Report, Status
+
+from .cards import CheckCard
+from .theme import palette, stylesheet
+
+
+# ---------------------------------------------------------------------------
+# 后台工作线程
+# ---------------------------------------------------------------------------
+
+class TestWorker(QThread):
+    """在后台跑 Runner，把事件转成信号。"""
+
+    output = pyqtSignal(str)
+    check_started = pyqtSignal(int, str)
+    check_done = pyqtSignal(object)
+    finished_ok = pyqtSignal(object, str)   # (report, record_dir)
+    failed = pyqtSignal(str, str)   # (错误信息, 堆栈)
+    need_ground_confirm = pyqtSignal()
+
+    def __init__(self, config: dict, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self._ground_answer = None
+        self._ground_event = None
+        self._runner = None
+        # 落地段是否因超时而放弃（区别于用户主动选 No）
+        self.ground_timeout = False
+        # 用户已请求停止（cancel() 置位，pause_for_ground 用它决定不弹框）
+        self._cancel_flag = False
+
+    # 供界面线程调用
+    def answer_ground(self, ok: bool) -> None:
+        self._ground_answer = ok
+        if self._ground_event is not None:
+            self._ground_event.set()
+
+    def cancel(self) -> tuple:
+        """优雅停止 + 立即停车。
+
+        比 QThread.terminate() 安全得多——terminate 会直接杀掉线程，
+        留下车上未清理的 roslaunch 进程。
+
+        返回 (是否已请求, 零速是否发出)。
+        """
+        # 先唤醒可能正在等落地确认的线程，否则要等到超时
+        self._cancel_flag = True
+        if self._ground_event is not None:
+            self._ground_event.set()
+
+        if self._runner is not None:
+            try:
+                return self._runner.request_cancel()
+            except Exception:
+                return (True, False)
+        return (True, False)
+
+    def run(self) -> None:
+        cfg = self.config
+
+        def pause_for_ground():
+            """等用户把车放到地面并确认。
+
+            用 Event.wait() 而不是忙等 sleep 循环：
+            - 不占 CPU，也不阻塞取消
+            - 超时返回 None（区别于用户选 No），由调用方写进报告
+            """
+            import threading
+
+            # 已经请求停止：不弹框、不阻塞，直接告诉调用方不测落地段。
+            # 否则用户点了停止，界面还会弹确认框并卡 600 秒（审查指出）。
+            if self._cancel_flag:
+                return False
+
+            self._ground_answer = None
+            self._ground_event = threading.Event()
+            self.need_ground_confirm.emit()
+
+            # 等 10 分钟：用户要放车、确认周围安全，需要时间
+            got = self._ground_event.wait(timeout=600)
+            self._ground_event = None
+
+            if self._cancel_flag and self._ground_answer is None:
+                return False
+            if not got or self._ground_answer is None:
+                self.ground_timeout = True
+                return None
+            self.ground_timeout = False
+            return bool(self._ground_answer)
+
+        try:
+            runner = Runner(
+                host=cfg["host"],
+                user=cfg["user"],
+                password=cfg["password"],
+                answers=cfg["answers"],
+                mode=cfg["mode"],
+                motion=cfg["motion"],
+                pause_for_ground=pause_for_ground if cfg["motion"] == "full" else None,
+                on_output=self.output.emit,
+                on_check_start=self.check_started.emit,
+                on_check_done=self.check_done.emit,
+            )
+            self._runner = runner
+            report = runner.run()
+
+            # 渲染报告（与命令行版同样的模板）
+            record_dir = str(runner.record_dir) if runner.record_dir else ""
+            try:
+                render(report, runner.record_dir)
+            except Exception as exc:
+                self.output.emit(f"⚠ 报告渲染失败：{type(exc).__name__}: {exc}")
+
+            self.finished_ok.emit(report, record_dir)
+        except Exception as exc:
+            # 只捕 Exception。GUI 场景里吞掉 KeyboardInterrupt / GeneratorExit
+            # 会让线程「看起来结束」但状态不一致（审查指出）。
+            detail = str(exc) or repr(exc)
+            self.failed.emit(f"{type(exc).__name__}: {detail}",
+                             traceback.format_exc())
+            traceback.print_exc()
+
+
+# ---------------------------------------------------------------------------
+# 主窗口
+# ---------------------------------------------------------------------------
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.theme = "dark"
+        self.worker: TestWorker | None = None
+        self.cards: dict = {}
+        self.report: Report | None = None
+        self.record_dir: Path | None = None
+        self._ground_dialog = None
+
+        self.setWindowTitle("Tianracer T110 整车测试")
+        icon_path = resource_path("assets/app.ico")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
+        # 尺寸自适应屏幕，不要写死。
+        # 实测坑：1536x864 物理屏 + 125% 缩放 → 逻辑分辨率只有 1229x691，
+        # 而原来写死 minSize(1080, 700)，高度直接超出可用区，
+        # 窗口被挤压、右侧日志面板被裁掉。
+        self._fit_to_screen()
+
+        self._build_ui()
+        self.apply_theme()
+        self._log("就绪。填写车辆地址后点击「开始检测」。")
+
+    # -- 界面搭建 ---------------------------------------------------------
+
+    def _fit_to_screen(self) -> None:
+        """按实际可用屏幕空间定初始尺寸与最小尺寸。
+
+        布局需要约 1100x660 才不拥挤，但小笔记本（逻辑 1229x691）
+        必须能放下，所以取屏幕可用区的 92%，并给一个不超屏幕的 minSize。
+
+        用 QScreen 而不是 QDesktopWidget：
+        后者在 Qt5 高 DPI 场景下经常拿到错的值（实测同一台机器上
+        Python 跑得 1920x1080、exe 跑得不一样，导致窗口被压变形）。
+        """
+        from PyQt5.QtWidgets import QApplication
+
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry()
+        avail_w, avail_h = available.width(), available.height()
+
+        width = min(1280, int(avail_w * 0.92))
+        height = min(820, int(avail_h * 0.92))
+        self.resize(width, height)
+
+        # 最小尺寸不能超过屏幕可用区，否则窗口会被强制挤压
+        self.setMinimumSize(min(1000, avail_w), min(640, avail_h))
+
+        # 居中
+        self.move(max(0, available.center().x() - width // 2),
+                  max(0, available.center().y() - height // 2))
+
+    def _build_ui(self) -> None:
+        root = QWidget()
+        self.setCentralWidget(root)
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(12)
+
+        outer.addWidget(self._build_header())
+
+        body = QHBoxLayout()
+        body.setSpacing(12)
+        body.addWidget(self._build_side_panel())
+        body.addWidget(self._build_result_panel(), stretch=3)
+        body.addWidget(self._build_log_panel(), stretch=2)
+        outer.addLayout(body, stretch=1)
+
+        outer.addWidget(self._build_footer())
+
+    def _build_header(self) -> QWidget:
+        header = QWidget()
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(4, 0, 4, 0)
+
+        title_box = QVBoxLayout()
+        title_box.setSpacing(1)
+        title = QLabel("Tianracer T110 整车测试")
+        title.setObjectName("HeaderTitle")
+        sub = QLabel("19 项自动检测 · RDK 平台 · 报告自动归档")
+        sub.setObjectName("HeaderSub")
+        title_box.addWidget(title)
+        title_box.addWidget(sub)
+        layout.addLayout(title_box)
+        layout.addStretch(1)
+
+        self.theme_btn = QPushButton("切换主题")
+        self.theme_btn.setObjectName("Ghost")
+        self.theme_btn.setFixedWidth(96)
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        layout.addWidget(self.theme_btn)
+
+        return header
+
+    def _build_side_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("SidePanel")
+        panel.setFixedWidth(268)
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(9)
+
+        layout.addWidget(self._section("连接"))
+
+        self.host_edit = QLineEdit()
+        self.host_edit.setPlaceholderText("车辆 IP（必填）")
+        layout.addWidget(self.host_edit)
+
+        self.user_edit = QLineEdit("sunrise")
+        self.user_edit.setPlaceholderText("用户名")
+        layout.addWidget(self.user_edit)
+
+        self.pass_edit = QLineEdit("sunrise")
+        self.pass_edit.setEchoMode(QLineEdit.Password)
+        self.pass_edit.setPlaceholderText("密码")
+        layout.addWidget(self.pass_edit)
+
+        layout.addWidget(self._section("运行方式"))
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("程序自动启停 ROS（推荐）", "auto")
+        self.mode_combo.addItem("检测已运行的 ROS", "attach")
+        layout.addWidget(self.mode_combo)
+
+        layout.addWidget(self._section("运动测试"))
+
+        self.esc_check = QCheckBox("电调电源已开启")
+        self.ground_check = QCheckBox("车辆已架空（轮子离地）")
+        self.allow_pulse = QCheckBox("允许微动 2 cm 做响应检测")
+        self.full_motion = QCheckBox("执行完整运动测试")
+
+        self.ground_check.setChecked(True)
+        layout.addWidget(self.esc_check)
+        layout.addWidget(self.ground_check)
+        layout.addWidget(self.allow_pulse)
+        layout.addWidget(self.full_motion)
+
+        hint = QLabel("不勾选微动则第 18 项记为未验证。")
+        hint.setObjectName("HeaderSub")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        layout.addStretch(1)
+
+        self.start_btn = QPushButton("开始检测")
+        self.start_btn.clicked.connect(self.start_test)
+        layout.addWidget(self.start_btn)
+
+        self.stop_btn = QPushButton("停止")
+        self.stop_btn.setObjectName("Ghost")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.request_stop)
+        layout.addWidget(self.stop_btn)
+
+        return panel
+
+    def _build_result_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("ResultPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        title = QLabel("检测项")
+        title.setObjectName("SectionTitle")
+        top.addWidget(title)
+        top.addStretch(1)
+        self.counter_label = QLabel("0 / 19")
+        self.counter_label.setObjectName("HeaderSub")
+        top.addWidget(self.counter_label)
+        layout.addLayout(top)
+
+        self.progress = QProgressBar()
+        self.progress.setMaximum(len(REGISTRY))
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        layout.addWidget(self.progress)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inner = QWidget()
+        grid = QGridLayout(inner)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(6)
+
+        # 按编号排序展示，执行顺序与展示顺序无关
+        for index, entry in enumerate(sorted(REGISTRY, key=lambda e: e[0])):
+            number, title_text = entry[0], entry[1]
+            card = CheckCard(number, title_text, self.theme)
+            self.cards[number] = card
+            grid.addWidget(card, index, 0)
+
+        grid.setRowStretch(len(REGISTRY), 1)
+        scroll.setWidget(inner)
+        layout.addWidget(scroll, stretch=1)
+
+        return panel
+
+    def _build_log_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("LogPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        title = QLabel("运行日志")
+        title.setObjectName("SectionTitle")
+        top.addWidget(title)
+        top.addStretch(1)
+        clear_btn = QPushButton("清空")
+        clear_btn.setObjectName("Ghost")
+        clear_btn.setFixedWidth(64)
+        clear_btn.clicked.connect(lambda: self.log_view.clear())
+        top.addWidget(clear_btn)
+        layout.addLayout(top)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("LogView")
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(5000)
+        layout.addWidget(self.log_view, stretch=1)
+
+        return panel
+
+    def _build_footer(self) -> QWidget:
+        footer = QWidget()
+        layout = QHBoxLayout(footer)
+        layout.setContentsMargins(4, 0, 4, 0)
+
+        self.verdict_label = QLabel("尚未开始")
+        self.verdict_label.setStyleSheet("font-size: 15px; font-weight: 600;")
+        layout.addWidget(self.verdict_label)
+        layout.addStretch(1)
+
+        self.open_btn = QPushButton("打开报告目录")
+        self.open_btn.setObjectName("Ghost")
+        self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self.open_report_dir)
+        layout.addWidget(self.open_btn)
+
+        self.view_btn = QPushButton("查看报告")
+        self.view_btn.setObjectName("Ghost")
+        self.view_btn.setEnabled(False)
+        self.view_btn.clicked.connect(self.open_report)
+        layout.addWidget(self.view_btn)
+
+        return footer
+
+    @staticmethod
+    def _section(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("SectionTitle")
+        return label
+
+    @staticmethod
+    def _valid_host(host: str) -> bool:
+        """简单的 IP / 主机名校验。
+
+        只拦住明显不对的（如输入了中文或乱串），
+        真正的可达性留给 SSH 连接阶段判定，避免自己写正则误拦。
+        """
+        import re
+        if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+            return all(0 <= int(p) <= 255 for p in host.split("."))
+        return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.\-]*", host)) and not host.replace(".", "").isdigit()
+
+    # -- 主题 -------------------------------------------------------------
+
+    def toggle_theme(self) -> None:
+        self.theme = "light" if self.theme == "dark" else "dark"
+        self.apply_theme()
+
+    def apply_theme(self) -> None:
+        self.setStyleSheet(stylesheet(self.theme))
+        for card in self.cards.values():
+            card.set_theme(self.theme)
+        c = palette(self.theme)
+        self.verdict_label.setStyleSheet(
+            f"font-size: 15px; font-weight: 600; color: {c['text_muted']};"
+        )
+
+    # -- 日志 -------------------------------------------------------------
+
+    def _log(self, text: str) -> None:
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.log_view.appendPlainText(f"[{stamp}] {text}")
+
+    # -- 测试流程 ---------------------------------------------------------
+
+    def start_test(self) -> None:
+        host = self.host_edit.text().strip()
+        if not host:
+            QMessageBox.warning(self, "缺少信息", "请填写车辆 IP 地址。")
+            self.host_edit.setFocus()
+            return
+        if not self._valid_host(host):
+            QMessageBox.warning(
+                self, "地址格式不对",
+                f"「{host}」不像一个 IP 或主机名。\n\n"
+                "请输入形如 192.168.1.128 的地址。",
+            )
+            self.host_edit.setFocus()
+            return
+
+        # 运动相关的安全确认（Q3：只在实际会让车动的节点确认）
+        allow_pulse = self.allow_pulse.isChecked()
+        full_motion = self.full_motion.isChecked()
+
+        if (allow_pulse or full_motion) and not self.esc_check.isChecked():
+            reply = QMessageBox.warning(
+                self, "电调未开启",
+                "你未勾选「电调电源已开启」。\n\n"
+                "若电调确实没开，车辆不会运动，微脉冲会判失败——\n"
+                "这正是该检测的用途，可以继续。\n\n"
+                "要继续吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        if (allow_pulse or full_motion):
+            detail = ("完整运动测试" if full_motion else "微脉冲响应检测")
+            reply = QMessageBox.question(
+                self, "安全确认",
+                f"即将执行：{detail}\n\n"
+                "请确认：\n"
+                "  · 车辆周围 1 米内无人、无障碍\n"
+                "  · 遥控器在手，可随时接管\n"
+                "  · 车轮已离地（若只做微脉冲可架空）\n\n"
+                "确认继续？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # 「完整运动测试」本身就包含微脉冲，两者不是并列选项。
+        # 之前勾完整测试、不勾微动时，微脉冲照样会发，
+        # 用户以为自己禁掉了（审查指出）。这里改成包含关系：
+        # 勾完整 → 微动脉无论如何都算开启了。
+        if full_motion:
+            motion = "full"
+            allow_pulse = True
+        elif allow_pulse:
+            motion = "bench"
+        else:
+            motion = "none"
+
+        answers = {
+            "电调（ESC）是否已开启": "是" if self.esc_check.isChecked() else "否",
+            "车辆状态": "架空" if self.ground_check.isChecked() else "落地空旷",
+        }
+        if motion != "none":
+            answers["motion_armed"] = "yes"
+
+        config = {
+            "host": host,
+            "user": self.user_edit.text().strip() or "sunrise",
+            "password": self.pass_edit.text() or "sunrise",
+            "mode": self.mode_combo.currentData(),
+            "motion": motion,
+            "answers": answers,
+        }
+
+        # 重置界面
+        for card in self.cards.values():
+            card.reset()
+        self.progress.setValue(0)
+        self.counter_label.setText(f"0 / {len(REGISTRY)}")
+        self.report = None
+        self.view_btn.setEnabled(False)
+        # 新一轮：清掉上一轮的取消标志与残留确认框
+        self._cancel_flag = False
+        if self._ground_dialog is not None:
+            try:
+                self._ground_dialog.close()
+            except Exception:
+                pass
+            self._ground_dialog = None
+        self.open_btn.setEnabled(False)
+        self._log(f"开始检测：{host}")
+
+        self.worker = TestWorker(config)
+        self.worker.output.connect(self._on_output)
+        self.worker.check_started.connect(self._on_check_started)
+        self.worker.check_done.connect(self._on_check_done)
+        self.worker.finished_ok.connect(self._on_finished)
+        self.worker.failed.connect(self._on_failed)
+        self.worker.need_ground_confirm.connect(self._on_need_ground)
+        self.worker.start()
+
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+
+    def closeEvent(self, event) -> None:
+        """关闭窗口前先把工作线程停干净。
+
+        不处理的话：窗口销毁而线程还在跑，下一次回调发往已销毁对象，
+        轻则报 wrapped C/C++ object has been deleted，
+        重则进程被强杀，车上的 roslaunch 不会被执行清理（审查指出）。
+        """
+        if self.worker is not None and self.worker.isRunning():
+            reply = QMessageBox.question(
+                self, "测试进行中",
+                "检测还在进行。关闭窗口会停止测试并清理车上的 ROS 进程。\n\n"
+                "确定关闭吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
+
+            self._log("正在停止并清理…")
+            self.worker.cancel()
+            # 给足够时间让当前项收尾、finally 里 pkill 跑完。
+            # 注意：即使超时也**不能**关窗——关了之后用户看不到日志、
+            # 无法再停止，而车可能还在动（审查指出）。
+            if not self.worker.wait(180000):
+                QMessageBox.critical(
+                    self, "无法安全关闭",
+                    "后台任务 180 秒内未结束，窗口暂不关闭。\n\n"
+                    "车可能仍在动作，请立即用遥控器接管。\n\n"
+                    "如需强行结束：先在车上执行\n"
+                    "  pkill -9 -f roslaunch; pkill -9 -f rosmaster\n"
+                    "再关闭本窗口。",
+                )
+                event.ignore()
+                return
+        event.accept()
+
+    def request_stop(self) -> None:
+        """请求停止。
+
+        不只置标志：会立即发零速让车停下。
+        按钮不禁用 —— 用户点完发现车还在动时要能再点一次（审查指出）。
+        """
+        if self.worker is None or not self.worker.isRunning():
+            return
+        self._log("正在停止：已发送零速，当前检测项结束后中止…")
+        stop_btn_text = self.stop_btn.text()
+        self.stop_btn.setText("再次发送停车")
+        try:
+            requested, stop_ok = self.worker.cancel()
+        except Exception as exc:
+            self._log(f"⚠ 停止出错：{exc}")
+            requested, stop_ok = True, False
+
+        if stop_ok:
+            self._log("■ 零速已发送，等待当前检测项收尾")
+        else:
+            self._log("⚠ 零速发送失败，请立即用遥控器接管")
+            QMessageBox.warning(
+                self, "停车指令未确认",
+                "无法确认零速指令已发送到车辆。\n\n"
+                "请立即用遥控器接管，或等待程序完成清理。",
+            )
+        self.stop_btn.setText(stop_btn_text)
+
+    def _on_output(self, text: str) -> None:
+        self._log(text)
+
+    def _on_check_started(self, number: int, title: str) -> None:
+        card = self.cards.get(number)
+        if card is not None:
+            card.set_running()
+
+    def _on_check_done(self, result) -> None:
+        card = self.cards.get(result.number)
+        if card is not None:
+            card.set_result(result.status, result.summary)
+        done = sum(1 for r in self.cards.values() if r.status is not None)
+        self.progress.setValue(done)
+        self.counter_label.setText(f"{done} / {len(self.cards)}")
+
+    def _on_need_ground(self) -> None:
+        """落地段前的非模态确认。
+
+        不能用 QMessageBox.question（应用级模态）：
+        工作线程在 Event.wait() 上等着，而模态框会挡住主窗口，
+        用户去放车、确认周围环境时很不方便，且无法查看日志。
+        """
+        if self._ground_dialog is not None:
+            return
+
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("架空段已通过")
+        dialog.setIcon(QMessageBox.Information)
+        dialog.setText(
+            "架空段已通过。\n\n"
+            "需要验证落地行驶时：把车放到开阔平地、轮子着地，"
+            "确认周围 1 米内无人。\n\n"
+            "放好后点「继续落地段」；不需要则点「跳过」。"
+        )
+        continue_btn = dialog.addButton("继续落地段", QMessageBox.AcceptRole)
+        skip_btn = dialog.addButton("跳过", QMessageBox.RejectRole)
+        dialog.setWindowModality(Qt.NonModal)
+        dialog.setModal(False)
+
+        def handle(button) -> None:
+            self._ground_dialog = None
+            ok = button is continue_btn
+            if self.worker is not None:
+                self.worker.answer_ground(ok)
+            self._log("用户确认车已落地，继续落地段" if ok else "用户选择跳过落地段")
+
+        dialog.buttonClicked.connect(handle)
+        self._ground_dialog = dialog
+        dialog.show()
+
+    def _on_finished(self, report: Report, record_dir: str) -> None:
+        self.report = report
+
+        # 以报告为准回填所有卡片。
+        for result in report.results:
+            card = self.cards.get(result.number)
+            if card is not None and card.status is None:
+                card.set_result(result.status, result.summary)
+        done = sum(1 for card in self.cards.values() if card.status is not None)
+        # 中止时不能把进度条拉满：只跑了 10 项就该显示 10/19
+        self.progress.setValue(done)
+        self.counter_label.setText(f"{done} / {len(self.cards)}")
+
+        # 颜色直接用 core 的判定，不在 UI 层重写一份。
+        # 之前手写了三档（failed/warned/其它→绿），
+        # 结果把「中止」显示成绿色——正是 core 早已修掉的 bug。
+        c = palette(self.theme)
+        color = {
+            "good": c["pass"],
+            "warn": c["warn"],
+            "bad": c["fail"],
+        }.get(report.verdict_class, c["text_muted"])
+        self.verdict_label.setStyleSheet(
+            f"font-size: 15px; font-weight: 600; color: {color};"
+        )
+        self.verdict_label.setText(f"判定：{report.verdict}")
+
+        if record_dir:
+            self.record_dir = Path(record_dir)
+            self.view_btn.setEnabled(True)
+            self.open_btn.setEnabled(True)
+            self._log(f"报告已生成：{self.record_dir}")
+
+        self._cleanup_after_run()
+        # 不要把进度条拉满：中途中止时只跑了几项，满格会误导（审查指出）
+
+    def _on_failed(self, message: str, trace: str = "") -> None:
+        self._log(f"❌ 程序异常：{message}")
+
+        # 把堆栈写进报告目录。
+        # 原来写「已写入控制台」——但打包时用的是 --windowed，
+        # 根本就没控制台，用户无处可看（审查指出）。
+        where = ""
+        if self.record_dir is not None:
+            try:
+                log_path = self.record_dir / "error.log"
+                log_path.write_text(
+                    f"{message}\n\n{trace}", encoding="utf-8"
+                )
+                where = f"\n\n详细堆栈：{log_path}"
+            except Exception:
+                where = ""
+
+        # 弹框里也附上前几行，用户不翻文件就能看到原因
+        preview = "\n".join(trace.splitlines()[-6:]) if trace else ""
+        body = f"测试未能完成：\n\n{message}{where}"
+        if preview:
+            body += f"\n\n最近几行堆栈：\n{preview}"
+        QMessageBox.critical(self, "程序异常", body)
+
+        self._cleanup_after_run()
+
+    def _cleanup_after_run(self) -> None:
+        """每一轮结束后的共同收尾。"""
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        # 关掉可能还在显示的落地确认框
+        if self._ground_dialog is not None:
+            try:
+                self._ground_dialog.close()
+            except Exception:
+                pass
+            self._ground_dialog = None
+        # 释放线程对象，避免下一轮覆盖后旧线程仍在跑时被 GC 销毁
+        if self.worker is not None and not self.worker.isRunning():
+            self.worker.deleteLater()
+            self.worker = None
+
+    # -- 报告 -------------------------------------------------------------
+
+    def open_report(self) -> None:
+        if self.record_dir is None:
+            return
+        html = self.record_dir / "report.html"
+        target = html if html.exists() else self.record_dir
+        import os
+        os.startfile(str(target))  # noqa: S606
+
+    def open_report_dir(self) -> None:
+        if self.record_dir is None:
+            return
+        import os
+        os.startfile(str(self.record_dir))  # noqa: S606

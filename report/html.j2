@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tianracer T110 检测报告 — {{ report.host }}</title>
+<style>
+  :root {
+    --good: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --bg: #ffffff; --fg: #1f2328; --muted: #656d76;
+    --line: #d1d9e0; --soft: #f6f8fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    margin: 0; padding: 0 0 60px; background: var(--bg); color: var(--fg);
+    line-height: 1.65; font-size: 15px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  header {
+    background: var(--soft); border-bottom: 1px solid var(--line);
+    padding: 28px 0; margin-bottom: 28px;
+  }
+  h1 { margin: 0 0 6px; font-size: 26px; }
+  h2 { margin: 40px 0 14px; font-size: 20px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  h3 { margin: 26px 0 10px; font-size: 16px; }
+  .meta { color: var(--muted); font-size: 14px; }
+  .verdict {
+    display: inline-block; padding: 10px 20px; border-radius: 8px;
+    font-weight: 700; font-size: 18px; margin: 12px 0;
+  }
+  .verdict.good { background: #dafbe1; color: var(--good); }
+  .verdict.warn { background: #fff8c5; color: var(--warn); }
+  .verdict.bad  { background: #ffebe9; color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--soft); font-weight: 600; }
+  tr:hover td { background: #fafbfc; }
+  code, pre { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+  pre {
+    background: var(--soft); border: 1px solid var(--line);
+    border-radius: 6px; padding: 12px; overflow-x: auto; white-space: pre-wrap;
+  }
+  .tag { font-weight: 700; white-space: nowrap; }
+  .tag.pass { color: var(--good); }
+  .tag.warn { color: var(--warn); }
+  .tag.fail { color: var(--bad); }
+  .tag.skip { color: var(--muted); }
+  .tag.manual { color: #8250df; }
+  .bar { height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; margin: 8px 0; }
+  .bar > span { display: block; height: 100%; background: var(--good); }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin: 14px 0; }
+  .card.fail { border-left: 4px solid var(--bad); }
+  .card.warn { border-left: 4px solid var(--warn); }
+  .card.pass { border-left: 4px solid var(--good); }
+  .card.skip { border-left: 4px solid var(--muted); }
+  .muted { color: var(--muted); }
+  ul { padding-left: 22px; }
+  .aborted { background: #ffebe9; border: 1px solid #ffcecb; border-radius: 6px; padding: 12px 16px; margin: 16px 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>Tianracer T110（RDK）整车自动检测记录</h1>
+    <div class="meta">
+      目标车辆 <strong>{{ report.host }}</strong> · 用户 {{ report.user }}<br>
+      开始 {{ report.started_at }}{% if report.finished_at %} · 结束 {{ report.finished_at }}{% endif %}
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+{% if report.aborted_reason %}
+<div class="aborted">
+  <strong>⚠ 本次测试未完整执行</strong><br>
+  {{ report.aborted_reason }}
+</div>
+{% endif %}
+
+<h2>交付判定</h2>
+<div class="verdict {{ report.verdict_class }}">{{ report.verdict }}</div>
+
+<div class="bar">
+  <span style="width: {{ '%.0f' % (report.pass_ratio * 100) }}%"></span>
+</div>
+<div class="muted">
+  已执行项通过 {{ report.passed | length }} / {{ report.executed | length }}
+  （{{ '%.0f' % (report.pass_ratio * 100) }}%，仅供参考）
+  {% if report.skipped %}
+  · <strong>未验证 {{ report.skipped | length }} / {{ report.judged | length }} 项
+  （{{ '%.0f' % (report.skip_ratio * 100) }}%）</strong>
+  {% endif %}
+  {% if report.warned %}· 告警 {{ report.warned | length }} 项{% endif %}
+  {% if report.failed %}· 失败 {{ report.failed | length }} 项{% endif %}
+</div>
+
+{% if report.voltage_v is not none %}
+<p><strong>电池电压</strong>：{{ '%.2f' % report.voltage_v }} V</p>
+{% endif %}
+
+<h2>结果汇总</h2>
+<table>
+  <thead><tr><th>#</th><th>检测项</th><th>结果</th><th>摘要</th></tr></thead>
+  <tbody>
+  {% for item in report.results | sort(attribute='number') %}
+    <tr>
+      <td>{{ item.number }}</td>
+      <td>{{ item.title }}</td>
+      <td class="tag {{ item.status.value }}">{{ item.status.marker }} {{ item.status.value | upper }}</td>
+      <td>{{ item.summary }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>逐项记录</h2>
+
+{% for item in report.results | sort(attribute='number') %}
+<div class="card {{ item.status.value }}">
+  <h3>{{ item.number }}. {{ item.title }}
+    <span class="tag {{ item.status.value }}">{{ item.status.marker }} {{ item.status.value | upper }}</span>
+  </h3>
+
+  {% if item.summary %}<p><strong>结论</strong>：{{ item.summary }}</p>{% endif %}
+  {% if item.duration_sec %}<p class="muted">耗时 {{ '%.1f' % item.duration_sec }} 秒</p>{% endif %}
+
+  {% if item.measurements %}
+  <table>
+    <thead><tr><th>测量项</th><th>实测值</th><th>期望</th><th>说明</th></tr></thead>
+    <tbody>
+    {% for m in item.measurements %}
+      <tr>
+        <td>{{ m.name }}</td>
+        <td><code>{{ m.display() }}</code></td>
+        <td>{{ m.expected or '—' }}</td>
+        <td class="muted">{{ m.note or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if item.detail %}<pre>{{ item.detail }}</pre>{% endif %}
+
+  {% if item.commands %}
+  <p class="muted">执行过的命令：</p>
+  <ul>{% for c in item.commands %}<li><code>{{ c }}</code></li>{% endfor %}</ul>
+  {% endif %}
+</div>
+{% endfor %}
+
+<h2>未执行 / 未验证项</h2>
+{% if report.skipped %}
+<table>
+  <thead><tr><th>#</th><th>项目</th><th>原因</th></tr></thead>
+  <tbody>
+  {% for item in report.skipped | sort(attribute='number') %}
+    <tr><td>{{ item.number }}</td><td>{{ item.title }}</td><td>{{ item.summary }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>无。所有检测项均已执行。</p>
+{% endif %}
+
+<h3>需要人工确认的项目</h3>
+<table>
+  <thead><tr><th>项目</th><th>结果</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>开关机（长按 3 秒）</td><td>☐</td><td>正常上电到桌面</td></tr>
+    <tr><td>电调模式</td><td>☐</td><td>Li 电模式 + F/R 模式</td></tr>
+    <tr><td>遥控手感（油门线性）</td><td>☐</td><td>无顿挫、无突变</td></tr>
+    <tr><td>遥控转向（回中、对称）</td><td>☐</td><td>无卡滞、无异响</td></tr>
+    <tr><td>建图实际效果</td><td>☐</td><td>需遥控低速走场</td></tr>
+    <tr><td>teb 导航到点</td><td>☐</td><td>需下发目标点</td></tr>
+    <tr><td>异响 / 异味 / 线缆 / 电池鼓包</td><td>☐</td><td>目视与手感</td></tr>
+  </tbody>
+</table>
+
+<h2>记录局限性</h2>
+<ul>
+  <li>传感器均为短时采样（5–10 秒），未做长时稳定性测试。</li>
+  <li>建图与导航的<strong>实际效果</strong>需人工遥控验证，程序只验证链路能起。</li>
+  <li>「人工项」来自运行时问答，程序无法替代人的判断。</li>
+  <li>雷达有效视场约 ±120° 是 LakiBeam1 物理特性，后方无数据属正常。</li>
+  <li>若记录中出现「已临时修正」字样，说明车辆环境变量配置有误，程序仅在本次会话内覆盖，<strong>未修改车辆任何文件</strong>。</li>
+</ul>
+
+<h2>检测对象</h2>
+<table>
+  <tr><th>IP 地址</th><td>{{ report.host }}</td></tr>
+  <tr><th>登录用户</th><td>{{ report.user }}</td></tr>
+  <tr><th>开始时间</th><td>{{ report.started_at }}</td></tr>
+  <tr><th>结束时间</th><td>{{ report.finished_at or '—' }}</td></tr>
+  {% for key, value in report.environment.items() %}
+  <tr><th>{{ key }}</th><td>{{ value }}</td></tr>
+  {% endfor %}
+</table>
+
+{% if report.answers %}
+<h3>运行时确认的条件</h3>
+<table>
+  {% for key, value in report.answers.items() %}
+  <tr><th>{{ key }}</th><td>{{ value }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<p class="muted" style="margin-top:40px">
+  本报告由 TianracerT110_Test_SoftWare_RDK 自动生成 · 原始命令记录见同目录 <code>raw.log</code>
+</p>
+
+</div>
+</body>
+</html>
