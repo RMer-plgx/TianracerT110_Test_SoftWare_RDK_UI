@@ -62,7 +62,7 @@ odom:
 
 voltage:
   full_v: 12.4
-  normal_v: 11.7
+  normal_v: 11.0
   low_v: 11.0
   stop_test_below_v: 11.0
   sample_timeout_sec: 90
