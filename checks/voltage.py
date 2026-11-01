@@ -107,7 +107,7 @@ def run(ctx) -> CheckResult:
         )
         return result
 
-    normal_v = float(cfg.get("normal_v", 11.7))
+    normal_v = float(cfg.get("normal_v", 11.0))
     low_v = float(cfg.get("low_v", 11.0))
     full_v = float(cfg.get("full_v", 12.4))
 
