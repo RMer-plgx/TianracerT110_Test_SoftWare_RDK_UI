@@ -52,7 +52,9 @@ def run(ctx) -> CheckResult:
     if serial == expect_serial:
         result.summary = f"CP2102 序列号 {serial}，符合文档要求"
     elif serial in acceptable:
-        result.status = Status.WARN
+        # 已在 config 的 acceptable_serials 声明可接受：通信正常，
+        # 只是版本比文档旧。属于「记录备查」而不是「需要处理」。
+        result.status = Status.NOTICE
         result.summary = (f"序列号 {serial} 为旧版主控（文档要求 {expect_serial}），"
                           f"通信正常但需与开发确认版本可接受性")
         result.detail = baseline.get("note", "")

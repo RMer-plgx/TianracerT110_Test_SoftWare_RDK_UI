@@ -43,6 +43,9 @@
   }
   .tag { font-weight: 700; white-space: nowrap; }
   .tag.pass { color: var(--good); }
+  /* 提示级：对出货无影响，按通过显示，但报告尾部的「提示项」表里单列 */
+  .tag.notice { color: var(--good); }
+  .card.notice { border-left: 4px solid var(--good); }
   .tag.warn { color: var(--warn); }
   .tag.fail { color: var(--bad); }
   .tag.skip { color: var(--muted); }
@@ -64,7 +67,13 @@
   .manual tr.checked td { background: #f0fff4; }
   .manual th:first-child, .manual td:first-child { width: 45%; }
   @media print {
+    /* Chromium 转 PDF 默认不画背景色，靠边框和文字色保证打印后仍能分辨状态 */
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .manual input[type=checkbox] { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .verdict { border: 2px solid currentColor; }
+    .card { break-inside: avoid; page-break-inside: avoid; }
+    h2 { break-after: avoid; page-break-after: avoid; }
+    tr { break-inside: avoid; page-break-inside: avoid; }
   }
 </style>
 </head>
@@ -103,6 +112,7 @@
   {% endif %}
   {% if report.warned %}· 告警 {{ report.warned | length }} 项{% endif %}
   {% if report.failed %}· 失败 {{ report.failed | length }} 项{% endif %}
+  {% if report.noticed %}· 提示 {{ report.noticed | length }} 项（不影响出货，明细见文末）{% endif %}
 </div>
 
 {% if report.voltage_v is not none %}
@@ -117,7 +127,7 @@
     <tr>
       <td>{{ item.number }}</td>
       <td>{{ item.title }}</td>
-      <td class="tag {{ item.status.value }}">{{ item.status.marker }} {{ item.status.value | upper }}</td>
+      <td class="tag {{ item.status.value }}">{{ item.status.marker }} {{ item.status.label }}</td>
       <td>{{ item.summary }}</td>
     </tr>
   {% endfor %}
@@ -129,7 +139,7 @@
 {% for item in report.results | sort(attribute='number') %}
 <div class="card {{ item.status.value }}">
   <h3>{{ item.number }}. {{ item.title }}
-    <span class="tag {{ item.status.value }}">{{ item.status.marker }} {{ item.status.value | upper }}</span>
+    <span class="tag {{ item.status.value }}">{{ item.status.marker }} {{ item.status.label }}</span>
   </h3>
 
   {% if item.summary %}<p><strong>结论</strong>：{{ item.summary }}</p>{% endif %}
@@ -160,6 +170,20 @@
 </div>
 {% endfor %}
 
+{% if report.noticed %}
+<h2>提示项（不影响出货）</h2>
+<p class="muted">以下项目已取到数据并判过，结论是「不影响本次出货」。原始观测值照录，
+出货判定按通过计算；如需追溯请核对下列事实。</p>
+<table>
+  <thead><tr><th>#</th><th>检测项</th><th>观测事实</th></tr></thead>
+  <tbody>
+  {% for item in report.noticed | sort(attribute='number') %}
+    <tr><td>{{ item.number }}</td><td>{{ item.title }}</td><td class="muted">{{ item.summary }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 <h2>未执行 / 未验证项</h2>
 {% if report.skipped %}
 <table>
@@ -174,7 +198,7 @@
 <p>无。所有检测项均已执行。</p>
 {% endif %}
 
-<h3>需要人工确认的项目</h3>
+<h3 id="manual">需要人工确认的项目</h3>
 <p class="muted">直接在下面打勾。勾选状态会保存在本机浏览器里，下次打开同一份报告不会丢；打印时会一并输出。</p>
 <table class="manual">
   <thead><tr><th>项目</th><th>已确认</th><th>说明</th></tr></thead>
@@ -183,6 +207,8 @@
     <tr><td>电调模式</td><td><input type="checkbox" class="manual-chk" data-key="m2"></td><td>Li 电模式 + F/R 模式</td></tr>
     <tr><td>遥控手感（油门线性）</td><td><input type="checkbox" class="manual-chk" data-key="m3"></td><td>无顿挫、无突变</td></tr>
     <tr><td>遥控转向（回中、对称）</td><td><input type="checkbox" class="manual-chk" data-key="m4"></td><td>无卡滞、无异响</td></tr>
+    <tr><td>车与遥控器是否匹配</td><td><input type="checkbox" class="manual-chk" data-key="m8"></td><td>上电后遥控器能直接控制本车，无需重新对频</td></tr>
+    <tr><td>车是否跑得直</td><td><input type="checkbox" class="manual-chk" data-key="m9"></td><td>遥控直线行驶 3~5 m 不跑偏，方向不回中需调整</td></tr>
     <tr><td>建图实际效果</td><td><input type="checkbox" class="manual-chk" data-key="m5"></td><td>需遥控低速走场</td></tr>
     <tr><td>teb 导航到点</td><td><input type="checkbox" class="manual-chk" data-key="m6"></td><td>需下发目标点</td></tr>
     <tr><td>异响 / 异味 / 线缆 / 电池鼓包</td><td><input type="checkbox" class="manual-chk" data-key="m7"></td><td>目视与手感</td></tr>

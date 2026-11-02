@@ -19,6 +19,14 @@ class Status(enum.Enum):
     FAIL = "fail"
     SKIP = "skip"
     MANUAL = "manual"
+    # 提示级：数据不完美，但对「能不能出货」没有影响。
+    # 显示为绿色、计入通过项，但原始观测值照样写进报告，
+    # 并在报告尾部的「提示项」表里集中列出，不藏信息。
+    #
+    # 引入原因（用户 2026-11-02）：出货人员拿到的报告如果一片黄条，
+    # 每一条都要他去判断「这车到底能不能发」，反而拖慢出货。
+    # 区分「真问题」和「看一眼就行的差异」，黄条才有意义。
+    NOTICE = "notice"
 
     @property
     def marker(self) -> str:
@@ -28,15 +36,24 @@ class Status(enum.Enum):
             Status.FAIL: "❌",
             Status.SKIP: "⏭️",
             Status.MANUAL: "👤",
+            Status.NOTICE: "✅",
         }[self]
+
+    @property
+    def label(self) -> str:
+        """报告里显示的英文标签。NOTICE 显示为 PASS。"""
+        if self is Status.NOTICE:
+            return "PASS"
+        return self.name
 
     @property
     def counts_as_pass(self) -> bool:
         """SKIP 不算通过。这是防漏报的核心规则。
 
         拿不到数据就是没验证过，不能因为「没有坏消息」就当成好消息。
+        NOTICE 算通过：它已经取到数据并判断过了，只是结论是「不影响出货」。
         """
-        return self is Status.PASS or self is Status.MANUAL
+        return self in (Status.PASS, Status.NOTICE, Status.MANUAL)
 
 
 @dataclass
@@ -114,7 +131,14 @@ class Report:
 
     @property
     def passed(self) -> List[CheckResult]:
-        return [r for r in self.results if r.status is Status.PASS]
+        """通过项。含 NOTICE——两者对出货同等含义。"""
+        return [r for r in self.results
+                if r.status in (Status.PASS, Status.NOTICE)]
+
+    @property
+    def noticed(self) -> List[CheckResult]:
+        """提示项：不影响出货，但报告尾部要单列。"""
+        return [r for r in self.results if r.status is Status.NOTICE]
 
     @property
     def skipped(self) -> List[CheckResult]:
@@ -124,7 +148,8 @@ class Report:
     def executed(self) -> List[CheckResult]:
         """真正跑了的项（不含 SKIP 和 MANUAL）。"""
         return [r for r in self.results
-                if r.status in (Status.PASS, Status.WARN, Status.FAIL)]
+                if r.status in (Status.PASS, Status.NOTICE,
+                                Status.WARN, Status.FAIL)]
 
     @property
     def judged(self) -> List[CheckResult]:
@@ -202,6 +227,7 @@ class Report:
         """给 HTML 模板用的 CSS class。
 
         中止的报告不能用绿色，否则读者只看颜色会误以为合格（审查发现）。
+        NOTICE 不影响颜色——它的定义就是「对出货无影响」。
         """
         if self.aborted_reason:
             return "bad"
