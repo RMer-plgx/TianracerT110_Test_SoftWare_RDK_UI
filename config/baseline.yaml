@@ -80,7 +80,10 @@ health:
 traces:
   ros_log_size_warn_mb: 200
   bash_history_lines_warn: 800
-  note: "仅供交付前清理参考，不判定失败"
+  # 测试完整跑完后，自动删除车上使用痕迹（ROS 日志 / bash_history / .viminfo）。
+  # 中途终止不删，保留日志便于排查。调试时改 false。
+  auto_cleanup: true
+  note: "完整跑完后自动清理；中止时保留供排查"
 
 motion:
   # ---------------------------------------------------------------------

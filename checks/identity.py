@@ -39,9 +39,21 @@ def run(ctx) -> CheckResult:
         result.status = Status.WARN
         result.summary = "未检测到 ROS 版本"
 
-    # IP 列表有助于确认是多网卡机器
+    # 报告里的「本机地址」只写用户在 TianbotOffice-5G 下输入的连接地址。
+    # 之前把 hostname -I 的全部网卡 IP 铺进报告，买车的人看到一堆
+    # 192.168.127.10 / 192.168.198.1 / 192.168.128.10 只会困惑
+    # （用户 2026-11-02 指出）。全部网卡放 detail 备查。
+    result.add("本机地址", getattr(ctx, "host", "") or "?",
+               note="本次连接的地址")
+
     ips = r.run("hostname -I", timeout=15)
-    result.add("本机地址", ips.stdout.strip() or "?")
+    all_ips = ips.stdout.strip()
+    if all_ips:
+        result.detail = (
+            "车辆全部网卡地址（仅备查，不是本次连接地址）：\n"
+            f"  {all_ips}\n"
+            "192.168.198.1 为雷达网段，其余为车辆内部/无线地址。"
+        )
 
     result.summary = result.summary or f"{hostname} / {os_name} / ROS {ros_distro}"
     return result

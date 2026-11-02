@@ -57,6 +57,15 @@
   .muted { color: var(--muted); }
   ul { padding-left: 22px; }
   .aborted { background: #ffebe9; border: 1px solid #ffcecb; border-radius: 6px; padding: 12px 16px; margin: 16px 0; }
+  /* 人工确认：直接在报告上打勾 */
+  .manual input[type=checkbox] {
+    width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #1a7f37;
+  }
+  .manual tr.checked td { background: #f0fff4; }
+  .manual th:first-child, .manual td:first-child { width: 45%; }
+  @media print {
+    .manual input[type=checkbox] { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
 </style>
 </head>
 <body>
@@ -166,18 +175,20 @@
 {% endif %}
 
 <h3>需要人工确认的项目</h3>
-<table>
-  <thead><tr><th>项目</th><th>结果</th><th>说明</th></tr></thead>
+<p class="muted">直接在下面打勾。勾选状态会保存在本机浏览器里，下次打开同一份报告不会丢；打印时会一并输出。</p>
+<table class="manual">
+  <thead><tr><th>项目</th><th>已确认</th><th>说明</th></tr></thead>
   <tbody>
-    <tr><td>开关机（长按 3 秒）</td><td>☐</td><td>正常上电到桌面</td></tr>
-    <tr><td>电调模式</td><td>☐</td><td>Li 电模式 + F/R 模式</td></tr>
-    <tr><td>遥控手感（油门线性）</td><td>☐</td><td>无顿挫、无突变</td></tr>
-    <tr><td>遥控转向（回中、对称）</td><td>☐</td><td>无卡滞、无异响</td></tr>
-    <tr><td>建图实际效果</td><td>☐</td><td>需遥控低速走场</td></tr>
-    <tr><td>teb 导航到点</td><td>☐</td><td>需下发目标点</td></tr>
-    <tr><td>异响 / 异味 / 线缆 / 电池鼓包</td><td>☐</td><td>目视与手感</td></tr>
+    <tr><td>开关机（长按 3 秒）</td><td><input type="checkbox" class="manual-chk" data-key="m1"></td><td>正常上电到桌面</td></tr>
+    <tr><td>电调模式</td><td><input type="checkbox" class="manual-chk" data-key="m2"></td><td>Li 电模式 + F/R 模式</td></tr>
+    <tr><td>遥控手感（油门线性）</td><td><input type="checkbox" class="manual-chk" data-key="m3"></td><td>无顿挫、无突变</td></tr>
+    <tr><td>遥控转向（回中、对称）</td><td><input type="checkbox" class="manual-chk" data-key="m4"></td><td>无卡滞、无异响</td></tr>
+    <tr><td>建图实际效果</td><td><input type="checkbox" class="manual-chk" data-key="m5"></td><td>需遥控低速走场</td></tr>
+    <tr><td>teb 导航到点</td><td><input type="checkbox" class="manual-chk" data-key="m6"></td><td>需下发目标点</td></tr>
+    <tr><td>异响 / 异味 / 线缆 / 电池鼓包</td><td><input type="checkbox" class="manual-chk" data-key="m7"></td><td>目视与手感</td></tr>
   </tbody>
 </table>
+<p id="manual-progress" class="muted"></p>
 
 <h2>记录局限性</h2>
 <ul>
@@ -213,5 +224,44 @@
 </p>
 
 </div>
+
+<script>
+/* 人工确认项打勾状态持久化。
+   报告是本地 file:// 打开的，localStorage 在某些浏览器设置下会被禁用，
+   所以全程 try/catch：存不了也不影响勾选和打印。 */
+(function () {
+  var KEY = 'ttr-manual-{{ report.started_at }}';
+  var boxes = Array.prototype.slice.call(
+    document.querySelectorAll('input.manual-chk'));
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; }
+  catch (e) { saved = {}; }
+
+  function paint() {
+    var done = 0;
+    boxes.forEach(function (b) {
+      if (b.checked) done++;
+      var row = b.closest('tr');
+      if (row) row.classList.toggle('checked', b.checked);
+    });
+    var el = document.getElementById('manual-progress');
+    if (el) {
+      el.textContent = done === boxes.length
+        ? '人工确认项已全部完成（' + done + ' / ' + boxes.length + '）'
+        : '人工确认进度：' + done + ' / ' + boxes.length;
+    }
+  }
+
+  boxes.forEach(function (b) {
+    if (saved[b.dataset.key]) b.checked = true;
+    b.addEventListener('change', function () {
+      saved[b.dataset.key] = b.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
+      paint();
+    });
+  });
+  paint();
+})();
+</script>
 </body>
 </html>

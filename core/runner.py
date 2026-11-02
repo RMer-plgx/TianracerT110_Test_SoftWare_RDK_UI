@@ -120,6 +120,9 @@ class Context:
 
     remote: Remote
     baseline: Dict
+    # 用户输入的连接地址（TianbotOffice-5G 下看到的车 IP）。
+    # 报告的「本机地址」用它，不再拿 hostname -I 的全部网卡凑数。
+    host: str = ""
     answers: Dict[str, str] = field(default_factory=dict)
     # bringup 是否由本程序启动；False 表示用户已经自己起好了
     owns_bringup: bool = True
@@ -305,7 +308,7 @@ class Runner:
                     pass
             return
 
-        ctx = Context(remote=self._remote, baseline=baseline,
+        ctx = Context(remote=self._remote, baseline=baseline, host=self.host,
                       answers=self.answers, owns_bringup=(self.mode == "auto"),
                       motion_level=self.motion,
                       motion_armed=bool(self.answers.get("motion_armed")),
@@ -363,7 +366,82 @@ class Runner:
             except Exception:
                 pass
 
+            # 使用痕迹清理。必须插在这里：
+            #   - roslaunch 已停——否则清掉的日志马上又被写回来
+            #   - 连接还没断——close() 之后任何 run() 都会被默默吐掉
+            self._cleanup_traces(ctx)
+
             self._remote.close()
+
+    def _cleanup_traces(self, ctx: Context) -> None:
+        """测试结束后删除车上使用痕迹，并把结果写回第 19 项。
+
+        只在完整跑完时清理。中途终止意味着还有项没验证、要重测，
+        这时保留车上日志便于排查，不删。
+        """
+        result = next((r for r in self.report.results if r.number == 19), None)
+        traces_cfg = ctx.baseline.get("traces", {})
+
+        if not traces_cfg.get("auto_cleanup", True):
+            if result is not None:
+                result.summary += "；配置关闭了自动清理"
+            return
+
+        if self.report.aborted_reason:
+            if result is not None:
+                result.summary += "；本次未完整执行，保留痕迹供排查"
+            return
+
+        ctx.say("清理使用痕迹…")
+        try:
+            module = __import__("checks.traces", fromlist=["cleanup"])
+            data = module.cleanup(ctx)
+        except Exception as exc:
+            data = {"error": f"{type(exc).__name__}: {exc}"}
+
+        if data.get("error"):
+            ctx.say(f"       ⚠ 痕迹清理失败：{data['error']}")
+            if result is not None:
+                result.status = Status.WARN
+                result.summary = f"使用痕迹清理失败：{data['error']}"
+            return
+
+        if result is None:
+            result = CheckResult(number=19, title="使用痕迹", status=Status.PASS)
+            self.report.add(result)
+
+        logs_before = data.get("logs_before_mb")
+        logs_after = data.get("logs_after_mb")
+        dirs_after = data.get("logs_after_dirs")
+        hist_before = data.get("hist_before")
+        hist_after = data.get("hist_after")
+        vim_after = data.get("vim_after")
+
+        # du -sm 对空目录也返回 1 MB（4K 块向上取整），所以体积只用于展示，
+        # 是否清干净看条目数。
+        result.add("清理后 ROS 日志",
+                   (f"{dirs_after} 个条目 / {logs_after} MB"
+                    if dirs_after is not None and logs_after is not None
+                    else "读取失败"),
+                   expected="0 个条目")
+        result.add("清理后 bash_history",
+                   hist_after if hist_after is not None else "读取失败", "行",
+                   expected="0 行")
+        result.add("清理后 .viminfo",
+                   "不存在" if vim_after == 0 else "仍存在")
+
+        # 三项都归零才算清理到位；没清干净不能报 PASS（与防漏报原则一致）
+        clean_ok = (dirs_after == 0 and hist_after == 0 and vim_after == 0)
+        result.status = Status.PASS if clean_ok else Status.WARN
+        result.summary = (
+            f"测试结束后已自动清理：ROS 日志 {logs_before} MB → {logs_after} MB"
+            f"（{dirs_after} 个条目），"
+            f"bash_history {hist_before} → {hist_after} 行"
+            + ("，.viminfo 已删除" if vim_after == 0 else "，.viminfo 仍在")
+        )
+        if not clean_ok:
+            result.summary += "（部分痕迹未清干净，交付前请手工确认）"
+        ctx.say(f"       {result.status.marker} {result.summary}")
 
     def _should_abort(self) -> bool:
         """致命项失败或用户请求停止时，不再继续。"""
