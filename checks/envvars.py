@@ -105,6 +105,21 @@ def run(ctx) -> CheckResult:
                      "程序未修改它们，可能影响后续检测结果：")
         lines.extend(f"  - {name}" for name in not_fixed)
 
+    # 这几行是为了回答「为什么这么多」——
+    # TIANRACER_* 是 tianracer 的功能开关，每个模块一个变量，
+    # 不是 17 个都必须手工配置的东西。
+    if lines:
+        lines.append("")
+    lines.append("这 17 个变量不是 17 项手工配置，而是 tianracer 把每个功能模块"
+                 "做成了一个开关（装什么填什么，没装的填 none）：")
+    lines.append("  · 底盘通信：TIANRACER_BASE / _BASE_PORT / _BASE_BAUDRATE"
+                 " —— 写错就完全打不开底盘，这三项最重要")
+    lines.append("  · 雷达：TIANRACER_LIDAR / _LIDAR_IP / _LIDAR_PORT / _LIDAR_MODEL")
+    lines.append("  · 功能模块（本车没装的填 none）：GPS / RGBD_CAMERA / RGBD_CAMERA_MODEL"
+                 " / BRIDGE / VIDEO_DEVICE")
+    lines.append("  · 手感与方向：TIANRACER_STEERING_DIRECTION / _THROTTLE_DIRECTION / _JOY_MODE")
+    lines.append("  · 名称：TIANRACER_NAME / TIANBOT_NAME")
+
     if lines:
         result.detail = "\n".join(lines)
     return result

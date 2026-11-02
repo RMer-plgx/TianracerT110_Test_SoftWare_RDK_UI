@@ -1,6 +1,11 @@
 """19. 使用痕迹。
 
-只报告，不判失败。这些数据是交付前清理的参考。
+两件事：
+- run():     测试时检查痕迹现状，写进报告
+- cleanup(): 整轮测试结束后自动删除痕迹（用户 2026-11-02 要求）
+
+清理必须在 roslaunch 停掉之后、SSH 断开之前做，所以不放在 run() 里，
+由 runner 的收尾流程调用。
 """
 
 from __future__ import annotations
@@ -8,6 +13,64 @@ from __future__ import annotations
 import re
 
 from core.verdict import CheckResult, Status
+
+
+# 清理脚本。先量再删，量不到也不报错（痕迹本来就可能不存在）。
+# 用 find -mindepth 1 而不是 rm -rf dir/*，后者漏掉隐藏文件。
+CLEAN_SCRIPT = r'''
+H="$HOME"
+
+before_mb=$(du -sm "$H/.ros/log" 2>/dev/null | cut -f1); before_mb=${before_mb:-0}
+before_dirs=$(ls "$H/.ros/log" 2>/dev/null | wc -l); before_dirs=${before_dirs:-0}
+before_hist=$(wc -l < "$H/.bash_history" 2>/dev/null); before_hist=${before_hist:-0}
+
+if [ -d "$H/.ros/log" ]; then
+  find "$H/.ros/log" -mindepth 1 -exec rm -rf {} + 2>/dev/null
+fi
+
+: > "$H/.bash_history" 2>/dev/null
+rm -f "$H"/.bash_history-* 2>/dev/null
+rm -f "$H/.viminfo" 2>/dev/null
+
+sync 2>/dev/null
+
+after_mb=$(du -sm "$H/.ros/log" 2>/dev/null | cut -f1); after_mb=${after_mb:-0}
+after_dirs=$(ls "$H/.ros/log" 2>/dev/null | wc -l); after_dirs=${after_dirs:-0}
+after_hist=$(wc -l < "$H/.bash_history" 2>/dev/null); after_hist=${after_hist:-0}
+after_vim=$(ls -l "$H/.viminfo" 2>/dev/null | wc -l); after_vim=${after_vim:-0}
+
+echo "LOGS_BEFORE_MB=$before_mb"
+echo "LOGS_BEFORE_DIRS=$before_dirs"
+echo "HIST_BEFORE=$before_hist"
+echo "LOGS_AFTER_MB=$after_mb"
+echo "LOGS_AFTER_DIRS=$after_dirs"
+echo "HIST_AFTER=$after_hist"
+echo "VIM_AFTER=$after_vim"
+'''
+
+
+def cleanup(ctx) -> dict:
+    """删除车上使用痕迹。返回解析后的字典（键名小写）。
+
+    失败不抛异常——清理失败不应该让整轮测试算失败，
+    但返回里会带 error 字段，报告里会写清楚。
+    """
+    try:
+        out = ctx.remote.run(CLEAN_SCRIPT, timeout=120, record=True)
+    except Exception as exc:  # 连接断了、超时都不能让收尾崩掉
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    if not out.ok:
+        return {"error": (out.stderr or "清理命令返回非零").strip()[:200]}
+
+    data = {}
+    for line in (out.stdout or "").splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().lower()
+        if re.fullmatch(r"[a-z_]+", key):
+            data[key] = _to_int(value) if value.strip().isdigit() else value.strip()
+    return data
 
 
 def run(ctx) -> CheckResult:
