@@ -14,7 +14,7 @@ from pathlib import Path
 from PyQt5.QtCore import QThread, Qt, pyqtSignal
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+    QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
@@ -149,6 +149,46 @@ class TestWorker(QThread):
 # 主窗口
 # ---------------------------------------------------------------------------
 
+class CleanupWorker(QThread):
+    """后台清理车上使用痕迹。
+
+    做成线程是因为连车 + 删 83 个日志目录要几秒到几十秒，
+    在界面线程里做会把窗口卡住（用户会以为程序死了）。
+    """
+
+    done = pyqtSignal(dict)
+
+    def __init__(self, config: dict, parent=None):
+        super().__init__(parent)
+        self._config = dict(config)
+
+    def run(self) -> None:
+        from checks import traces
+        from core.ssh import Remote
+
+        cfg = self._config
+        remote = None
+        try:
+            remote = Remote(cfg["host"], cfg["user"], cfg["password"])
+            remote.connect()
+
+            class _Ctx:
+                pass
+
+            ctx = _Ctx()
+            ctx.remote = remote
+            data = traces.cleanup(ctx)
+        except Exception as exc:
+            data = {"error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            if remote is not None:
+                try:
+                    remote.close()
+                except Exception:
+                    pass
+        self.done.emit(data)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -158,6 +198,11 @@ class MainWindow(QMainWindow):
         self.report: Report | None = None
         self.record_dir: Path | None = None
         self._ground_dialog = None
+        # 上一轮使用的连接参数。清理使用记录、重开报告都要用它，
+        # 不能只留在输入框里——用户测完可能把 IP 改掉了。
+        self._last_config: dict | None = None
+        self._cleaner = None
+        self._pdf_engine = None
 
         self.setWindowTitle("Tianracer T110 整车测试")
         icon_path = resource_path("assets/app.ico")
@@ -220,6 +265,7 @@ class MainWindow(QMainWindow):
         outer.addLayout(body, stretch=1)
 
         outer.addWidget(self._build_footer())
+        outer.addWidget(self._build_pdf_bar())
 
     def _build_header(self) -> QWidget:
         header = QWidget()
@@ -401,7 +447,45 @@ class MainWindow(QMainWindow):
         self.view_btn.clicked.connect(self.open_report)
         layout.addWidget(self.view_btn)
 
+        # 人工检测项：打开 report.html，在那里打勾（勾选状态会保存）
+        self.manual_btn = QPushButton("人工检测项")
+        self.manual_btn.setObjectName("Ghost")
+        self.manual_btn.setEnabled(False)
+        self.manual_btn.setToolTip("打开报告，在「需要人工确认的项目」里直接打勾")
+        self.manual_btn.clicked.connect(self.open_manual_check)
+        layout.addWidget(self.manual_btn)
+
+        # 清理使用记录：删掉车上 ROS 日志 / bash_history / .viminfo
+        self.clean_btn = QPushButton("清理使用记录")
+        self.clean_btn.setObjectName("Ghost")
+        self.clean_btn.setEnabled(False)
+        self.clean_btn.setToolTip("删除车辆上的 ROS 日志、命令历史与 vim 记录")
+        self.clean_btn.clicked.connect(self.cleanup_traces)
+        layout.addWidget(self.clean_btn)
+
         return footer
+
+    def _build_pdf_bar(self) -> QWidget:
+        """页面最底部：导出 PDF。
+
+        出货人员需要纸质报告，所以这一条单独放在最下方、用主按钮样式，
+        不和上面的「查看/清理」挤在一起。
+        """
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(4, 2, 4, 4)
+
+        hint = QLabel("交付留档：把本次报告导出为 PDF，可直接打印")
+        hint.setObjectName("HeaderSub")
+        layout.addWidget(hint)
+        layout.addStretch(1)
+
+        self.pdf_btn = QPushButton("下载 PDF 检测报告")
+        self.pdf_btn.setEnabled(False)
+        self.pdf_btn.clicked.connect(self.export_pdf)
+        layout.addWidget(self.pdf_btn)
+
+        return bar
 
     @staticmethod
     def _section(text: str) -> QLabel:
@@ -535,6 +619,8 @@ class MainWindow(QMainWindow):
             self._ground_dialog = None
         self.open_btn.setEnabled(False)
         self._log(f"开始检测：{host}")
+
+        self._last_config = dict(config)
 
         self.worker = TestWorker(config)
         self.worker.output.connect(self._on_output)
@@ -694,7 +780,13 @@ class MainWindow(QMainWindow):
             self.record_dir = Path(record_dir)
             self.view_btn.setEnabled(True)
             self.open_btn.setEnabled(True)
+            self.manual_btn.setEnabled(True)
+            self.pdf_btn.setEnabled(True)
             self._log(f"报告已生成：{self.record_dir}")
+
+        # 清理按钮只要有过一次可用的连接参数就放开——
+        # 即使本轮中途失败，也该允许把车上的痕迹清掉
+        self.clean_btn.setEnabled(self._last_config is not None)
 
         self._cleanup_after_run()
         # 不要把进度条拉满：中途中止时只跑了几项，满格会误导（审查指出）
@@ -756,3 +848,168 @@ class MainWindow(QMainWindow):
             return
         import os
         os.startfile(str(self.record_dir))  # noqa: S606
+
+    # -- 人工项 / 清理 / PDF ----------------------------------------------
+
+    def open_manual_check(self) -> None:
+        """打开报告并直接定位到「需要人工确认的项目」。
+
+        用默认浏览器打开，而不是内置窗口：报告里的勾选状态存在浏览器
+        的 localStorage，用户下次从同一浏览器打开还能看到，一致性更好。
+        """
+        if self.record_dir is None:
+            return
+        html = self.record_dir / "report.html"
+        if not html.exists():
+            QMessageBox.warning(
+                self, "报告不存在",
+                f"没有找到 {html}。\n请先完成一次检测。",
+            )
+            return
+        from PyQt5.QtCore import QUrl
+        from PyQt5.QtGui import QDesktopServices
+
+        url = QUrl.fromLocalFile(str(html))
+        url.setFragment("manual")
+        QDesktopServices.openUrl(url)
+
+    def cleanup_traces(self) -> None:
+        """手动清理车上使用痕迹。"""
+        cfg = self._last_config
+        if not cfg:
+            QMessageBox.information(
+                self, "没有连接信息",
+                "先完成一次检测，程序才知道要连哪台车。",
+            )
+            return
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.warning(
+                self, "正在检测",
+                "检测正在进行，请先停止，避免清理掉正在写的日志。",
+            )
+            return
+        if self._cleaner is not None and self._cleaner.isRunning():
+            return
+
+        reply = QMessageBox.question(
+            self, "确认清理",
+            f"将删除 {cfg['host']} 上的以下内容：\n\n"
+            "  · ~/.ros/log 下的全部 ROS 日志\n"
+            "  · ~/.bash_history 命令历史\n"
+            "  · ~/.viminfo\n\n"
+            "删除后不可恢复。确认继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.clean_btn.setEnabled(False)
+        self._log("清理使用记录…")
+        self._cleaner = CleanupWorker(cfg, self)
+        self._cleaner.done.connect(self._on_cleanup_done)
+        self._cleaner.start()
+
+    def _on_cleanup_done(self, data: dict) -> None:
+        self.clean_btn.setEnabled(True)
+        if data.get("error"):
+            self._log(f"❌ 清理失败：{data['error']}")
+            QMessageBox.warning(self, "清理失败", str(data["error"]))
+            return
+
+        message = (
+            f"ROS 日志：{data.get('logs_before_mb')} MB → "
+            f"{data.get('logs_after_mb')} MB"
+            f"（{data.get('logs_after_dirs')} 个条目）\n"
+            f"bash_history：{data.get('hist_before')} → "
+            f"{data.get('hist_after')} 行\n"
+            f".viminfo：{'已删除' if data.get('vim_after') == 0 else '仍存在'}"
+        )
+        self._log("✅ 清理完成：" + message.replace("\n", "；"))
+        QMessageBox.information(self, "清理完成", message)
+
+    def export_pdf(self) -> None:
+        """把 report.html 渲染成 PDF，供出货人员打印。"""
+        if self.record_dir is None or self.report is None:
+            QMessageBox.information(self, "还没有报告", "先完成一次检测。")
+            return
+        html = self.record_dir / "report.html"
+        if not html.exists():
+            QMessageBox.warning(self, "报告不存在", f"没有找到 {html}。")
+            return
+
+        try:
+            stamp = datetime.strptime(
+                self.report.started_at, "%Y-%m-%d %H:%M:%S"
+            ).strftime("%Y%m%d_%H%M%S")
+        except Exception:
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        host = (self.report.host or "car").replace(":", "_")
+        default = self.record_dir / f"TianracerT110_检测报告_{host}_{stamp}.pdf"
+
+        chosen, _ = QFileDialog.getSaveFileName(
+            self, "保存 PDF 报告", str(default), "PDF 文件 (*.pdf)"
+        )
+        if not chosen:
+            return
+        out_path = Path(chosen)
+        if out_path.suffix.lower() != ".pdf":
+            out_path = out_path.with_suffix(".pdf")
+
+        try:
+            from PyQt5.QtWebEngineWidgets import QWebEngineView
+        except Exception:
+            self._pdf_fallback(html)
+            return
+
+        self.pdf_btn.setEnabled(False)
+        self.pdf_btn.setText("正在生成…")
+        self._log(f"生成 PDF：{out_path}")
+
+        view = QWebEngineView()
+        view.resize(1240, 1754)
+        page = view.page()
+        # 必须保引用：局部变量被回收后回调永远不会触发，按钮就卡在「正在生成」
+        self._pdf_view = view
+
+        def on_finished(path: str, ok: bool) -> None:
+            self.pdf_btn.setText("下载 PDF 检测报告")
+            self.pdf_btn.setEnabled(True)
+            if not ok:
+                self._log("❌ PDF 生成失败")
+                QMessageBox.warning(
+                    self, "PDF 生成失败",
+                    "浏览器内核没能写出 PDF。\n"
+                    "可以改用「查看报告」后按 Ctrl+P 打印为 PDF。",
+                )
+                return
+            self._log(f"✅ PDF 已保存：{path}")
+            if QMessageBox.question(
+                self, "PDF 已生成",
+                f"已保存到：\n{path}\n\n现在打开吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            ) == QMessageBox.Yes:
+                import os
+                os.startfile(path)  # noqa: S606
+
+        page.pdfPrintingFinished.connect(on_finished)
+
+        def on_load(ok: bool) -> None:
+            if not ok:
+                self.pdf_btn.setText("下载 PDF 检测报告")
+                self.pdf_btn.setEnabled(True)
+                QMessageBox.warning(self, "报告加载失败", f"无法加载 {html}")
+                return
+            page.printToPdf(str(out_path))
+
+        view.loadFinished.connect(on_load)
+        from PyQt5.QtCore import QUrl
+        view.load(QUrl.fromLocalFile(str(html)))
+
+    def _pdf_fallback(self, html: Path) -> None:
+        QMessageBox.information(
+            self, "无法直接生成 PDF",
+            "当前环境缺少浏览器内核组件。\n\n"
+            "请用「查看报告」打开报告，在浏览器里按 Ctrl+P，\n"
+            "打印机选择「另存为 PDF」即可。",
+        )
+        self.open_report()

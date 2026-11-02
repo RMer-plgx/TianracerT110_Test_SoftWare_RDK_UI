@@ -92,6 +92,15 @@ def self_check() -> int:
         print(f"  PyQt5: FAIL {type(exc).__name__}: {exc}")
         problems.append(f"PyQt5 导入失败: {exc}")
 
+    # PDF 导出依赖 QWebEngine。必须在创建 QApplication **之前**导入，
+    # 否则 Qt 会拒绝（Qt WebEngine 初始化时会校验这一约束）。
+    try:
+        from PyQt5 import QtWebEngineWidgets  # noqa: F401
+        print("  PDF 导出内核 (QWebEngine): OK")
+    except Exception as exc:
+        print(f"  PDF 导出内核 (QWebEngine): 不可用 {type(exc).__name__}: {exc}")
+        print("    → PDF 按钮会降级为「用浏览器 Ctrl+P」，其余功能不受影响")
+
     # 屏幕信息：窗口尺寸自适应靠它，出问题时要能查
     try:
         import os
@@ -99,6 +108,8 @@ def self_check() -> int:
         from PyQt5.QtCore import Qt
         from PyQt5.QtWidgets import QApplication
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        # 导入了 QtWebEngine 就必须设这个，否则创建 QApplication 直接 abort
+        QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
         app = QApplication.instance() or QApplication([])
         screen = app.primaryScreen()
         avail = screen.availableGeometry()
@@ -132,6 +143,7 @@ def diagnose() -> int:
 
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
     app = QApplication.instance() or QApplication(sys.argv)
 
     screen = app.primaryScreen()
@@ -162,6 +174,69 @@ def diagnose() -> int:
     return 0
 
 
+def pdf_smoke(out_path: str) -> int:
+    """真跑一次 HTML → PDF，验证打包后的 QWebEngine 可用。
+
+    为什么要这个：--self-check 只证明「QWebEngineWidgets 能 import」，
+    证明不了 QtWebEngineProcess.exe 在 onefile 解压目录里能被拉起来。
+    后者才是打包版真正会翻车的地方（资源路径 / UPX / 子进程路径）。
+    """
+    from PyQt5.QtCore import Qt, QTimer, QUrl
+    from PyQt5.QtWidgets import QApplication
+
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+    app = QApplication([])
+
+    from PyQt5.QtWebEngineWidgets import QWebEngineView
+
+    # 用真实报告模板渲染一份，顺带验证模板本身
+    import tempfile
+    from core.reporting import render
+    from core.verdict import CheckResult, Report, Status
+
+    report = Report(host="0.0.0.0", user="pdf-smoke",
+                    started_at="2026-01-01 00:00:00")
+    report.add(CheckResult(number=1, title="自检", status=Status.PASS,
+                           summary="PDF 导出链路自检"))
+
+    tmpdir = tempfile.mkdtemp(prefix="ttr-pdf-")
+    html_path, _ = render(report, Path(tmpdir))
+    html_path = html_path.parent / "report.html"
+
+    out = Path(out_path).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    state = {"ok": False}
+
+    view = QWebEngineView()
+    view.resize(1240, 1754)
+    page = view.page()
+
+    def on_finished(path: str, ok: bool) -> None:
+        state["ok"] = ok
+        app.quit()
+
+    page.pdfPrintingFinished.connect(on_finished)
+
+    def on_load(ok: bool) -> None:
+        if not ok:
+            print("页面加载失败")
+            app.quit()
+            return
+        page.printToPdf(str(out))
+
+    view.loadFinished.connect(on_load)
+    view.load(QUrl.fromLocalFile(str(html_path)))
+    QTimer.singleShot(60000, app.quit)   # 卡死也要有出口
+    app.exec_()
+
+    if state["ok"] and out.exists() and out.stat().st_size > 1000:
+        print(f"PDF 生成成功：{out}（{out.stat().st_size} 字节）")
+        return 0
+    print(f"PDF 生成失败（ok={state['ok']}, exists={out.exists()}）")
+    return 1
+
+
 def main() -> int:
     ensure_utf8_env()
 
@@ -169,6 +244,11 @@ def main() -> int:
         return self_check()
     if "--diag" in sys.argv:
         return diagnose()
+    if "--pdf-smoke" in sys.argv:
+        index = sys.argv.index("--pdf-smoke")
+        target = (sys.argv[index + 1] if len(sys.argv) > index + 1
+                  else "pdf_smoke.pdf")
+        return pdf_smoke(target)
 
     # 高分屏缩放：必须在 QApplication 创建前设置
     from PyQt5.QtCore import Qt
@@ -177,6 +257,9 @@ def main() -> int:
 
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # QWebEngine 生成 PDF 需要共享 OpenGL 上下文，且必须在 QApplication 之前设置。
+    # 不设的话创建 QWebEngineView 会直接崩或黑屏。
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
 
     app = QApplication(sys.argv)
     app.setApplicationName("Tianracer T110 整车测试")

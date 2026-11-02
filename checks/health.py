@@ -29,7 +29,15 @@ def run(ctx) -> CheckResult:
     fail_c = float(baseline.get("temp_fail_c", 85.0))
     if max_temp is not None:
         result.add("最高温度", f"{max_temp:.1f}", "°C", expected=f"< {fail_c} °C")
-        temp_status = judge_range(max_temp, 0, fail_c, warn_margin=fail_c - warn_c)
+        # 温度是单侧指标（越低越好）。不能用 judge_range(..., low=0,
+        # warn_margin=...)：那等于「温度低于 warn_margin 也算告警」，
+        # 冬天冷启动读 5°C 就会误报。三段显式判定。
+        if max_temp >= fail_c:
+            temp_status = Status.FAIL
+        elif max_temp >= warn_c:
+            temp_status = Status.WARN
+        else:
+            temp_status = Status.PASS
     else:
         result.add("最高温度", "读取失败")
         temp_status = Status.SKIP
@@ -73,8 +81,15 @@ def run(ctx) -> CheckResult:
     load_warn = float(baseline.get("load_warn", 3.0))
     if load1 is not None:
         result.add("1 分钟负载", f"{load1:.2f}", expected=f"< {load_warn}")
-        load_status = judge_range(load1, 0, load_warn * 1.5,
-                                  warn_margin=load_warn * 0.5)
+        # 负载同样是单侧指标。原来传 low=0/warn_margin=1.5，
+        # 把「负载低于 1.5」也算成告警，导致空载的车被判 WARN
+        # （2026-11-02 实测：load 1.26 报「指标接近阈值」）。
+        if load1 >= load_warn * 1.5:
+            load_status = Status.FAIL
+        elif load1 >= load_warn:
+            load_status = Status.WARN
+        else:
+            load_status = Status.PASS
     else:
         result.add("负载", "读取失败")
         load_status = Status.SKIP

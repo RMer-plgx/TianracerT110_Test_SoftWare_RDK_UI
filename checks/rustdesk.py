@@ -42,10 +42,12 @@ def run(ctx) -> CheckResult:
         result.status = Status.FAIL
         result.summary = "RustDesk 服务未运行"
     elif not has_server:
-        result.status = Status.WARN
+        # 守护服务在跑就满足「远程可被接入」的前提；
+        # 没有图形会话是 headless 车的正常配置，不是故障。
+        result.status = Status.NOTICE
         result.summary = "仅 --service 在运行，远程连接会黑屏"
     elif not has_desktop:
-        result.status = Status.WARN
+        result.status = Status.NOTICE
         result.summary = "缺少图形会话，远程可能黑屏"
     else:
         result.summary = "服务与用户会话均正常"

@@ -109,7 +109,9 @@ def run(ctx) -> CheckResult:
     if hist_lines is not None and hist_lines >= warn_lines:
         tips.append(f"bash_history {hist_lines} 行，交付前可清理")
 
-    result.status = Status.WARN if tips else Status.PASS
+    # 痕迹在测试结束后本来就会被自动清掉（见 cleanup），
+    # 所以「痕迹偏多」只是过程记录，不是结论 —— 提示级。
+    result.status = Status.NOTICE if tips else Status.PASS
     result.summary = "；".join(tips) if tips else "痕迹量正常（仅报告，不判定失败）"
     return result
 

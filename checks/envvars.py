@@ -73,7 +73,10 @@ def run(ctx) -> CheckResult:
 
     # 已知偏差 / 不符项的判定
     if unknown_bad:
-        result.status = Status.WARN
+        # 程序已在会话内把能修的修好了，车实际按正确参数运行。
+        # 残留的是「配置卫生」问题，不影响本次出货与使用 —— 提示级。
+        # 事实一条不少地写在 summary/detail 里，只是不上黄条。
+        result.status = Status.NOTICE
         parts = []
         if corrected:
             parts.append(f"{len(corrected)} 项已临时修正")
@@ -86,7 +89,7 @@ def run(ctx) -> CheckResult:
         if len(unknown_bad) > 4:
             result.summary += " 等"
     elif known_hits:
-        result.status = Status.WARN
+        result.status = Status.NOTICE
         result.summary = f"存在 {len(known_hits)} 项已知偏差（不影响运行）"
     else:
         result.summary = f"{len(expected)} 项环境变量全部符合期望"

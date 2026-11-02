@@ -58,7 +58,9 @@ def run(ctx) -> CheckResult:
     elif dirty_total == 0:
         result.summary = "三个仓库均与远端一致，无未提交改动"
     else:
-        result.status = Status.WARN
+        # 未提交改动不影响车能不能跑（功能全正常），
+        # 影响的是「买家拿到的代码版本」——这是归档问题，不是故障。
+        result.status = Status.NOTICE
         result.summary = (f"共 {dirty_total} 项未提交改动，需确认是否为 RDK 适配所需")
         result.detail = (
             "已知情况（2026-10-30）：tianracer 4 改 + 1 未跟踪，"
