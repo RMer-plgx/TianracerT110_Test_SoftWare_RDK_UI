@@ -47,7 +47,7 @@ def measure_hz(ctx, topic: str, seconds: int = 5) -> Optional[float]:
     与「频率为 0」区分开——前者是没测到，后者是测到了但不动。
     """
     result = ctx.remote.run(
-        ros(f"timeout {seconds} rostopic hz {topic} 2>&1 | tail -3"),
+        ros(f"timeout {seconds} rostopic hz {topic} 2>&1 | tail -3", ctx.profile),
         timeout=seconds + 15,
     )
     match = re.search(r"average rate:\s*([\d.]+)", result.stdout)
@@ -64,7 +64,7 @@ def echo_once(ctx, topic: str, field: str = "", timeout: int = 12) -> Optional[s
     """
     target = f"{topic}/{field}" if field else topic
     result = ctx.remote.run(
-        ros(f"timeout {timeout} rostopic echo -n 1 {target} 2>&1"),
+        ros(f"timeout {timeout} rostopic echo -n 1 {target} 2>&1", ctx.profile),
         timeout=timeout + 10,
     )
     text = result.stdout.strip()
@@ -97,7 +97,7 @@ def run_probe(ctx, probe_name: str, *args: str, timeout: int = 90,
         f"rc=$?; rm -f /tmp/_tt_probe.py; exit $rc"
     )
     if needs_ros:
-        cmd = ros(cmd)
+        cmd = ros(cmd, ctx.profile)
     result = ctx.remote.run(cmd, timeout=timeout)
     return _extract_json(result.stdout)
 

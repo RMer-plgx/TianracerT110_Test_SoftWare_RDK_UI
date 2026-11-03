@@ -13,6 +13,9 @@ import time
 import rospy
 from nav_msgs.msg import Odometry
 
+# 默认话题，仅供手工调试；正式调用由上位机传参
+DEFAULT_TOPIC = "/tianracer/odom"
+
 _count = 0
 _first = None
 _last = None
@@ -27,7 +30,7 @@ def _callback(msg):
 
 
 def main():
-    topic = sys.argv[1] if len(sys.argv) > 1 else "/tianracer/odom"
+    topic = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TOPIC
     window = float(sys.argv[2]) if len(sys.argv) > 2 else 5.0
 
     rospy.init_node("tt_odom_probe", anonymous=True, disable_signals=True)

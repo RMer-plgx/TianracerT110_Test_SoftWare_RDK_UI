@@ -19,10 +19,11 @@ def run(ctx) -> CheckResult:
     # 第三个参数是**采样秒数**（不是帧数）。
     # 6 秒在 30 Hz 下约 180 帧，足够抳平抖动；
     # 早期只采 5 帧用首末时间戳算频率，会把 30 Hz 误判成 24 Hz。
-    data = run_probe(ctx, "lidar_probe", "/tianracer/scan", "6", timeout=120)
+    scan_topic = ctx.profile.ros.topic("scan")
+    data = run_probe(ctx, "lidar_probe", scan_topic, "6", timeout=120)
     if not data or not data.get("ok"):
         result.status = Status.FAIL
-        result.summary = "雷达无数据（话题 /tianracer/scan 未发布）"
+        result.summary = f"雷达无数据（话题 {scan_topic} 未发布）"
         return result
 
     low = float(freq.get("min", 28.0))

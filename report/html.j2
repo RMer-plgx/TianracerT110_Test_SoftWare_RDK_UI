@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tianracer T110 检测报告 — {{ report.host }}</title>
+<title>{{ report.product or "产品" }} 检测报告 — {{ report.host }}</title>
 <style>
   :root {
     --good: #1a7f37; --warn: #9a6700; --bad: #cf222e; --pending: #1f6f94;
@@ -99,6 +99,15 @@
   .toolbar .hint { font-size: 13px; color: var(--muted); }
 
   /* ---- 打印：转到 PDF 时生效 ---- */
+  /* PDF 导出时套用与打印相同的规则：
+     隐藏工具条、显示文字勾选符号、避免卡片被切断。
+     html2canvas 不理解 @media print，所以必须再用一个类。 */
+  body.pdf-export .toolbar,
+  body.pdf-export .no-print { display: none !important; }
+  body.pdf-export .accept input[type=checkbox] { display: none; }
+  body.pdf-export .chk-mark { display: inline; }
+  body.pdf-export .verdict { border: 2px solid currentColor; }
+  body.pdf-export .card { break-inside: avoid; }
   @media print {
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     body { padding: 0; font-size: 12pt; }
@@ -128,7 +137,9 @@
 
 <div class="toolbar no-print">
   <div class="wrap">
+    {% if pdf_vendor %}
     <button class="primary" id="btn-pdf">下载 PDF 检测报告</button>
+    {% endif %}
     <button id="btn-print">直接打印</button>
     <button id="btn-reset">清空确认</button>
     <div class="spacer"></div>
@@ -138,9 +149,10 @@
 
 <header>
   <div class="wrap">
-    <h1>Tianracer T110（RDK）整车自动检测记录</h1>
+    <h1>{{ report.product or "产品" }}整车自动检测记录</h1>
     <div class="meta">
-      目标车辆 <strong>{{ report.host }}</strong> · 用户 {{ report.user }}<br>
+      {% if report.product %}产品 <strong>{{ report.product }}</strong>
+      {% if report.product_revision %}（配置版本 {{ report.product_revision }}）{% endif %} · {% endif %}目标车辆 <strong>{{ report.host }}</strong> · 用户 {{ report.user }}<br>
       开始 {{ report.started_at }}{% if report.finished_at %} · 结束 {{ report.finished_at }}{% endif %}
     </div>
   </div>
@@ -369,7 +381,7 @@
 </table>
 
 <p class="muted" style="margin-top:40px">
-  本报告由 TianracerT110_Test_SoftWare_RDK 自动生成 · 原始命令记录见同目录 <code>raw.log</code>
+  本报告由 tianbot_prodtest_ui 自动生成 · 原始命令记录见同目录 <code>raw.log</code>
 </p>
 
 </div>
@@ -571,7 +583,49 @@
     window.print();
   }
 
-  document.getElementById('btn-pdf').addEventListener('click', function () {
+  /* ---- 直接下载 PDF（jsPDF + html2canvas）----
+     浏览器不允许 JS 写本地文件，但允许触发下载。
+     做法：把整份报告画成 canvas，再按 A4 切成多页塞进 PDF。
+     中文由浏览器自己的字体渲染进 canvas，不需要嵌字体。 */
+
+  var PDF_FILENAME = '检测报告_{{ report.host }}_{{ report.started_at | replace("-","") | replace(":","") | replace(" ","-") }}.pdf';
+
+  function sliceCanvasToPdf(canvas) {
+    var jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+    if (!jsPDFCtor) throw new Error('jsPDF 未加载');
+
+    var pdf = new jsPDFCtor('p', 'mm', 'a4');
+    var pageW = 210, pageH = 297;
+    // canvas 宽度映射到 A4 宽度后，一页能容纳多少像素高度
+    var pxPerMm = canvas.width / pageW;
+    var pageHeightPx = Math.floor(pageH * pxPerMm);
+
+    var offsetY = 0;
+    var first = true;
+    while (offsetY < canvas.height) {
+      var sliceH = Math.min(pageHeightPx, canvas.height - offsetY);
+      var pageCanvas = document.createElement('canvas');
+      pageCanvas.width = canvas.width;
+      pageCanvas.height = sliceH;
+      var ctx = pageCanvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+      ctx.drawImage(canvas, 0, offsetY, canvas.width, sliceH,
+                    0, 0, canvas.width, sliceH);
+
+      if (!first) pdf.addPage();
+      pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG',
+                   0, 0, pageW, sliceH / pxPerMm);
+      first = false;
+      offsetY += sliceH;
+    }
+    return pdf;
+  }
+
+  function downloadPdf() {
+    var btn = document.getElementById('btn-pdf');
+    if (!btn) return;
+
     var n = chks.filter(function (c) { return c.checked; }).length;
     var m = manualBoxes.filter(function (c) { return c.checked; }).length;
     var total = chks.length + manualBoxes.length;
@@ -579,20 +633,41 @@
       var ok = window.confirm(
         '还有 ' + (total - n - m) + ' 项未勾选确认。\n\n' +
         '勾选状态会保存在本机浏览器，导出后仍可继续补勾。\n\n' +
-        '继续导出 PDF？\n\n' +
-        '提示：在弹出的打印窗口里，打印机选择「另存为 PDF」或\n' +
-        '「Microsoft Print to PDF」，再点「保存」即可得到 PDF 文件。'
+        '继续导出 PDF？'
       );
       if (!ok) return;
-    } else {
-      window.alert(
-        '即将打开打印窗口。\n\n' +
-        '打印机请选择「另存为 PDF」或「Microsoft Print to PDF」，\n' +
-        '再点「保存」即可得到 PDF 文件。'
-      );
     }
-    doPrint();
-  });
+
+    btn.disabled = true;
+    var original = btn.textContent;
+    btn.textContent = '正在生成…';
+    document.body.classList.add('pdf-export');
+
+    // 让浏览器有机会先画出遮罩，再开始耗时的截图
+    setTimeout(function () {
+      recompute();
+      html2canvas(document.body, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        logging: false,
+        windowWidth: document.documentElement.scrollWidth
+      }).then(function (canvas) {
+        var pdf = sliceCanvasToPdf(canvas);
+        pdf.save(PDF_FILENAME);
+      }).catch(function (err) {
+        window.alert('PDF 生成失败：' + (err && err.message ? err.message : err) +
+                     '\n\n可以改用「直接打印」，在打印窗口里选「另存为 PDF」。');
+      }).then(function () {
+        document.body.classList.remove('pdf-export');
+        btn.disabled = false;
+        btn.textContent = original;
+      });
+    }, 60);
+  }
+
+  var pdfBtn = document.getElementById('btn-pdf');
+  if (pdfBtn) pdfBtn.addEventListener('click', downloadPdf);
 
   document.getElementById('btn-print').addEventListener('click', doPrint);
 
@@ -618,5 +693,9 @@
   });
 })();
 </script>
+{% if pdf_vendor %}
+<script src="jspdf.umd.min.js"></script>
+<script src="html2canvas.min.js"></script>
+{% endif %}
 </body>
 </html>

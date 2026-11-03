@@ -408,6 +408,8 @@ def _run_spin(ctx, cfg, result, safety):
         data = run_probe(
             ctx, "spin_probe",
             f"{speed}", f"{angle}", f"{signed_target}", f"{max_seconds}", label,
+            ctx.profile.ros.topic("cmd"), ctx.profile.ros.topic("odom"),
+            ctx.profile.ros.topic("imu"),
             timeout=int(max_seconds) + 40,
         )
 
@@ -507,9 +509,11 @@ def emergency_stop(ctx, reason: str = "用户请求停止") -> None:
             for _ in range(2):
                 quick.run(
                     ros(
-                        "timeout 3 rostopic pub -1 /tianracer/ackermann_cmd "
+                        f"timeout 3 rostopic pub -1 "
+                        f"{ctx.profile.ros.topic('cmd')} "
                         "ackermann_msgs/AckermannDrive "
-                        "'{speed: 0.0, steering_angle: 0.0}'"
+                        "'{speed: 0.0, steering_angle: 0.0}'",
+                        ctx.profile,
                     ),
                     timeout=12, record=False,
                 )
@@ -533,6 +537,7 @@ def _run_motion(ctx, speed: float, steer: float, duration: float,
         ctx, "motion_probe",
         f"{speed}", f"{steer}", f"{duration}", label,
         f"{max_speed}", f"{max_dur}",
+        ctx.profile.ros.topic("cmd"), ctx.profile.ros.topic("odom"),
         timeout=int(duration) + 45,
     )
     if not data or not data.get("ok"):

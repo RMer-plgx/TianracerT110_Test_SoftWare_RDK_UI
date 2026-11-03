@@ -68,7 +68,7 @@ class TestRecordsRoot:
 
 class TestResourcePath:
     def test_config_exists(self):
-        assert resource_path("config/baseline.yaml").exists()
+        assert resource_path("products/tianracer_t110_rdk/baseline.yaml").exists()
 
     def test_templates_exist(self):
         assert resource_path("report/md.j2").exists()
@@ -107,7 +107,9 @@ class TestRender:
         text = md_path.read_text(encoding="utf-8")
         assert "网络连通性" in text
         assert "192.168.1.128" in text
-        assert "Tianracer" in text
+        # 产品名来自 report.product（多产品重构后不再写死 Tianracer）。
+        # 这里验证的是「中文能正确写进文件」，用报告里必然出现的中文断言。
+        assert "整车自动检测记录" in text
 
     def test_html_has_verdict_class(self, tmp_path):
         from core.reporting import render

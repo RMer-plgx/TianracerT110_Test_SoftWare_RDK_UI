@@ -16,7 +16,8 @@ def run(ctx) -> CheckResult:
     cfg = ctx.baseline.get("imu", {})
     freq = ctx.baseline.get("frequency", {}).get("imu_hz", {})
 
-    hz = measure_hz(ctx, "/tianracer/imu_raw", seconds=8)
+    imu_topic = ctx.profile.ros.topic("imu")
+    hz = measure_hz(ctx, imu_topic, seconds=8)
     low = float(freq.get("min", 45.0))
     high = float(freq.get("max", 55.0))
     result.add("频率", f"{hz:.2f}" if hz is not None else "无数据", "Hz",
@@ -24,7 +25,7 @@ def run(ctx) -> CheckResult:
     hz_status = judge_range(hz, low, high, warn_margin=2.0)
 
     az = roll = pitch = None
-    data = run_probe(ctx, "imu_probe", "/tianracer/imu_raw", "5")
+    data = run_probe(ctx, "imu_probe", imu_topic, "5")
     accel_status = gyro_status = tilt_status = Status.SKIP
 
     if data and data.get("ok"):

@@ -41,7 +41,7 @@ def run(ctx) -> CheckResult:
 
     # 地图文件
     maps = r.run(
-        "ls -1 ~/tianracer_ros1_ws/src/tianracer/tianracer_slam/maps/*.yaml 2>&1",
+        f"ls -1 {ctx.profile.ros.workspace}/{ctx.profile.ros.maps_dir}/*.yaml 2>&1",
         timeout=15,
     )
     yaml_files = [p for p in as_list(maps.stdout) if p.endswith(".yaml")]

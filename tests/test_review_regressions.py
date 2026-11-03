@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests._fixtures import attach_profile, get_profile  # noqa: E402
 from core.verdict import (
     CheckResult, Report, Status,
     judge_all, judge_repeats,
@@ -61,6 +62,7 @@ class TestCheckResultStatusNotLeaking:
         from checks import imu
 
         class FakeCtx:
+            profile = get_profile()
             baseline = {
                 "imu": {"accel_z_min": 9.4, "accel_z_max": 10.6,
                         "accel_z_warn_high": 10.3, "gyro_static_max": 0.05,
@@ -84,6 +86,7 @@ class TestCheckResultStatusNotLeaking:
         from checks import odom
 
         class FakeCtx:
+            profile = get_profile()
             baseline = {
                 "odom": {"static_drift_max_m": 0.01, "sample_seconds": 5},
                 "frequency": {"odom_hz": {"min": 95.0, "max": 105.0}},

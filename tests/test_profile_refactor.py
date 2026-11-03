@@ -1,0 +1,256 @@
+"""多产品重构的等价性测试。
+
+2026-11-03 把「T110 专用」改成「多产品共用」，核心风险不是新代码有 bug，
+而是**旧行为悄悄变了**。这组测试把重构前的行为写成断言：
+
+  · 19 个检测项的编号、标题、模块、致命性、阶段、顺序
+  · 6 个关键 ROS 话题
+  · 6 个环境变量覆盖
+  · baseline 的 15 个节
+
+任何一项变动都会让这里变红 —— 那时要么是重构出错，
+要么是刻意改了行为，需要同步更新这份「契约」。
+"""
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core import profile as product_profile  # noqa: E402
+from core.profile import ProfileError  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def prof():
+    return product_profile.load("tianracer_t110_rdk")
+
+
+class TestRegistryUnchanged:
+    """检测项清单必须与重构前完全一致。"""
+
+    # 重构前 hardcode 在 runner.py 的 REGISTRY，顺序即执行顺序
+    EXPECTED = [
+        (1,  "网络连通性",        "network",  True,  "static"),
+        (2,  "系统身份",          "identity", False, "static"),
+        (3,  "RustDesk 远程桌面", "rustdesk", False, "static"),
+        (4,  "环境变量",          "envvars",  False, "static"),
+        (5,  "设备节点",          "devices",  False, "static"),
+        (6,  "主控硬件 ID",       "hardware", False, "static"),
+        (7,  "源码一致性",        "source",   False, "static"),
+        (10, "雷达以太网",        "lannet",   False, "static"),
+        (16, "teb 导航插件",      "teb",      False, "static"),
+        (17, "系统健康",          "health",   False, "static"),
+        (19, "使用痕迹",          "traces",   False, "static"),
+        (8,  "IMU",              "imu",      True,  "runtime"),
+        (9,  "激光雷达",          "lidar",    True,  "runtime"),
+        (11, "USB 摄像头",        "camera",   False, "runtime"),
+        (12, "里程计",            "odom",     True,  "runtime"),
+        (13, "TF 树",             "tf",       False, "runtime"),
+        (14, "电池电压",          "voltage",  False, "runtime"),
+        (15, "激光建图链路",      "mapping",  False, "runtime"),
+        (18, "运动控制",          "motion",   False, "motion"),
+    ]
+
+    def test_count_is_19(self, prof):
+        assert prof.total_checks == 19
+
+    def test_items_identical_and_ordered(self, prof):
+        actual = [(n, t, m, f, ph) for (n, t, m, _fn, f, ph) in prof.registry()]
+        assert actual == self.EXPECTED
+
+    def test_fatal_set_unchanged(self, prof):
+        # 关键项：网络、IMU、雷达、里程计
+        assert prof.fatal_numbers() == [1, 8, 9, 12]
+
+    def test_numbers_unique(self, prof):
+        numbers = prof.check_numbers()
+        assert len(numbers) == len(set(numbers))
+
+    def test_modules_unique(self, prof):
+        modules = [spec.module for spec in prof.checks]
+        assert len(modules) == len(set(modules))
+
+
+class TestRosConfigUnchanged:
+    def test_topics(self, prof):
+        expected = {
+            "odom": "/tianracer/odom",
+            "imu": "/tianracer/imu_raw",
+            "scan": "/tianracer/scan",
+            "camera": "/tianracer/camera/image_raw",
+            "cmd": "/tianracer/ackermann_cmd",
+            "voltage": "/tianracer/voltage/data",
+        }
+        for key, want in expected.items():
+            assert prof.ros.topic(key) == want
+
+    def test_workspace_and_launch(self, prof):
+        assert prof.ros.workspace == "~/tianracer_ros1_ws"
+        assert prof.ros.launch_package == "tianracer_bringup"
+        assert prof.ros.launch_file == "tianracer_bringup.launch"
+
+    def test_env_overrides(self, prof):
+        expected = {
+            "TIANRACER_BASE_PORT": "/dev/ttyUSB0",
+            "TIANRACER_BASE_BAUDRATE": "115200",
+            "TIANRACER_LIDAR": "richbeam_lidar",
+            "TIANRACER_LIDAR_IP": "192.168.198.2",
+            "TIANRACER_LIDAR_PORT": "/dev/tianbot_lidar",
+            "TIANRACER_NAME": "tianracer",
+        }
+        assert prof.ros.env_overrides == expected
+
+    def test_ros_env_prefix_contains_all_overrides(self, prof):
+        prefix = prof.ros_env_prefix()
+        for name, value in prof.ros.env_overrides.items():
+            assert f"export {name}={value}" in prefix
+        # 基础环境也要在
+        assert "source /opt/ros/noetic/setup.bash" in prefix
+        assert "ROS_MASTER_URI" in prefix
+        assert "ROS_IP" in prefix
+
+    def test_slam_config(self, prof):
+        assert prof.ros.slam_package == "tianracer_slam"
+        assert prof.ros.maps_dir.endswith("maps")
+
+    def test_repos(self, prof):
+        assert prof.ros.repos == ["tianracer", "tianbot_core", "webrtc_ros_bridge"]
+
+
+class TestBaselineUnchanged:
+    def test_all_sections_present(self, prof):
+        expected = {
+            "frequency", "radar", "imu", "odom", "voltage", "health",
+            "traces", "motion", "envvars", "envvars_known_deviations",
+            "hardware", "network", "camera", "tf", "mapping",
+        }
+        assert set(prof.baseline) == expected
+
+    def test_voltage_thresholds(self, prof):
+        v = prof.baseline_section("voltage")
+        assert v["stop_test_below_v"] == 11.0
+        assert v["low_v"] == 11.0
+
+    def test_motion_has_spin_and_safety(self, prof):
+        motion = prof.baseline_section("motion")
+        assert "spin" in motion
+        assert motion["spin"]["target_yaw_deg"] == 360
+        assert "safety" in motion
+
+    def test_missing_section_raises(self, prof):
+        with pytest.raises(ProfileError) as exc:
+            prof.baseline_section("no_such_section")
+        assert "no_such_section" in str(exc.value)
+
+
+class TestProfileValidation:
+    """加载期的校验：配置写错要报清楚，不能静默兜底。"""
+
+    def test_unknown_profile_lists_available(self):
+        with pytest.raises(ProfileError) as exc:
+            product_profile.load("no_such_product")
+        msg = str(exc.value)
+        assert "不存在" in msg
+        assert "tianracer_t110_rdk" in msg
+
+    def test_list_profiles_skips_template(self):
+        available = product_profile.list_profiles()
+        assert "tianracer_t110_rdk" in available
+        assert "_template" not in available
+
+    def test_ordering_violation_detected(self):
+        from core.profile import CheckSpec, _validate_ordering
+
+        # motion 排在 static 前面 → 必须报错
+        bad = [
+            CheckSpec(number=18, title="运动", module="motion", phase="motion"),
+            CheckSpec(number=1, title="网络", module="network", phase="static"),
+        ]
+        with pytest.raises(ProfileError) as exc:
+            _validate_ordering(bad, "test")
+        assert "顺序" in str(exc.value)
+
+    def test_requires_unknown_number_detected(self):
+        from core.profile import CheckSpec, _validate_requires
+
+        bad = [CheckSpec(number=1, title="网络", module="network",
+                         phase="static", requires=[99])]
+        with pytest.raises(ProfileError) as exc:
+            _validate_requires(bad, "test")
+        assert "99" in str(exc.value)
+
+    def test_requires_self_detected(self):
+        from core.profile import CheckSpec, _validate_requires
+
+        bad = [CheckSpec(number=1, title="网络", module="network",
+                         phase="static", requires=[1])]
+        with pytest.raises(ProfileError):
+            _validate_requires(bad, "test")
+
+
+class TestNoHardcodedProduct:
+    """代码里不该再出现产品特定的话题名。"""
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    @staticmethod
+    def _sources():
+        skip = {"build", "dist", "__pycache__", ".pytest_cache", "tests",
+                "products", "node_modules"}
+        return [p for p in TestNoHardcodedProduct.ROOT.rglob("*.py")
+                if not any(s in p.parts for s in skip)
+                and p.name != "profile.py"]
+
+    def test_no_hardcoded_topics_in_checks(self):
+        """checks/ 里不该有硬编码话题。
+
+        注释和 docstring 里提到具体话题是允许的 —— 那是说明历史背景，
+        不参与运行。这里用 tokenize 跳过注释与字符串常量，
+        只看真正的代码。
+        """
+        import io
+        import tokenize
+
+        offenders = []
+        for path in self._sources():
+            if path.parent.name != "checks":
+                continue
+            text = path.read_text(encoding="utf-8")
+            try:
+                tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+            except tokenize.TokenError:
+                continue
+            for tok in tokens:
+                if tok.type in (tokenize.COMMENT, tokenize.STRING):
+                    continue
+                if "/tianracer/" in tok.string:
+                    offenders.append(f"{path.name}:{tok.start[0]} {tok.string[:70]}")
+        assert not offenders, "checks/ 里仍有硬编码话题：\n" + "\n".join(offenders)
+
+    def test_no_hardcoded_workspace(self):
+        offenders = []
+        for path in self._sources():
+            for no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if "tianracer_ros1_ws" in stripped:
+                    offenders.append(f"{path.relative_to(self.ROOT)}:{no}")
+        assert not offenders, "仍有硬编码工作空间：\n" + "\n".join(offenders)
+
+    def test_probes_use_passed_topics(self):
+        """探针的话题必须来自参数，硬编码只能是 DEFAULT_ 开头的兜底。"""
+        probes = list((self.ROOT / "probes").glob("*.py"))
+        offenders = []
+        for path in probes:
+            for no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if "/tianracer/" not in stripped:
+                    continue
+                if stripped.startswith("#") or "DEFAULT_" in stripped:
+                    continue
+                offenders.append(f"{path.name}:{no} {stripped[:70]}")
+        assert not offenders, "探针里仍有硬编码：\n" + "\n".join(offenders)

@@ -115,6 +115,11 @@ class Report:
     environment: Dict[str, str] = field(default_factory=dict)
     aborted_reason: str = ""
     voltage_v: Optional[float] = None
+    # 本次用的是哪个产品配置。报告里要写明，否则同一套报告
+    # 分不清是哪个产品的结果（多产品化之后必须有）。
+    product: str = ""
+    product_id: str = ""
+    product_revision: str = ""
     # 若本次测试删除了车上的持久文件（ROS 日志等），这里写明，
     # 报告开头要醒目展示 —— 读者必须知道拿到的是「被清过的车」。
     cleanup_declaration: str = ""

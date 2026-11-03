@@ -15,6 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests._fixtures import attach_profile  # noqa: E402
 from core.verdict import CheckResult, Report, Status  # noqa: E402
 
 
@@ -121,6 +122,9 @@ class TestFullMotionImpliesPulse:
         from ui.main_window import MainWindow
 
         window = MainWindow()
+        # 默认是「有线模式」，会先走 WiFi 自动配置流程。
+        # 本测试要验证的是运动选项推导，切到无线模式直接走检测。
+        window.set_conn_mode("wireless")
         window.host_edit.setText("10.0.0.9")
         window.mode_combo.setCurrentIndex(1)
         window.esc_check.setChecked(True)

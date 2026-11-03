@@ -1,0 +1,115 @@
+# =============================================================================
+# 产品定义：Tianracer T110（RDK 版本）
+#
+# 这个文件描述「本产品是什么」——ROS 话题、工作空间、要跑哪些检测项。
+# 阈值不在这里，在 baseline.yaml。
+#
+# 新增产品的做法：复制 products/_template/ 整个目录，改这里的值。
+# 不需要改任何 .py 文件。
+# =============================================================================
+
+id: tianracer_t110_rdk
+name: Tianracer T110（RDK）
+model: Tianracer T110
+platform: rdk
+description: NVIDIA Jetson Orin Nano（RDK 平台）的 T110 阿克曼底盘整车
+revision: "2026-11-03"
+
+ros:
+  distro: noetic
+  workspace: ~/tianracer_ros1_ws
+
+  launch:
+    package: tianracer_bringup
+    file: tianracer_bringup.launch
+
+  # 会话内覆盖的环境变量（不改车辆文件）。
+  # 这些是 2026-10-30 实车验证过的正确值；devel/setup.bash 里的
+  # env-hooks 默认值是错的（/dev/tianbot_base、460800、oradar_lidar），
+  # 会覆盖 ~/.bashrc 的正确配置，导致底盘完全打不开。
+  env_overrides:
+    TIANRACER_BASE_PORT: /dev/ttyUSB0
+    TIANRACER_BASE_BAUDRATE: "115200"
+    TIANRACER_LIDAR: richbeam_lidar
+    TIANRACER_LIDAR_IP: 192.168.198.2
+    TIANRACER_LIDAR_PORT: /dev/tianbot_lidar
+    TIANRACER_NAME: tianracer
+
+  # ROS 话题。代码里一律通过 profile 取，不写死。
+  topics:
+    odom: /tianracer/odom
+    imu: /tianracer/imu_raw
+    scan: /tianracer/scan
+    camera: /tianracer/camera/image_raw
+    cmd: /tianracer/ackermann_cmd
+    voltage: /tianracer/voltage/data
+    map: /tianracer/map
+    # 底盘节点本体（用于判断 bringup 是否起来）
+    base_node: /tianracer/tianracer
+
+  # 建图链路的 roslaunch（第 15 项用）
+  slam:
+    package: tianracer_slam
+    file: tianracer_gmapping.launch
+
+  # 地图文件目录（相对工作空间）
+  maps_dir: src/tianracer/tianracer_slam/maps
+
+  # 参与「源码一致性」检查的仓库（相对 <workspace>/src）
+  repos:
+    - tianracer
+    - tianbot_core
+    - webrtc_ros_bridge
+
+  # bringup 后必须出现的节点。缺任何一个都判为启动失败。
+  nodes:
+    required:
+      - /tianracer/tianracer
+      - /robot_state_publisher
+      - /joint_state_publisher
+      - /tianracer/ekf_se
+      - /tianracer/complementary_filter_gain_node
+    optional:
+      - /tianracer/richbeam_lidar
+      - /webrtc_ros_bridge
+
+# -----------------------------------------------------------------------------
+# 检测项清单
+#
+# **这里的顺序就是执行顺序**，不是按编号排的。必须遵守：
+#   static  →  runtime  →  motion
+# 加载时会校验，顺序错了直接报错。
+#
+# 字段：
+#   number  报告里的编号（沿用历史编号，不重排，方便对照旧报告）
+#   title   报告里的标题
+#   module  checks/<module>.py
+#   phase   static（不需要 ROS）/ runtime（需要 bringup）/ motion（会让车动）
+#   fatal   失败后是否中止后续测试
+# -----------------------------------------------------------------------------
+checks:
+  items:
+    # --- static：不需要 ROS，先做，快且无风险 ---
+    - {number: 1,  title: 网络连通性,        module: network,  phase: static,  fatal: true}
+    - {number: 2,  title: 系统身份,          module: identity, phase: static}
+    - {number: 3,  title: RustDesk 远程桌面, module: rustdesk, phase: static}
+    - {number: 4,  title: 环境变量,          module: envvars,  phase: static}
+    - {number: 5,  title: 设备节点,          module: devices,  phase: static}
+    - {number: 6,  title: 主控硬件 ID,       module: hardware, phase: static}
+    - {number: 7,  title: 源码一致性,        module: source,   phase: static}
+    - {number: 10, title: 雷达以太网,        module: lannet,   phase: static}
+    - {number: 16, title: teb 导航插件,      module: teb,      phase: static}
+    - {number: 17, title: 系统健康,          module: health,   phase: static}
+    - {number: 19, title: 使用痕迹,          module: traces,   phase: static}
+
+    # --- runtime：需要 bringup 起来 ---
+    - {number: 8,  title: IMU,              module: imu,      phase: runtime, fatal: true}
+    - {number: 9,  title: 激光雷达,         module: lidar,    phase: runtime, fatal: true}
+    - {number: 11, title: USB 摄像头,       module: camera,   phase: runtime}
+    - {number: 12, title: 里程计,           module: odom,     phase: runtime, fatal: true}
+    - {number: 13, title: TF 树,            module: tf,       phase: runtime}
+    - {number: 14, title: 电池电压,         module: voltage,  phase: runtime}
+    - {number: 15, title: 激光建图链路,     module: mapping,  phase: runtime}
+
+    # --- motion：会让车动，必须人工确认 ---
+    - {number: 18, title: 运动控制,         module: motion,   phase: motion}

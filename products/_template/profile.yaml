@@ -1,0 +1,84 @@
+# =============================================================================
+# 新产品模板
+#
+# 用法：把整个 _template 目录复制成 products/<你的产品id>/，然后改下面的值。
+# 不需要改任何 .py 文件。
+#
+# 命名建议：全小写 + 下划线，带上产品线，
+#   例如 tianbot_mini_v3、tianracer_t110_jetson
+# =============================================================================
+
+id: your_product_id            # 必须与目录名一致
+name: 产品显示名（例如 Tianbot Mini V3）
+model: 型号
+platform: 平台（rdk / jetson / x86 ...）
+description: 一句话说明这是什么产品
+revision: "2026-01-01"         # 配置版本，进报告便于追溯
+
+ros:
+  distro: noetic               # noetic / humble ...
+  workspace: ~/your_ws         # 车上的 catkin 工作空间
+
+  launch:
+    package: your_bringup      # roslaunch 的包名
+    file: your_bringup.launch
+
+  # 建图链路（第 15 项用）。没有建图能力的产品可留空，该检测项会失败，
+  # 建议直接在 checks.items 里不列这一项。
+  slam:
+    package: your_slam
+    file: your_gmapping.launch
+
+  maps_dir: src/your_pkg/maps   # 地图目录（相对 workspace）
+
+  # 参与「源码一致性」检查的仓库（相对 <workspace>/src）
+  # 留空则该检测项判 SKIP 并说明原因
+  repos:
+    - your_repo
+
+  # 会话内覆盖的环境变量（不改车辆文件）。
+  # 用于修正 env-hooks 的错误默认值，或补齐缺失变量。
+  # 变量名按产品实际情况写；没有就留空映射 {}。
+  env_overrides:
+    # YOUR_BASE_PORT: /dev/ttyUSB0
+    # YOUR_BAUDRATE: "115200"
+
+  # ROS 话题。代码里一律通过 profile 取，不写死。
+  # 下面 6 个是检测项必需的键名；缺任何一个加载时会报错。
+  topics:
+    odom: /your_ns/odom
+    imu: /your_ns/imu
+    scan: /your_ns/scan
+    camera: /your_ns/camera/image_raw
+    cmd: /your_ns/cmd_vel
+    voltage: /your_ns/voltage
+    map: /your_ns/map
+    base_node: /your_ns/base      # 底盘节点本体，用于判断 bringup 是否起来
+
+  # bringup 后必须出现的节点，缺任何一个都判启动失败
+  nodes:
+    required:
+      - /your_ns/base
+      - /robot_state_publisher
+    optional: []
+
+# -----------------------------------------------------------------------------
+# 检测项清单
+#
+# **这里的顺序就是执行顺序**，必须遵守 static → runtime → motion，
+# 加载时会校验，顺序错了直接报错。
+#
+# 字段：
+#   number  报告里的编号（各产品可不同，不用与 T110 对齐）
+#   title   报告里的标题
+#   module  checks/<module>.py（现有 19 个模块可按需挑选）
+#   phase   static / runtime / motion
+#   fatal   失败后是否中止后续测试
+# -----------------------------------------------------------------------------
+checks:
+  items:
+    - {number: 1,  title: 网络连通性,   module: network,  phase: static, fatal: true}
+    - {number: 2,  title: 系统身份,     module: identity, phase: static}
+    - {number: 5,  title: 设备节点,     module: devices,  phase: static}
+    - {number: 17, title: 系统健康,     module: health,   phase: static}
+    # 按产品实际能力增删。不需要的模块直接不列。

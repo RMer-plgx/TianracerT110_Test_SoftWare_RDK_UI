@@ -57,7 +57,12 @@ class TestLidarCallSite:
     def test_lidar_passes_seconds_not_frames(self):
         source = (Path(__file__).resolve().parent.parent
                   / "checks" / "lidar.py").read_text(encoding="utf-8")
-        match = re.search(r'run_probe\(ctx,\s*"lidar_probe",\s*"/tianracer/scan",\s*"([\d.]+)"', source)
+        # 多产品重构后话题由 profile 提供（scan_topic 变量），不再写死字符串。
+        # 要验证的意图没变：传给探针的采样窗口必须是秒数且足够长。
+        match = re.search(
+            r'run_probe\(ctx,\s*"lidar_probe",\s*scan_topic,\s*"([\d.]+)"',
+            source,
+        )
         assert match, "找不到 lidar 的 run_probe 调用"
         seconds = float(match.group(1))
         assert seconds >= 5.0, (

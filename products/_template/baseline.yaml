@@ -1,0 +1,114 @@
+# =============================================================================
+# 阈值（新产品模板）
+#
+# 只放判定阈值，不放产品定义 —— 产品定义在 profile.yaml。
+# 缺少任何被代码读取的节，加载时会报错并指出缺什么（不做静默兜底）。
+# =============================================================================
+
+frequency:
+  imu_hz:    {nominal: 50.0, min: 45.0, max: 55.0}
+  radar_hz:  {nominal: 30.0, min: 28.0, max: 32.0}
+  odom_hz:   {nominal: 100.0, min: 95.0, max: 105.0}
+  camera_hz: {nominal: 30.0, min: 20.0, max: 40.0}
+
+radar:
+  expected_points: 1440
+  min_valid_ratio: 0.60
+
+imu:
+  accel_z_min: 9.4
+  accel_z_max: 10.6
+  gyro_static_max: 0.05
+  roll_pitch_max_deg: 5.0
+
+odom:
+  static_drift_max_m: 0.01
+  sample_seconds: 5
+
+voltage:
+  full_v: 12.4
+  normal_v: 11.0
+  low_v: 11.0
+  stop_test_below_v: 11.0
+  sample_timeout_sec: 90
+
+health:
+  temp_warn_c: 75.0
+  temp_fail_c: 85.0
+  disk_warn_pct: 85.0
+  disk_fail_pct: 95.0
+  mem_available_min_gib: 0.5
+  load_warn: 3.0
+
+traces:
+  ros_log_size_warn_mb: 200
+  bash_history_lines_warn: 800
+  auto_cleanup: false          # 默认不清理，遵守「绝不修改车辆持久配置」
+  keep_bash_history: true
+
+motion:
+  micro_pulse: {speed: 0.05, duration: 0.3, min_displacement_m: 0.0005}
+  bench:
+    forward_speed: 0.10
+    forward_duration: 2.0
+    min_displacement_m: 0.005
+    reverse_speed: -0.10
+    reverse_duration: 2.0
+    steer_angle: 0.30
+    steer_duration: 1.5
+    steer_speed: 0.05
+  ground:
+    forward_speed: 0.10
+    forward_duration: 3.0
+    forward_expected_m: 0.30
+    forward_tolerance: 0.20
+    reverse_speed: -0.10
+    reverse_duration: 3.0
+    reverse_expected_m: 0.30
+    reverse_tolerance: 0.20
+    steer_angle: 0.30
+    steer_duration: 2.0
+    steer_expected_yaw_deg: 11.0
+    steer_tolerance_deg: 6.0
+  spin:
+    speed: 0.12
+    steer_angle: 0.35
+    target_yaw_deg: 360
+    max_seconds: 90
+    yaw_tolerance_deg: 15
+    yaw_warn_deg: 30
+    closure_warn_m: 0.30
+  safety:
+    max_speed_mps: 0.5
+    max_duration_sec: 10.0
+    spin_max_speed_mps: 0.25
+    spin_max_seconds: 120.0
+
+envvars: {}
+envvars_known_deviations: {}
+
+hardware:
+  vendor_id: "10c4"
+  model_id: "ea60"
+  expected_serial: "1001"
+  acceptable_serials: []
+
+network:
+  lidar_ip: 192.168.198.2
+  lidar_host_ip_prefix: 192.168.198.
+  ping_count: 3
+  ping_max_loss_pct: 0
+  ping_max_rtt_ms: 5.0
+
+camera:
+  expected_width: 640
+  expected_height: 480
+  expected_encoding: bgr8
+
+tf:
+  required_frames: []
+  required_transforms: []
+
+mapping:
+  expected_resolution: 0.05
+  expected_map_size: 1984

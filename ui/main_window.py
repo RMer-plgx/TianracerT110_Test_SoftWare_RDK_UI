@@ -7,21 +7,24 @@
 
 from __future__ import annotations
 
+import threading
 import traceback
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import QThread, Qt, pyqtSignal
+from PyQt5.QtCore import QSize, QThread, Qt, pyqtSignal
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+    QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
+from core import profile as product_profile
+from core import connect as conn
 from core.paths import resource_path
 from core.reporting import render
-from core.runner import REGISTRY, Runner
+from core.runner import Runner, default_registry
 from core.verdict import Report, Status
 
 from .cards import CheckCard
@@ -120,6 +123,7 @@ class TestWorker(QThread):
                 answers=cfg["answers"],
                 mode=cfg["mode"],
                 motion=cfg["motion"],
+                profile_id=cfg.get("profile_id"),
                 pause_for_ground=pause_for_ground if cfg["motion"] == "full" else None,
                 on_output=self.output.emit,
                 on_check_start=self.check_started.emit,
@@ -148,6 +152,156 @@ class TestWorker(QThread):
 # ---------------------------------------------------------------------------
 # 主窗口
 # ---------------------------------------------------------------------------
+
+class UnplugWaitWorker(QThread):
+    """等用户拔掉 USB-C 线。
+
+    判据是有线地址 192.168.128.10 不再可达。
+    注意这不能区分「拔线」和「车断电」—— 两者都不可达，
+    所以超时后不报错，把判断交给用户（界面会问要不要继续）。
+    """
+
+    done = pyqtSignal(dict)
+
+    def __init__(self, wifi_ip: str, parent=None):
+        super().__init__(parent)
+        self._ip = wifi_ip
+
+    def run(self) -> None:
+        try:
+            unplugged = conn.wait_for_unplug(timeout=60)
+            self.done.emit({"unplugged": unplugged, "ip": self._ip})
+        except Exception as exc:
+            self.done.emit({"error": f"{type(exc).__name__}: {exc}", "ip": self._ip})
+
+
+class WiredSetupWorker(QThread):
+    """有线模式的自动准备流程。
+
+    步骤与失败处理：
+      1. 确认车机 192.168.128.10 可达 —— 不可达直接报错，不动任何配置
+      2. 读车上 WiFi 状态。已经连在目标网络 → 跳过重连（用户选甲）
+      3. 需要重连时：扫描 → 匹配 SSID → 若需要密码则请求界面弹窗
+      4. 连上后读 IP，交给界面提示拔线
+
+    任何一步失败都不改车辆配置，只回报原因。
+    整个流程跑在后台线程，避免连车+连WiFi 的几十秒把界面冻住。
+    """
+
+    progress = pyqtSignal(str)          # 进度文字
+    need_password = pyqtSignal(str)     # 需要密码时发出 SSID
+    done = pyqtSignal(dict)             # 成功：{ip, ssid, skipped}
+
+    def __init__(self, config: dict, parent=None):
+        super().__init__(parent)
+        self._config = dict(config)
+        self._password = ""
+        self._password_ready = threading.Event()
+
+    def supply_password(self, value: str) -> None:
+        """界面拿到用户输入的密码后调用。"""
+        self._password = value or ""
+        self._password_ready.set()
+
+    def run(self) -> None:
+        try:
+            self._run()
+        except conn.ConnectError as exc:
+            self.done.emit({"error": str(exc)})
+        except Exception as exc:
+            self.done.emit({"error": f"{type(exc).__name__}: {exc}"})
+
+    def _run(self) -> None:
+        cfg = self._config
+
+        self.progress.emit("检查 USB-C 有线连接…")
+        if not conn.wired_link_ready(timeout=8):
+            raise conn.ConnectError(
+                f"没有检测到上位机连接。\n\n"
+                f"请确认：\n"
+                f"  · USB-C 线已插好\n"
+                f"  · 车机已开机\n"
+                f"  · 电脑网卡上出现了 {conn.WIRED_SUBNET_PREFIX}x 网段\n\n"
+                f"（目标地址 {conn.WIRED_CAR_IP} 当前不可达）"
+            )
+
+        remote = Remote(cfg["host"], cfg["user"], cfg["password"])
+        remote.connect()
+        try:
+            self.progress.emit("读取车辆 WiFi 状态…")
+            current = conn.read_wireless(remote)
+
+            target = conn.host_wifi()
+            if not target.connected or not target.ssid:
+                raise conn.ConnectError(
+                    "读不到电脑当前连接的 WiFi。\n\n"
+                    "请先在电脑上连好 WiFi，再重试。\n"
+                    "（若电脑用的是有线网络，请改用无线模式手动填 IP）"
+                )
+
+            # 已经在同一网络：直接跳过重连
+            if current.connected and conn.match_ssid(
+                    target.ssid, [current.ssid]) == current.ssid:
+                self.progress.emit(
+                    f"车辆已连在 {current.ssid}，跳过重连")
+                if not current.ip:
+                    current.ip = conn.wait_for_wireless_ip(remote)
+                if not current.ip:
+                    raise conn.ConnectError(
+                        f"车辆连着 {current.ssid} 但没拿到 IP。\n"
+                        f"请在车机终端执行 ip -4 addr show wlan0 确认。"
+                    )
+                self.done.emit({
+                    "ip": current.ip, "ssid": current.ssid, "skipped": True,
+                })
+                return
+
+            self.progress.emit("扫描车辆可见的 WiFi…")
+            available = conn.scan_wireless(remote)
+            matched = conn.match_ssid(target.ssid, available)
+            if not matched:
+                shown = "、".join(available[:8]) or "（无）"
+                raise conn.ConnectError(
+                    f"车辆没有扫描到电脑所在的网络「{target.ssid}」。\n\n"
+                    f"车辆可见：{shown}\n\n"
+                    f"请确认车与电脑在同一个 WiFi 覆盖范围内。"
+                )
+
+            self.progress.emit(f"让车辆连接 {matched}…")
+            password = ""
+            # 先无密码试一次；需要密码时再向界面要
+            ok, message = conn.join_wireless(remote, matched, "")
+            if not ok and "需要密码" in message:
+                self.need_password.emit(matched)
+                self._password_ready.wait(timeout=180)
+                if not self._password_ready.is_set():
+                    raise conn.ConnectError("等待 WiFi 密码超时，流程已取消。")
+                password = self._password
+                self.progress.emit(f"用提供的密码连接 {matched}…")
+                ok, message = conn.join_wireless(remote, matched, password)
+
+            if not ok:
+                raise conn.ConnectError(
+                    f"连接「{matched}」失败：{message}\n\n"
+                    f"有线连接仍然是通的，车没有被改坏。\n"
+                    f"你可以重新输入密码再试。"
+                )
+
+            self.progress.emit("等待分配 IP…")
+            ip = conn.wait_for_wireless_ip(remote, timeout=40)
+            if not ip:
+                raise conn.ConnectError(
+                    f"已连上 {matched}，但 40 秒内没拿到 IP。\n"
+                    f"请在车机终端执行 ip -4 addr show wlan0 查看。"
+                )
+
+            self.done.emit({"ip": ip, "ssid": matched, "skipped": False})
+        finally:
+            try:
+                remote.close()
+            except Exception:
+                pass
+
 
 class CleanupWorker(QThread):
     """后台清理车上使用痕迹。
@@ -197,6 +351,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.theme = "dark"
+        # 连接模式：wired（有线）/ wireless（无线）
+        self.conn_mode = "wired"
+        # 当前产品配置。加载失败时为 None，界面仍要能开起来。
+        self.profile, self._profile_error = product_profile.load_safe()
+        # 有线模式流程里拿到的 WiFi IP，供显示与后续连接
+        self._wifi_ip = ""
         self.worker: TestWorker | None = None
         self.cards: dict = {}
         self.report: Report | None = None
@@ -206,6 +366,8 @@ class MainWindow(QMainWindow):
         # 不能只留在输入框里——用户测完可能把 IP 改掉了。
         self._last_config: dict | None = None
         self._cleaner = None
+        self._wired_worker = None
+        self._wait_unplug_worker = None
 
         self.setWindowTitle("Tianracer T110 整车测试")
         icon_path = resource_path("assets/app.ico")
@@ -219,6 +381,7 @@ class MainWindow(QMainWindow):
         self._fit_to_screen()
 
         self._build_ui()
+        self.set_conn_mode("wired")
         self.apply_theme()
         self._log("就绪。填写车辆地址后点击「开始检测」。")
 
@@ -276,9 +439,12 @@ class MainWindow(QMainWindow):
 
         title_box = QVBoxLayout()
         title_box.setSpacing(1)
-        title = QLabel("Tianracer T110 整车测试")
+        product_name = self.profile.name if self.profile else "产品测试"
+        title = QLabel(f"{product_name} 整车测试")
         title.setObjectName("HeaderTitle")
-        sub = QLabel("19 项自动检测 · RDK 平台 · 报告自动归档")
+        total = self.profile.total_checks if self.profile else 0
+        platform = self.profile.platform if self.profile else ""
+        sub = QLabel(f"{total} 项自动检测 · {platform} 平台 · 报告自动归档")
         sub.setObjectName("HeaderSub")
         title_box.addWidget(title)
         title_box.addWidget(sub)
@@ -293,6 +459,73 @@ class MainWindow(QMainWindow):
 
         return header
 
+    def _build_mode_switch(self) -> QWidget:
+        """有线 / 无线分段按钮（用户 2026-11-03 选乙：两个并排按钮各带图标）。
+
+        为什么不用 QRadioButton：两个选项是「连接方式」的二选一，
+        分段控件比单选圆点更直观，也更省侧栏宽度。
+        """
+        box = QWidget()
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.wired_btn = QPushButton("有线")
+        self.wireless_btn = QPushButton("无线")
+
+        icon_dir = resource_path("assets/icons")
+        for btn, icon_name in ((self.wired_btn, "usb.png"),
+                               (self.wireless_btn, "wifi.png")):
+            icon_path = icon_dir / icon_name
+            if icon_path.exists():
+                btn.setIcon(QIcon(str(icon_path)))
+                btn.setIconSize(QSize(18, 18))
+            btn.setCheckable(True)
+            btn.setMinimumHeight(34)
+
+        self.wired_btn.setToolTip(
+            "USB-C 直连上位机（车机固定 192.168.128.10）\n"
+            "软件会自动让车连上与电脑相同的 WiFi，然后提示拔线"
+        )
+        self.wireless_btn.setToolTip(
+            "车已经连在 WiFi 上，直接填它的 IP 开始检测"
+        )
+
+        layout.addWidget(self.wired_btn, 1)
+        layout.addWidget(self.wireless_btn, 1)
+
+        self.wired_btn.clicked.connect(lambda: self.set_conn_mode("wired"))
+        self.wireless_btn.clicked.connect(lambda: self.set_conn_mode("wireless"))
+
+        self._mode_box = box
+        return box
+
+    def set_conn_mode(self, mode: str) -> None:
+        """切换连接模式，同步按钮状态与 IP 输入框可见性。"""
+        self.conn_mode = mode
+        wired = mode == "wired"
+        self.wired_btn.setChecked(wired)
+        self.wireless_btn.setChecked(not wired)
+        # 有线模式隐藏 IP 框（地址固定），无线模式显示
+        self.host_edit.setVisible(not wired)
+        self._update_mode_hint()
+
+    def _update_mode_hint(self) -> None:
+        """模式说明文字。有线模式要说清接下来的自动流程。"""
+        if not hasattr(self, "mode_hint"):
+            return
+        if self.conn_mode == "wired":
+            self.mode_hint.setText(
+                "USB-C 直连上位机。开始后软件会自动：\n"
+                "  1. 确认车机 192.168.128.10 可达\n"
+                "  2. 让车连上与电脑相同的 WiFi\n"
+                "  3. 读取 WiFi IP 并提示你拔线"
+            )
+        else:
+            self.mode_hint.setText(
+                "车已在 WiFi 上。请填写它的 IP 地址后开始检测。"
+            )
+
     def _build_side_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("SidePanel")
@@ -302,8 +535,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(9)
 
+        layout.addWidget(self._section("连接方式"))
+        layout.addWidget(self._build_mode_switch())
+
         layout.addWidget(self._section("连接"))
 
+        # 无线模式才显示 IP 输入框；有线模式自动用 192.168.128.10
         self.host_edit = QLineEdit()
         self.host_edit.setPlaceholderText("车辆 IP（必填）")
         layout.addWidget(self.host_edit)
@@ -316,6 +553,11 @@ class MainWindow(QMainWindow):
         self.pass_edit.setEchoMode(QLineEdit.Password)
         self.pass_edit.setPlaceholderText("密码")
         layout.addWidget(self.pass_edit)
+
+        self.mode_hint = QLabel("")
+        self.mode_hint.setObjectName("HeaderSub")
+        self.mode_hint.setWordWrap(True)
+        layout.addWidget(self.mode_hint)
 
         layout.addWidget(self._section("运行方式"))
 
@@ -378,7 +620,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(top)
 
         self.progress = QProgressBar()
-        self.progress.setMaximum(len(REGISTRY))
+        self.progress.setMaximum(len(default_registry()))
         self.progress.setValue(0)
         self.progress.setTextVisible(False)
         layout.addWidget(self.progress)
@@ -392,13 +634,13 @@ class MainWindow(QMainWindow):
         grid.setSpacing(6)
 
         # 按编号排序展示，执行顺序与展示顺序无关
-        for index, entry in enumerate(sorted(REGISTRY, key=lambda e: e[0])):
+        for index, entry in enumerate(sorted(default_registry(), key=lambda e: e[0])):
             number, title_text = entry[0], entry[1]
             card = CheckCard(number, title_text, self.theme)
             self.cards[number] = card
             grid.addWidget(card, index, 0)
 
-        grid.setRowStretch(len(REGISTRY), 1)
+        grid.setRowStretch(len(default_registry()), 1)
         scroll.setWidget(inner)
         layout.addWidget(scroll, stretch=1)
 
@@ -515,6 +757,10 @@ class MainWindow(QMainWindow):
     # -- 测试流程 ---------------------------------------------------------
 
     def start_test(self) -> None:
+        if self.conn_mode == "wired":
+            self._begin_wired_flow()
+            return
+
         host = self.host_edit.text().strip()
         if not host:
             QMessageBox.warning(self, "缺少信息", "请填写车辆 IP 地址。")
@@ -529,6 +775,104 @@ class MainWindow(QMainWindow):
             self.host_edit.setFocus()
             return
 
+        self._launch_test(host)
+
+    # -- 有线模式流程 -----------------------------------------------------
+
+    def _begin_wired_flow(self) -> None:
+        """有线模式的完整准备流程：检测 → 连 WiFi → 提示拔线 → 开始检测。"""
+        if self._wired_worker is not None and self._wired_worker.isRunning():
+            return
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.warning(self, "正在检测", "请先停止当前检测。")
+            return
+
+        cfg = {
+            "host": conn.WIRED_CAR_IP,
+            "user": self.user_edit.text().strip() or "sunrise",
+            "password": self.pass_edit.text() or "sunrise",
+            "profile_id": self.profile.id if self.profile else None,
+        }
+        self.start_btn.setEnabled(False)
+        self._log("有线模式：开始准备…")
+
+        self._wired_worker = WiredSetupWorker(cfg, self)
+        self._wired_worker.progress.connect(self._on_wired_progress)
+        self._wired_worker.need_password.connect(self._on_need_wifi_password)
+        self._wired_worker.done.connect(self._on_wired_done)
+        self._wired_worker.start()
+
+    def _on_wired_progress(self, text: str) -> None:
+        self._log(text)
+
+    def _on_need_wifi_password(self, ssid: str) -> None:
+        """车辆 WiFi 需要密码时弹窗。手动输入（用户已确认接受）。"""
+        text, ok = QInputDialog.getText(
+            self, "需要 WiFi 密码",
+            f"车辆要连接「{ssid}」，请输入该 WiFi 的密码：\n\n"
+            f"（密码只在本次连接中使用，不保存到任何文件）",
+            QLineEdit.Password,
+        )
+        if self._wired_worker is not None:
+            self._wired_worker.supply_password(text if ok else "")
+
+    def _on_wired_done(self, data: dict) -> None:
+        self.start_btn.setEnabled(True)
+
+        if data.get("error"):
+            self._log(f"❌ {data['error'].splitlines()[0]}")
+            QMessageBox.warning(self, "有线连接失败", str(data["error"]))
+            return
+
+        ip = data.get("ip", "")
+        ssid = data.get("ssid", "")
+        self._wifi_ip = ip
+        self._log(f"车辆 WiFi：{ssid} → {ip}")
+
+        # 提示拔线
+        reply = QMessageBox.question(
+            self, "请拔掉 USB-C 线",
+            f"车辆已连上 WiFi「{ssid}」\n"
+            f"WiFi IP：{ip}\n\n"
+            f"现在请拔掉电脑与车机之间的 USB-C 线。\n"
+            f"拔掉后程序会自动检测并开始测试。\n\n"
+            f"（拔线是为了验证：不依赖有线也能连上，\n"
+            f" 否则交付后远程连不上会很难排查）",
+            QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Ok,
+        )
+        if reply != QMessageBox.Ok:
+            self._log("用户取消拔线，流程结束")
+            return
+
+        self._log(f"等待拔线…（目标 {ip} 仍然可达即视为未拔）")
+        self.start_btn.setEnabled(False)
+        self._wait_unplug_worker = UnplugWaitWorker(ip, self)
+        self._wait_unplug_worker.done.connect(self._on_unplug_done)
+        self._wait_unplug_worker.start()
+
+    def _on_unplug_done(self, data: dict) -> None:
+        self.start_btn.setEnabled(True)
+        if data.get("error"):
+            self._log(f"⚠ {data['error']}")
+            QMessageBox.warning(self, "拔线检测", str(data["error"]))
+            return
+        if not data.get("unplugged"):
+            reply = QMessageBox.question(
+                self, "仍未检测到拔线",
+                f"60 秒内 {conn.WIRED_CAR_IP} 仍然可达。\n\n"
+                f"可能原因：\n"
+                f"  · 线还没拔\n"
+                f"  · 电脑上有其它路由到该网段\n\n"
+                f"要用 WiFi IP {data.get('ip', '')} 继续吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        self._log(f"✅ 有线已断开，改用 WiFi 地址 {data.get('ip', '')} 开始检测")
+        self._launch_test(data.get("ip", self._wifi_ip))
+
+    def _launch_test(self, host: str, profile_id: str | None = None) -> None:
+        """真正启动检测。有线/无线流程最终都汇到这里。"""
         # 运动相关的安全确认（Q3：只在实际会让车动的节点确认）
         allow_pulse = self.allow_pulse.isChecked()
         full_motion = self.full_motion.isChecked()
@@ -589,13 +933,16 @@ class MainWindow(QMainWindow):
             "mode": self.mode_combo.currentData(),
             "motion": motion,
             "answers": answers,
+            "profile_id": profile_id or (self.profile.id if self.profile else None),
+            "conn_mode": self.conn_mode,
         }
 
         # 重置界面
         for card in self.cards.values():
             card.reset()
         self.progress.setValue(0)
-        self.counter_label.setText(f"0 / {len(REGISTRY)}")
+        total = self.profile.total_checks if self.profile else len(default_registry())
+        self.counter_label.setText(f"0 / {total}")
         self.report = None
         self.view_btn.setEnabled(False)
         # 新一轮：清掉上一轮的取消标志与残留确认框

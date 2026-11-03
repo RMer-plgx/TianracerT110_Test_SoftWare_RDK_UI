@@ -15,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests._fixtures import attach_profile, get_profile  # noqa: E402
 from core.verdict import Status
 
 
@@ -28,6 +29,7 @@ class TestStaleTapFile:
     @staticmethod
     def _ctx(remote, owns_bringup=True):
         class FakeCtx:
+            profile = get_profile()
             baseline = {
                 "voltage": {"normal_v": 11.7, "low_v": 11.0, "full_v": 12.4,
                             "stop_test_below_v": 11.0, "sample_timeout_sec": 90},
@@ -172,8 +174,9 @@ class TestTapTiming:
 
 class TestEnvvarWhitelistConsistency:
     def test_whitelist_matches_prefix_exports(self):
-        from core.remote import ROS_ENV_PREFIX
+        from core import profile as product_profile
         from checks.envvars import OVERRIDDEN_BY_PREFIX
+        ROS_ENV_PREFIX = product_profile.load().ros_env_prefix()
 
         exported = set(re.findall(r"export (TIAN\w+)=", ROS_ENV_PREFIX))
         assert exported, "ROS_ENV_PREFIX 里没找到 export TIAN* 变量"

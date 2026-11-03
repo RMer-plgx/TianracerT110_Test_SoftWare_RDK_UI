@@ -45,8 +45,11 @@ def self_check() -> int:
     print("self-check 开始")
     problems = []
 
-    for rel in ("config/baseline.yaml", "report/md.j2", "report/html.j2",
-                "assets/app.ico", "probes/motion_probe.py"):
+    for rel in ("products/tianracer_t110_rdk/profile.yaml",
+                "products/tianracer_t110_rdk/baseline.yaml",
+                "report/md.j2", "report/html.j2",
+                "assets/app.ico", "probes/motion_probe.py",
+                "probes/spin_probe.py"):
         path = resource_path(rel)
         status = "OK" if path.exists() else "MISSING"
         print(f"  resource {rel}: {status}")
@@ -61,6 +64,21 @@ def self_check() -> int:
             print(f"  checks.{name}: FAIL {type(exc).__name__}: {exc}")
             problems.append(f"checks.{name} 导入失败")
     print(f"  checks 模块: {len(CHECK_MODULES) - len(problems)}/{len(CHECK_MODULES)} 可导入")
+
+    # 产品配置档
+    try:
+        from core import profile as product_profile
+        available = product_profile.list_profiles()
+        if not available:
+            problems.append("没有可用的产品配置")
+            print("  产品配置: 无")
+        else:
+            loaded = product_profile.load()
+            print(f"  产品配置: {len(available)} 个，默认 {loaded.id}"
+                  f"（{loaded.total_checks} 项检测）")
+    except Exception as exc:
+        print(f"  产品配置: FAIL {type(exc).__name__}: {exc}")
+        problems.append(f"产品配置加载失败: {exc}")
 
     # 判定与模板
     try:

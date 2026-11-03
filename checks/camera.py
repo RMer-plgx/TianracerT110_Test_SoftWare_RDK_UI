@@ -22,7 +22,7 @@ def run(ctx) -> CheckResult:
     link = r.run("readlink -f /dev/tianbot_usb_cam 2>&1", timeout=15)
     result.add("软链指向", link.stdout.strip() or "不存在")
 
-    topic = "/tianracer/camera/image_raw"
+    topic = ctx.profile.ros.topic("camera")
     hz = measure_hz(ctx, topic, seconds=8)
 
     # 相机由 webrtc 桥推流，bringup 刚起来时可能还没开始发帧。

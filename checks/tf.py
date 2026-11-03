@@ -51,7 +51,8 @@ def run(ctx) -> CheckResult:
     missing_tf = []
     for source, target in transforms:
         check = ctx.remote.run(
-            ros(f"timeout 6 rosrun tf tf_echo {source} {target} 2>&1 | head -3"),
+            ros(f"timeout 6 rosrun tf tf_echo {source} {target} 2>&1 | head -3",
+                       ctx.profile),
             timeout=20, record=False,
         ).stdout
         ok = "Translation" in check

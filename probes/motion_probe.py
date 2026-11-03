@@ -3,6 +3,9 @@
 
 用法：
     motion_probe.py <speed> <steer> <duration> <label> [max_speed] [max_duration]
+                    [cmd_topic] [odom_topic]
+
+话题由上位机按产品配置传入，探针里不写死任何产品名。
 
 安全设计（三重保护）：
 1. 本脚本内部硬性拒绝超过 max_speed / max_duration 的参数
@@ -19,8 +22,9 @@ import rospy
 from ackermann_msgs.msg import AckermannDrive
 from nav_msgs.msg import Odometry
 
-TOPIC = "/tianracer/ackermann_cmd"
-ODOM = "/tianracer/odom"
+# 默认值只在手工调试时用到；正式调用一律由上位机传参
+DEFAULT_CMD_TOPIC = "/tianracer/ackermann_cmd"
+DEFAULT_ODOM_TOPIC = "/tianracer/odom"
 
 # 硬编码上限。命令行传进来的值只能更严格，不能更宽松。
 # 安全上限不能由被保护对象自己提供（审查发现：
@@ -51,6 +55,8 @@ def main():
     label = sys.argv[4] if len(sys.argv) > 4 else "pulse"
     max_speed = float(sys.argv[5]) if len(sys.argv) > 5 else HARD_MAX_SPEED
     max_duration = float(sys.argv[6]) if len(sys.argv) > 6 else HARD_MAX_DURATION
+    cmd_topic = sys.argv[7] if len(sys.argv) > 7 else DEFAULT_CMD_TOPIC
+    odom_topic = sys.argv[8] if len(sys.argv) > 8 else DEFAULT_ODOM_TOPIC
 
     # 双重保险：配置值只能收紧，不能放宽硬上限
     max_speed = min(max_speed, HARD_MAX_SPEED)
@@ -72,7 +78,7 @@ def main():
         return
 
     rospy.init_node("tt_motion_probe", anonymous=True, disable_signals=True)
-    pub = rospy.Publisher(TOPIC, AckermannDrive, queue_size=10)
+    pub = rospy.Publisher(cmd_topic, AckermannDrive, queue_size=10)
 
     # 等订阅者连上，否则消息直接丢掉
     deadline = rospy.Time.now().to_sec() + 10
@@ -83,7 +89,7 @@ def main():
         return
 
     try:
-        start = rospy.wait_for_message(ODOM, Odometry, timeout=6)
+        start = rospy.wait_for_message(odom_topic, Odometry, timeout=6)
         p0 = start.pose.pose.position
         y0 = yaw_of(start.pose.pose.orientation)
 
@@ -96,7 +102,7 @@ def main():
             pub.publish(cmd)
             rate.sleep()
 
-        end = rospy.wait_for_message(ODOM, Odometry, timeout=6)
+        end = rospy.wait_for_message(odom_topic, Odometry, timeout=6)
         p1 = end.pose.pose.position
         y1 = yaw_of(end.pose.pose.orientation)
 

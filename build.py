@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "TianracerT110_Test_SoftWare_RDK_UI"
 
-DATA_DIRS = ["config", "report", "probes", "assets"]
+DATA_DIRS = ["products", "report", "probes", "assets"]
 
 # core/runner.py 用 __import__(f"checks.{name}") 动态导入，
 # PyInstaller 静态分析看不到，必须显式列出，否则打包后每项都报错。
