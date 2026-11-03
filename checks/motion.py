@@ -18,7 +18,8 @@
 from __future__ import annotations
 
 from core.verdict import (CheckResult, Status, judge_all, judge_displacement,
-                          judge_distance, judge_range, judge_repeats)
+                          judge_distance, judge_max_only, judge_range,
+                          judge_repeats)
 
 from ._util import run_probe
 
@@ -148,18 +149,39 @@ def run(ctx) -> CheckResult:
         return result
 
     # 架空段通过，若用户要跑落地段，先提醒把车放下
+    # 已请求停止则不弹框，直接结束（审查指出：否则点了停止还会弹框并卡 600 秒）
+    if _cancelled(ctx):
+        result.status = judge_all(sub_statuses)
+        result.summary = "用户手动停止，落地段未执行"
+        return result
+
     pause = getattr(ctx, "pause_for_ground", None)
     if pause is not None:
-        if not pause():
+        answer = pause()
+        if answer is not True:
             result.status = judge_all(sub_statuses)
-            result.summary = "架空段通过；用户选择不执行落地段"
-            result.detail = "落地段已跳过。"
+            if _cancelled(ctx):
+                result.summary = "用户手动停止，落地段未执行"
+                result.detail = "停在落地确认环节。"
+            elif answer is None:
+                # 超时（None）和用户主动选 No（False）是两回事，
+                # 不能把超时写成「用户选择」（审查指出）
+                result.summary = "架空段通过；等待落地确认超时，落地段未执行"
+                result.detail = "界面等待用户确认是否落地，超时未回应。"
+            else:
+                result.summary = "架空段通过；用户选择不执行落地段"
+                result.detail = "落地段已跳过。"
             return result
 
     # ---- 落地段 ----
     ground_cfg = cfg.get("ground", {})
-    ground_statuses = _run_ground(ctx, ground_cfg, result, max_speed, max_dur)
+    ground_statuses, spin_ok = _run_ground(
+        ctx, ground_cfg, result, max_speed, max_dur, safety)
     sub_statuses.extend(ground_statuses)
+
+    # 把「转向互校是否验证过」传给上层：IMU / 里程计这两项
+    # 在架空段只能测频率，必须靠这里才能真正判 PASS
+    ctx.spin_verified = spin_ok
 
     result.status = judge_all(sub_statuses)
     if result.status is Status.PASS:
@@ -186,6 +208,8 @@ def _run_bench(ctx, cfg, result, max_speed, max_dur):
         duration=float(cfg.get("forward_duration", 2.0)),
         label="bench_forward", max_speed=max_speed, max_dur=max_dur,
     )
+    if _cancelled(ctx):
+        return statuses, False
     if forward is None:
         result.add("架空·前进", "无返回")
         statuses.append(Status.FAIL)
@@ -203,6 +227,8 @@ def _run_bench(ctx, cfg, result, max_speed, max_dur):
         duration=float(cfg.get("reverse_duration", 2.0)),
         label="bench_reverse", max_speed=max_speed, max_dur=max_dur,
     )
+    if _cancelled(ctx):
+        return statuses, False
     if reverse is None:
         result.add("架空·后退", "无返回")
         statuses.append(Status.FAIL)
@@ -226,10 +252,14 @@ def _run_bench(ctx, cfg, result, max_speed, max_dur):
     steer_speed = float(cfg.get("steer_speed", 0.05))
     yaw_changes = []
     for label, angle in (("bench_steer_left", steer), ("bench_steer_right", -steer)):
+        if _cancelled(ctx):
+            return statuses, False
         data = _run_motion(
             ctx, speed=steer_speed, steer=angle, duration=steer_dur,
             label=label, max_speed=max_speed, max_dur=max_dur,
         )
+        if _cancelled(ctx):
+            return statuses, False
         side = "左" if angle > 0 else "右"
         if data is None:
             result.add(f"架空·{side}转", "无返回")
@@ -262,8 +292,14 @@ def _run_bench(ctx, cfg, result, max_speed, max_dur):
     return statuses, ok
 
 
-def _run_ground(ctx, cfg, result, max_speed, max_dur):
-    """落地段：真实行驶，校验距离与转向弧度。"""
+def _run_ground(ctx, cfg, result, max_speed, max_dur, safety=None):
+    """落地段：真实行驶，校验距离、转向弧度、航向互校。
+
+    返回 (statuses, spin_verified)。
+    spin_verified 为 True 表示左右两圈都转成功且偏差合格，
+    这时 IMU / 里程计才能从「待落地验证」转为 PASS。
+    """
+    safety = safety or {}
     statuses = []
 
     for label, key, speed_key, dur_key, exp_key, tol_key in (
@@ -272,6 +308,8 @@ def _run_ground(ctx, cfg, result, max_speed, max_dur):
         ("落地·后退", "reverse", "reverse_speed", "reverse_duration",
          "reverse_expected_m", "reverse_tolerance"),
     ):
+        if _cancelled(ctx):
+            return statuses, False
         speed = float(cfg.get(speed_key, 0.10))
         duration = float(cfg.get(dur_key, 3.0))
         expected = float(cfg.get(exp_key, 0.30))
@@ -280,6 +318,8 @@ def _run_ground(ctx, cfg, result, max_speed, max_dur):
         data = _run_motion(ctx, speed=speed, steer=0.0, duration=duration,
                            label=f"ground_{key}", max_speed=max_speed,
                            max_dur=max_dur)
+        if _cancelled(ctx):
+            return statuses, False
         if data is None:
             result.add(label, "无返回")
             statuses.append(Status.FAIL)
@@ -301,9 +341,13 @@ def _run_ground(ctx, cfg, result, max_speed, max_dur):
     tol_yaw = float(cfg.get("steer_tolerance_deg", 6.0))
     magnitudes = []
     for label, angle in (("落地·左转", steer), ("落地·右转", -steer)):
+        if _cancelled(ctx):
+            return statuses, False
         data = _run_motion(ctx, speed=float(cfg.get("forward_speed", 0.10)),
                            steer=angle, duration=dur, label=label,
                            max_speed=max_speed, max_dur=max_dur)
+        if _cancelled(ctx):
+            return statuses, False
         if data is None:
             result.add(label, "无返回")
             magnitudes.append(None)
@@ -316,16 +360,175 @@ def _run_ground(ctx, cfg, result, max_speed, max_dur):
     low = max(0.0, expected_yaw - tol_yaw)
     high = expected_yaw + tol_yaw
     statuses.append(judge_repeats(magnitudes, low, high))
-    return statuses
+
+    # ---- 转向互校：左右各转一整圈，比对 odom 与 IMU 的航向 ----
+    spin_statuses, spin_ok = _run_spin(ctx, cfg, result, safety)
+    statuses.extend(spin_statuses)
+
+    return statuses, spin_ok
+
+
+def _run_spin(ctx, cfg, result, safety):
+    """转整圈做航向互校。返回 (statuses, verified)。
+
+    verified 只在左右两圈都真的转成功、且偏差合格时为 True。
+    这个值决定 IMU / 里程计这两项能不能从「待落地验证」转 PASS。
+    """
+    spin = cfg.get("spin", {}) or {}
+    if not spin:
+        # 配置里没有这一段（老版本 baseline），视为未验证
+        result.add("转向互校", "配置缺失，未执行")
+        return [Status.SKIP], False
+
+    speed = float(spin.get("speed", 0.12))
+    steer = float(spin.get("steer_angle", 0.35))
+    target = float(spin.get("target_yaw_deg", 360.0))
+    max_seconds = float(spin.get("max_seconds", 90))
+    tol = float(spin.get("yaw_tolerance_deg", 15.0))
+    warn_at = float(spin.get("yaw_warn_deg", 30.0))
+    closure_warn = float(spin.get("closure_warn_m", 0.30))
+
+    hard_speed = float(safety.get("spin_max_speed_mps", 0.25))
+    hard_seconds = float(safety.get("spin_max_seconds", 120.0))
+    # 配置只能收紧，不能放宽硬上限
+    speed = min(speed, hard_speed)
+    max_seconds = min(max_seconds, hard_seconds)
+
+    statuses = []
+    verified_all = True
+
+    for side, angle, label in (("左", steer, "spin_left"),
+                               ("右", -steer, "spin_right")):
+        if _cancelled(ctx):
+            statuses.append(Status.SKIP)
+            verified_all = False
+            continue
+
+        signed_target = target if angle > 0 else -target
+        data = run_probe(
+            ctx, "spin_probe",
+            f"{speed}", f"{angle}", f"{signed_target}", f"{max_seconds}", label,
+            timeout=int(max_seconds) + 40,
+        )
+
+        if _cancelled(ctx):
+            statuses.append(Status.SKIP)
+            verified_all = False
+            ctx.say(f"       ■ {side}转被用户中断")
+            continue
+
+        if not data or not data.get("ok"):
+            reason = (data or {}).get("reason", "")
+            detail = (data or {}).get("detail", "")
+            result.add(f"{side}转整圈", f"失败（{reason or '无返回'}）")
+            if detail:
+                ctx.say(f"       ⚠ {side}转：{detail}")
+            statuses.append(Status.FAIL)
+            verified_all = False
+            continue
+
+        if data.get("aborted"):
+            result.add(f"{side}转整圈", "用户中断")
+            statuses.append(Status.SKIP)
+            verified_all = False
+            continue
+
+        imu_deg = data.get("imu_yaw_deg")
+        odom_deg = data.get("odom_yaw_deg")
+        diff = data.get("yaw_diff_deg")
+        closure = data.get("closure_m")
+        duration = data.get("duration")
+
+        result.add(f"{side}转整圈耗时", f"{duration:.1f}" if duration else "?", "s")
+        result.add(f"{side}转 IMU 累积", f"{imu_deg:+.1f}", "°",
+                   expected=f"±{target:.0f}°") if imu_deg is not None else \
+            result.add(f"{side}转 IMU 累积", "未取得")
+        result.add(f"{side}转 odom 累积", f"{odom_deg:+.1f}", "°",
+                   expected=f"±{target:.0f}°") if odom_deg is not None else \
+            result.add(f"{side}转 odom 累积", "未取得")
+
+        if diff is not None:
+            result.add(f"{side}转航向偏差", f"{diff:.1f}", "°",
+                       expected=f"≤ {tol:.0f}° 合格，> {warn_at:.0f}° 失败",
+                       note="里程计推算航向与 IMU 实测航向之差")
+            st = judge_max_only(diff, tol, warn_at)
+            statuses.append(st)
+            if st is not Status.PASS:
+                verified_all = False
+        else:
+            statuses.append(Status.SKIP)
+            verified_all = False
+
+        if closure is not None:
+            result.add(f"{side}转闭合误差", f"{closure:.3f}", "m",
+                       note=f"转完一圈回到起点的距离，> {closure_warn} m 提示打滑")
+
+        # 没转够一圈（异常提前停）不能算验证过
+        if not data.get("reached"):
+            anomaly = data.get("anomaly") or "未转到目标角度"
+            result.add(f"{side}转未完成", anomaly)
+            if not data.get("anomaly"):
+                statuses.append(Status.WARN)
+            verified_all = False
+
+    return statuses, verified_all and all(s is Status.PASS for s in statuses)
 
 
 # ---------------------------------------------------------------------------
 # 底层调用
 # ---------------------------------------------------------------------------
 
+def _cancelled(ctx) -> bool:
+    return bool(getattr(ctx, "cancel_requested", False))
+
+
+def emergency_stop(ctx, reason: str = "用户请求停止") -> None:
+    """立即向底盘发零速。
+
+    关键：用**独立的 SSH 连接**，不复用 ctx.remote。
+    因为用户点停止时，主通道可能正阻塞在 run_probe 上（等探针跑完），
+    那段时间内用主通道发指令是发不出去的。
+
+    发两帧零速（前进 0、转向 0），确保底盘收到。
+    """
+    from core.remote import ros
+    from core.ssh import Remote
+
+    ctx.say(f"       ■ 紧急停车（{reason}）")
+    try:
+        quick = Remote(ctx.remote.host, ctx.remote.user,
+                       ctx.remote._password, timeout=6)
+        quick.connect()
+        try:
+            # 必须先让正在旋转的探针自己停下。
+            # 转圈探针以 20 Hz 持续发指令，这里另开连接发的零速
+            # 会在 50 ms 内被它覆盖 —— 光发零速是停不住车的。
+            quick.run("touch /tmp/tt_spin_abort", timeout=8, record=False)
+            for _ in range(2):
+                quick.run(
+                    ros(
+                        "timeout 3 rostopic pub -1 /tianracer/ackermann_cmd "
+                        "ackermann_msgs/AckermannDrive "
+                        "'{speed: 0.0, steering_angle: 0.0}'"
+                    ),
+                    timeout=12, record=False,
+                )
+        finally:
+            quick.close()
+        ctx.say("       ■ 已通知探针停车，零速指令已发送")
+    except Exception as exc:
+        ctx.say(f"       ⚠ 紧急停车失败：{type(exc).__name__}: {exc}")
+        ctx.say("         请立即用遥控器接管")
+
+
 def _run_motion(ctx, speed: float, steer: float, duration: float,
                 label: str, max_speed: float, max_dur: float):
     """跑一次运动探针，返回它的 JSON；失败返回 None。"""
+    # 已请求停止：不再发起任何一段。
+    # 否则用户点了停止，车还会继续走完剩余的 8 段（审查指出）。
+    if _cancelled(ctx):
+        return None
+
     data = run_probe(
         ctx, "motion_probe",
         f"{speed}", f"{steer}", f"{duration}", label,

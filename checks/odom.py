@@ -6,6 +6,9 @@ from core.verdict import CheckResult, Status, judge_all, judge_range
 
 from ._util import run_probe
 
+# 与 checks/imu.py 保持同一个后缀，runner 按它回填
+PENDING_SUFFIX = "；频率与静止漂移正常，航向精度待落地互校"
+
 
 def run(ctx) -> CheckResult:
     result = CheckResult(number=12, title="里程计", status=Status.PASS)
@@ -58,4 +61,14 @@ def run(ctx) -> CheckResult:
         result.summary = "未取得数据：" + "、".join(missing)
     else:
         result.summary = f"{hz:.1f} Hz，{window:.0f} 秒静止漂移 {drift:.4f} m"
+
+        # 频率和静止漂移只能说明「有输出、不动时不乱漂」。
+        # 里程计推算的航向准不准，必须落地转一整圈与 IMU 比对。
+        level = getattr(ctx, "motion_level", "none")
+        if level != "none":
+            result.status = Status.PENDING
+            result.needs_ground = True
+            result.summary += PENDING_SUFFIX
+        else:
+            result.summary += "；本次未做运动测试，行驶航向精度未验证"
     return result

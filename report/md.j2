@@ -54,8 +54,12 @@
 **已执行项通过率**：{{ report.passed | length }} / {{ report.executed | length }}
 （{{ '%.0f' % (report.pass_ratio * 100) }}%，仅供参考，不用于判定）
 
-{% if report.skipped %}
-**未验证**：{{ report.skipped | length }} / {{ report.judged | length }} 项
+{% if report.pending %}
+**待落地验证**：{{ report.pending | length }} 项
+{% endif %}
+
+{% if report.unverified %}
+**未验证**：{{ report.unverified | length }} / {{ report.judged | length }} 项
 （未验证比例 {{ '%.0f' % (report.skip_ratio * 100) }}%，超过 20% 即不具备交付条件）
 {% endif %}
 
@@ -100,14 +104,30 @@
 
 ## 四、未执行 / 未验证项
 
+{% if report.pending %}
+### 待落地验证（{{ report.pending | length }} 项）
+
+已在本阶段测过，但结论要等落地段转向互校才能确定。**现在不算通过。**
+
+| # | 项目 | 说明 |
+|---|---|---|
+{% for item in report.pending | sort(attribute='number') %}
+| {{ item.number }} | {{ item.title }} | {{ item.summary | replace('\n', ' ') }} |
+{% endfor %}
+{% endif %}
+
 {% if report.skipped %}
+### 完全未执行（{{ report.skipped | length }} 项）
+
 | # | 项目 | 原因 |
 |---|---|---|
 {% for item in report.skipped | sort(attribute='number') %}
 | {{ item.number }} | {{ item.title }} | {{ item.summary }} |
 {% endfor %}
-{% else %}
-无。所有检测项均已执行。
+{% endif %}
+
+{% if not report.unverified %}
+无。所有检测项均已执行并可判定。
 {% endif %}
 
 ### 需要人工确认的项目

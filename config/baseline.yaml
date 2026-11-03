@@ -139,10 +139,33 @@ motion:
     steer_tolerance_deg: 6.0
     note: "需在开阔平地做，周围无人无障碍。左右转向各测一次，任一不合格即判失败"
 
+  # 转向互校：落地转一整圈，比对里程计与 IMU 的航向累积。
+  #
+  # 为什么需要：架空段只能证明「有数据、频率对、静止不漂」，
+  # 证明不了走起来以后航向准不准。转一圈两者应该都接近 360°。
+  #
+  # 空间要求：以 steer_angle=0.35、轴距约 0.3 m 估算，
+  #           转弯半径约 0.8 m，车体占位后需要约 2.5 m × 2.5 m 开阔平地。
+  # 时间：单方向约 35~45 秒，左右各一次。
+  spin:
+    speed: 0.12                 # m/s，低速
+    steer_angle: 0.35           # rad，约 20°
+    target_yaw_deg: 360
+    max_seconds: 90             # 单方向硬超时
+    # 里程计与 IMU 的航向差（转完一圈后比对）
+    yaw_tolerance_deg: 15       # 差 <= 15° 通过
+    yaw_warn_deg: 30            # 差 <= 30° 告警；再大判失败
+    # 闭合误差：转完一圈回到起点的距离，只记录不判定
+    closure_warn_m: 0.30
+    note: "需约 2.5m×2.5m 开阔平地；左右各转一圈"
+
   safety:
     # 硬性上限，即使 baseline.yaml 被误改也不允许超出
     max_speed_mps: 0.5
     max_duration_sec: 10.0
+    # 转圈单独一组上限：时间长、风险高，不和直线运动共用
+    spin_max_speed_mps: 0.25
+    spin_max_seconds: 120.0
     note: "代码内会二次校验，超过此值的配置直接拒绝执行"
 
 envvars:

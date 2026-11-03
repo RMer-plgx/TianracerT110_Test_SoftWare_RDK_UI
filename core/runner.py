@@ -137,14 +137,35 @@ class Context:
     force_motion: bool = False
     # 电压是否确实取到了（未知不能当成安全）
     voltage_known: bool = False
+    # 落地段转向互校是否真的做成功（左右两圈都过）。
+    # 由 checks/motion.py 写入，供 IMU / 里程计两项回填状态用。
+    spin_verified: bool = False
+    # 落地段是否执行过（用于区分「没做」和「做了但没通过」）
+    ground_attempted: bool = False
     # 架空段结束后调用，返回值决定是否继续落地段。None 表示不询问。
-    pause_for_ground: Optional[Callable[[], bool]] = None
+    # 架空段结束后调用：True=继续落地，False=用户选 No，None=超时未回应
+    pause_for_ground: Optional[Callable[[], Optional[bool]]] = None
     log: List[str] = field(default_factory=list)
+    # GUI 用：进度回调。say() 每调一次就通知界面，
+    # 让日志能实时滚动，而不是等整轮跑完才一次性输出。
+    on_output: Optional[Callable[[str], None]] = None
+    # GUI 用：单项检测开始/结束的结构化回调，
+    # 比解析 say() 的文本可靠——界面靠它更新每个卡片的状态。
+    on_check_start: Optional[Callable[[int, str], None]] = None
+    on_check_done: Optional[Callable[[object], None]] = None
+    # GUI 用：用户点击停止时置位，检测项之间检查，优雅中止
+    cancel_requested: bool = False
 
     def say(self, text: str) -> None:
         """进度输出。同时进内存日志，便于事后查。"""
         print(text, flush=True)
         self.log.append(text)
+        if self.on_output is not None:
+            try:
+                self.on_output(text)
+            except Exception:
+                # 界面回调出错不能影响测试本身
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +205,8 @@ class Runner:
     def __init__(self, host: str, user: str, password: str,
                  answers: Optional[Dict[str, str]] = None,
                  mode: str = "auto", motion: str = "none",
-                 pause_for_ground=None):
+                 pause_for_ground=None,
+                 on_output=None, on_check_start=None, on_check_done=None):
         """
         mode:   auto = 程序自己起停 bringup（默认）
                 attach = 车已经跑着，只做检查
@@ -199,6 +221,10 @@ class Runner:
         self.mode = mode
         self.motion = motion
         self.pause_for_ground = pause_for_ground
+        # GUI 回调：实时日志与单项状态
+        self.on_output = on_output
+        self.on_check_start = on_check_start
+        self.on_check_done = on_check_done
         self.report = Report(
             host=host, user=user,
             started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -212,7 +238,16 @@ class Runner:
     # -- 主流程 -----------------------------------------------------------
 
     def run(self) -> Report:
-        self.record_dir = make_record_dir(self.host)
+        # 建目录可能失败：exe 放在 C:\Program Files 或只读介质时抛 PermissionError。
+        # 这一步原来在 try 之外，异常会一路冒到界面，导致一份报告都不生成（审查指出）。
+        try:
+            self.record_dir = make_record_dir(self.host)
+        except Exception as exc:
+            self.report.aborted_reason = (
+                f"无法创建报告目录：{type(exc).__name__}: {exc}。"
+                f"请把程序放到可写目录（如桌面）后重试。"
+            )
+            return self.report
         try:
             with InstanceLock() as lock:
                 self._lock = lock
@@ -263,11 +298,19 @@ class Runner:
             self._remote = Remote(self.host, self.user, self._password)
             self._remote.connect()
         except SSHError as exc:
-            self.report.add(CheckResult(
+            result = CheckResult(
                 number=1, title="网络连通性", status=Status.FAIL,
                 summary=str(exc), fatal=True,
-            ))
+            )
+            self.report.add(result)
             self.report.aborted_reason = "无法建立 SSH 连接"
+            # 此时 Context 还没建，回调不可用，直接通知界面，
+            # 否则第 1 项会一直显示「等待中」（实测发现）
+            if self.on_check_done is not None:
+                try:
+                    self.on_check_done(result)
+                except Exception:
+                    pass
             return
 
         ctx = Context(remote=self._remote, baseline=baseline, host=self.host,
@@ -275,7 +318,10 @@ class Runner:
                       motion_level=self.motion,
                       motion_armed=bool(self.answers.get("motion_armed")),
                       force_motion=bool(self.answers.get("force_motion")),
-                      pause_for_ground=self.pause_for_ground)
+                      pause_for_ground=self.pause_for_ground,
+                      on_output=self.on_output,
+                      on_check_start=self.on_check_start,
+                      on_check_done=self.on_check_done)
         self._ctx = ctx
 
         try:
@@ -295,6 +341,8 @@ class Runner:
             if self._should_abort():
                 return
             self._run_motion_phase(ctx)
+            # 落地段结束后，回填「架空段测了一半」的项（IMU / 里程计）
+            self._resolve_ground_dependents(ctx)
         except KeyboardInterrupt:
             self.report.aborted_reason = "用户中断（Ctrl-C）"
             ctx.say("\n⚠ 收到中断信号，正在清理…")
@@ -446,12 +494,55 @@ class Runner:
             pass
 
     def _should_abort(self) -> bool:
-        """致命项失败后不再继续。"""
+        """致命项失败或用户请求停止时，不再继续。"""
+        if self._ctx is not None and getattr(self._ctx, "cancel_requested", False):
+            self.report.aborted_reason = "用户手动停止"
+            return True
         for result in self.report.results:
             if result.status is Status.FAIL and result.fatal:
                 self.report.aborted_reason = f"致命项失败：{result.title}"
                 return True
         return False
+
+    def request_cancel(self) -> tuple:
+        """供外部（GUI）请求停止。
+
+        做两件事：
+        1. 置取消标志 → 检测项之间、运动段之间不再继续
+        2. **立即发零速** → 车马上停，不用等当前段跑完
+
+        返回 (cancel_requested, stop_ok) 供界面展示。
+        """
+        if self._ctx is None:
+            return (False, False)
+        self._ctx.cancel_requested = True
+
+        # 只有在自动模式下（ROS 由本程序管理）才由这里发停车；
+        # 否则用户自己管车，不该被我们插入一条指令。
+        stop_ok = False
+        try:
+            from .ssh import Remote
+            quick = Remote(self.host, self.user, self._password, timeout=6)
+            quick.connect()
+            try:
+                # 先通知探针自己停：转圈探针 20 Hz 发指令，
+                # 直接发零速会被它覆盖，车停不下来。
+                quick.run("touch /tmp/tt_spin_abort", timeout=8, record=False)
+                for _ in range(2):
+                    quick.run(
+                        ros_remote.ros(
+                            "timeout 3 rostopic pub -1 /tianracer/ackermann_cmd "
+                            "ackermann_msgs/AckermannDrive "
+                            "'{speed: 0.0, steering_angle: 0.0}'"
+                        ),
+                        timeout=12, record=False,
+                    )
+                stop_ok = True
+            finally:
+                quick.close()
+        except Exception:
+            stop_ok = False
+        return (True, stop_ok)
 
     # -- 三个阶段 ---------------------------------------------------------
 
@@ -536,10 +627,51 @@ class Runner:
         for entry in entries:
             self._execute(ctx, entry)
 
+    def _resolve_ground_dependents(self, ctx: Context) -> None:
+        """落地段结束后，把「待落地验证」的项落定。
+
+        背景：IMU / 里程计的频率和静态指标在架空段就能测，但
+        「航向准不准」必须落地转一整圈比对才成立。
+        架空段一测完就标绿，等于把「测了一半」当成「测完了」。
+
+        所以架空段结束时它们标 PENDING；这里根据落地互校结果落定：
+          · 互校通过 → PASS
+          · 没做 / 没通过 → 保持 PENDING（未验证，计入未验证比例）
+        """
+        dependents = [r for r in self.report.results if r.needs_ground]
+        if not dependents:
+            return
+
+        verified = bool(getattr(ctx, "spin_verified", False))
+        for item in dependents:
+            if verified:
+                item.status = Status.PASS
+                item.summary = item.summary.replace(
+                    "航向精度待落地互校", "航向精度已由落地转向互校确认")
+                ctx.say(f"       ↑ [{item.number:02d}] {item.title} "
+                        f"落地互校通过，转为 PASS")
+            else:
+                # 保持 PENDING：只测了一半，不能算通过
+                item.summary = item.summary.replace(
+                    "航向精度待落地互校",
+                    "航向精度未验证（落地互校未执行或未通过）")
+                ctx.say(f"       ⏳ [{item.number:02d}] {item.title} "
+                        f"保持待验证（落地互校未通过）")
+
     # -- 单项执行 ---------------------------------------------------------
 
     def _execute(self, ctx: Context, entry) -> None:
         number, title, module_name, func_name, fatal, _phase = entry
+
+        # 用户已请求停止：当前项直接跳过，不再启动。
+        # 只在阶段边界检查的话，最长要等一项跑完（电压 90 秒），
+        # 这段时间 GUI 上无法中止（审查指出）。
+        if getattr(ctx, "cancel_requested", False):
+            self.report.add(CheckResult(
+                number=number, title=title, status=Status.SKIP, fatal=fatal,
+                summary="用户手动停止，未执行",
+            ))
+            return
 
         # 运动项即使 motion_level == "none" 也要跑：微脉冲需要验证底盘响应（D11）。
         # 只有用户连「允许微动」都没同意时才直接跳过，但要在报告里说清楚后果。
@@ -557,6 +689,12 @@ class Runner:
             return
 
         ctx.say(f"  [{number:02d}] {title} …")
+        # 通知界面：该项开始
+        if ctx.on_check_start is not None:
+            try:
+                ctx.on_check_start(number, title)
+            except Exception:
+                pass
         # 刷新锁心跳，证明本进程还活着
         if getattr(self, "_lock", None) is not None:
             self._lock.heartbeat()
@@ -577,6 +715,12 @@ class Runner:
         self.report.add(result)
         ctx.say(f"       {result.status.marker} {result.status.value.upper()}"
                 f"  {result.summary}")
+        # 通知界面：该项结束（带完整结果，界面可展示实测值）
+        if ctx.on_check_done is not None:
+            try:
+                ctx.on_check_done(result)
+            except Exception:
+                pass
 
         # 电压联动：任何一项测出低电压，都记为全局状态
         if module_name == "voltage":
