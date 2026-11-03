@@ -1,11 +1,18 @@
 """19. 使用痕迹。
 
 两件事：
-- run():     测试时检查痕迹现状，写进报告
-- cleanup(): 整轮测试结束后自动删除痕迹（用户 2026-11-02 要求）
+- run():     测试时**只读**检查痕迹现状，写进报告
+- cleanup(): 显式清理车上痕迹（默认不自动执行）
 
-清理必须在 roslaunch 停掉之后、SSH 断开之前做，所以不放在 run() 里，
-由 runner 的收尾流程调用。
+关于「自动清理」（2026-11-03 审查后调整）：
+原实现默认在测试跑完后删掉 `~/.ros/log`、`.bash_history`、`.viminfo`。
+这违反本项目的硬约束「绝不修改车辆持久配置」，且用户不知情时会
+丢掉命令历史 —— 而命令历史正是现场排查的依据。
+
+现在：
+- `traces.auto_cleanup` 默认 false，测试流程不再删任何东西
+- 需要清理时走界面「清理使用记录」按钮（显式、二次确认）
+- 即使清理，也默认保留 `.bash_history`（`keep_bash_history: true`）
 """
 
 from __future__ import annotations
@@ -15,30 +22,40 @@ import re
 from core.verdict import CheckResult, Status
 
 
-# 清理脚本。先量再删，量不到也不报错（痕迹本来就可能不存在）。
-# 用 find -mindepth 1 而不是 rm -rf dir/*，后者漏掉隐藏文件。
-CLEAN_SCRIPT = r'''
-H="$HOME"
+def build_clean_script(keep_bash_history: bool = True) -> str:
+    """生成清理脚本。先量再删，量不到也不报错。
 
-before_mb=$(du -sm "$H/.ros/log" 2>/dev/null | cut -f1); before_mb=${before_mb:-0}
-before_dirs=$(ls "$H/.ros/log" 2>/dev/null | wc -l); before_dirs=${before_dirs:-0}
-before_hist=$(wc -l < "$H/.bash_history" 2>/dev/null); before_hist=${before_hist:-0}
-
-if [ -d "$H/.ros/log" ]; then
-  find "$H/.ros/log" -mindepth 1 -exec rm -rf {} + 2>/dev/null
-fi
-
+    用 `find -mindepth 1` 而不是 `rm -rf dir/*`，后者漏掉隐藏文件。
+    """
+    if keep_bash_history:
+        hist_ops = '# 保留命令历史（现场排查证据），不动 .bash_history\n'
+    else:
+        hist_ops = '''# 用户明确要求清空命令历史
 : > "$H/.bash_history" 2>/dev/null
 rm -f "$H"/.bash_history-* 2>/dev/null
-rm -f "$H/.viminfo" 2>/dev/null
+'''
+
+    return f'''
+H="$HOME"
+
+before_mb=$(du -sm "$H/.ros/log" 2>/dev/null | cut -f1); before_mb=${{before_mb:-0}}
+before_dirs=$(ls "$H/.ros/log" 2>/dev/null | wc -l); before_dirs=${{before_dirs:-0}}
+before_hist=$(wc -l < "$H/.bash_history" 2>/dev/null); before_hist=${{before_hist:-0}}
+
+if [ -d "$H/.ros/log" ]; then
+  find "$H/.ros/log" -mindepth 1 -exec rm -rf {{}} + 2>/dev/null
+fi
+
+{hist_ops}rm -f "$H/.viminfo" 2>/dev/null
 
 sync 2>/dev/null
 
-after_mb=$(du -sm "$H/.ros/log" 2>/dev/null | cut -f1); after_mb=${after_mb:-0}
-after_dirs=$(ls "$H/.ros/log" 2>/dev/null | wc -l); after_dirs=${after_dirs:-0}
-after_hist=$(wc -l < "$H/.bash_history" 2>/dev/null); after_hist=${after_hist:-0}
-after_vim=$(ls -l "$H/.viminfo" 2>/dev/null | wc -l); after_vim=${after_vim:-0}
+after_mb=$(du -sm "$H/.ros/log" 2>/dev/null | cut -f1); after_mb=${{after_mb:-0}}
+after_dirs=$(ls "$H/.ros/log" 2>/dev/null | wc -l); after_dirs=${{after_dirs:-0}}
+after_hist=$(wc -l < "$H/.bash_history" 2>/dev/null); after_hist=${{after_hist:-0}}
+after_vim=$(ls -l "$H/.viminfo" 2>/dev/null | wc -l); after_vim=${{after_vim:-0}}
 
+echo "KEPT_HISTORY={'1' if keep_bash_history else '0'}"
 echo "LOGS_BEFORE_MB=$before_mb"
 echo "LOGS_BEFORE_DIRS=$before_dirs"
 echo "HIST_BEFORE=$before_hist"
@@ -49,14 +66,15 @@ echo "VIM_AFTER=$after_vim"
 '''
 
 
-def cleanup(ctx) -> dict:
+def cleanup(ctx, keep_bash_history: bool = True) -> dict:
     """删除车上使用痕迹。返回解析后的字典（键名小写）。
 
     失败不抛异常——清理失败不应该让整轮测试算失败，
     但返回里会带 error 字段，报告里会写清楚。
     """
+    script = build_clean_script(keep_bash_history)
     try:
-        out = ctx.remote.run(CLEAN_SCRIPT, timeout=120, record=True)
+        out = ctx.remote.run(script, timeout=120, record=True)
     except Exception as exc:  # 连接断了、超时都不能让收尾崩掉
         return {"error": f"{type(exc).__name__}: {exc}"}
     if not out.ok:
@@ -109,10 +127,18 @@ def run(ctx) -> CheckResult:
     if hist_lines is not None and hist_lines >= warn_lines:
         tips.append(f"bash_history {hist_lines} 行，交付前可清理")
 
-    # 痕迹在测试结束后本来就会被自动清掉（见 cleanup），
-    # 所以「痕迹偏多」只是过程记录，不是结论 —— 提示级。
-    result.status = Status.NOTICE if tips else Status.PASS
-    result.summary = "；".join(tips) if tips else "痕迹量正常（仅报告，不判定失败）"
+    result.status = Status.WARN if tips else Status.PASS
+
+    auto = baseline.get("auto_cleanup", False)
+    if tips:
+        # 说清楚这是「测试前」的快照 —— 报告读者看到时车上的痕迹可能已经清过
+        prefix = "测试前痕迹：" if auto else ""
+        result.summary = prefix + "；".join(tips)
+        if not auto:
+            result.summary += "（本次不会自动清理，需要时请点「清理使用记录」）"
+    else:
+        result.summary = "痕迹量正常"
+
     return result
 
 

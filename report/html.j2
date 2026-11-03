@@ -43,15 +43,12 @@
   }
   .tag { font-weight: 700; white-space: nowrap; }
   .tag.pass { color: var(--good); }
-  /* 提示级：对出货无影响，按通过显示，但报告尾部的「提示项」表里单列 */
-  .tag.notice { color: var(--good); }
-  .card.notice { border-left: 4px solid var(--good); }
   .tag.warn { color: var(--warn); }
   .tag.fail { color: var(--bad); }
   .tag.skip { color: var(--muted); }
   .tag.manual { color: #8250df; }
   .bar { height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; margin: 8px 0; }
-  .bar > span { display: block; height: 100%; background: var(--good); }
+  .bar > span { display: block; height: 100%; background: var(--good); transition: width .25s ease; }
   .card { border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin: 14px 0; }
   .card.fail { border-left: 4px solid var(--bad); }
   .card.warn { border-left: 4px solid var(--warn); }
@@ -60,24 +57,82 @@
   .muted { color: var(--muted); }
   ul { padding-left: 22px; }
   .aborted { background: #ffebe9; border: 1px solid #ffcecb; border-radius: 6px; padding: 12px 16px; margin: 16px 0; }
-  /* 人工确认：直接在报告上打勾 */
-  .manual input[type=checkbox] {
+
+  /* ---- 人工确认：把「需确认」的项由黄变绿 ---- */
+  .accept input[type=checkbox] {
     width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #1a7f37;
   }
-  .manual tr.checked td { background: #f0fff4; }
-  .manual th:first-child, .manual td:first-child { width: 45%; }
+  .accept td.chk { width: 84px; }
+  tr.accepted td { background: #f0fff4; }
+  .card.accepted { border-left-color: var(--good); }
+  /* 确认后：原始的 ⚠️ WARN 换成 ✅ PASS，不留两个标记 */
+  tr.accepted .tag, .card.accepted h3 .tag { color: var(--good); }
+  tr.accepted .tag::before, .card.accepted h3 .tag::before { content: "✅ PASS"; }
+  tr.accepted .tag .orig, .card.accepted h3 .tag .orig { display: none; }
+  .accept-note { font-size: 13px; color: var(--muted); margin-left: 6px; }
+  /* 打印用的文字标记：屏幕上隐藏，纸上显示 —— PDF 里必然看得到勾选状态 */
+  .chk-mark { display: none; font-weight: 700; font-size: 15px; color: var(--good); }
+  tr.accepted .accept-note { color: var(--good); }
+
+  /* ---- 顶部工具条（打印时隐藏） ---- */
+  .toolbar {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(255,255,255,.96);
+    border-bottom: 1px solid var(--line);
+    padding: 10px 0; margin: 0 0 20px;
+  }
+  .toolbar .wrap { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .toolbar .spacer { flex: 1; }
+  button {
+    font: inherit; font-size: 14px; padding: 8px 16px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--soft); color: var(--fg);
+    cursor: pointer; white-space: nowrap;
+  }
+  button:hover { background: #eef1f4; }
+  button.primary {
+    background: var(--good); border-color: var(--good); color: #fff; font-weight: 600;
+  }
+  button.primary:hover { background: #15682c; }
+  .toolbar .hint { font-size: 13px; color: var(--muted); }
+
+  /* ---- 打印：转到 PDF 时生效 ---- */
   @media print {
-    /* Chromium 转 PDF 默认不画背景色，靠边框和文字色保证打印后仍能分辨状态 */
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .manual input[type=checkbox] { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { padding: 0; font-size: 12pt; }
+    .toolbar, .no-print { display: none !important; }
+    .wrap { max-width: none; padding: 0; }
+    header { padding: 12px 0; margin-bottom: 16px; }
+    h2 { margin: 20px 0 8px; font-size: 15pt; break-after: avoid; page-break-after: avoid; }
+    h3 { font-size: 12pt; }
     .verdict { border: 2px solid currentColor; }
-    .card { break-inside: avoid; page-break-inside: avoid; }
-    h2 { break-after: avoid; page-break-after: avoid; }
+    .card { break-inside: avoid; page-break-inside: avoid; padding: 10px 12px; margin: 8px 0; }
     tr { break-inside: avoid; page-break-inside: avoid; }
+    table { font-size: 10pt; }
+    th, td { padding: 5px 7px; }
+    /* 确认列必须打出来：勾选状态是交付依据。
+       纸上改用文字符号，避免 PDF 里复选框渲染成空白。 */
+    .accept input[type=checkbox] { display: none; }
+    .chk-mark { display: inline; }
+    @page { margin: 14mm 12mm; }
+  }
+  @media (max-width: 720px) {
+    .toolbar .wrap { gap: 6px; }
+    button { padding: 7px 12px; font-size: 13px; }
   }
 </style>
 </head>
 <body>
+
+<div class="toolbar no-print">
+  <div class="wrap">
+    <button class="primary" id="btn-pdf">下载 PDF 检测报告</button>
+    <button id="btn-print">直接打印</button>
+    <button id="btn-reset">清空确认</button>
+    <div class="spacer"></div>
+    <span class="hint" id="review-summary"></span>
+  </div>
+</div>
+
 <header>
   <div class="wrap">
     <h1>Tianracer T110（RDK）整车自动检测记录</h1>
@@ -97,22 +152,34 @@
 </div>
 {% endif %}
 
+{% if report.cleanup_declaration %}
+<div class="aborted" style="background:#fff8c5;border-color:#e8d48b;color:#9a6700">
+  <strong>ℹ 车辆状态提示</strong><br>
+  {{ report.cleanup_declaration }}
+</div>
+{% endif %}
+
 <h2>交付判定</h2>
-<div class="verdict {{ report.verdict_class }}">{{ report.verdict }}</div>
+<div class="verdict {{ report.verdict_class }}" id="verdict-auto">{{ report.verdict }}</div>
+<div class="muted" id="verdict-label">程序自动判定</div>
+
+<div id="verdict-reviewed" style="display:none">
+  <div class="verdict good" id="verdict-reviewed-box">具备交付条件</div>
+  <div class="muted">人工复核后判定（下方已逐条确认接受的项计入通过）</div>
+</div>
 
 <div class="bar">
-  <span style="width: {{ '%.0f' % (report.pass_ratio * 100) }}%"></span>
+  <span id="pass-bar" style="width: {{ '%.0f' % (report.pass_ratio * 100) }}%"></span>
 </div>
-<div class="muted">
-  已执行项通过 {{ report.passed | length }} / {{ report.executed | length }}
-  （{{ '%.0f' % (report.pass_ratio * 100) }}%，仅供参考）
+<div class="muted" id="pass-line">
+  已执行项通过 <strong id="pass-num">{{ report.passed | length }}</strong> / <span id="exec-num">{{ report.executed | length }}</span>
+  （<span id="pass-pct">{{ '%.0f' % (report.pass_ratio * 100) }}</span>%，仅供参考）
   {% if report.skipped %}
   · <strong>未验证 {{ report.skipped | length }} / {{ report.judged | length }} 项
   （{{ '%.0f' % (report.skip_ratio * 100) }}%）</strong>
   {% endif %}
   {% if report.warned %}· 告警 {{ report.warned | length }} 项{% endif %}
   {% if report.failed %}· 失败 {{ report.failed | length }} 项{% endif %}
-  {% if report.noticed %}· 提示 {{ report.noticed | length }} 项（不影响出货，明细见文末）{% endif %}
 </div>
 
 {% if report.voltage_v is not none %}
@@ -120,15 +187,36 @@
 {% endif %}
 
 <h2>结果汇总</h2>
-<table>
-  <thead><tr><th>#</th><th>检测项</th><th>结果</th><th>摘要</th></tr></thead>
+<p class="muted no-print">
+  带「确认」框的项目，若判断为<strong>可接受</strong>，请勾选 —— 该行会转为绿色并计入通过。
+  失败项不可勾选。勾选状态保存在本机浏览器，重新打开同一份报告仍在。
+</p>
+<table class="accept">
+  <thead>
+    <tr>
+      <th>#</th><th>检测项</th><th>结果</th><th>摘要</th>
+      <th class="chk">已确认</th>
+    </tr>
+  </thead>
   <tbody>
   {% for item in report.results | sort(attribute='number') %}
-    <tr>
+    <tr data-number="{{ item.number }}" data-status="{{ item.status.value }}"
+        data-manual="{{ '1' if item.status.value in ('warn', 'skip') else '0' }}">
       <td>{{ item.number }}</td>
       <td>{{ item.title }}</td>
-      <td class="tag {{ item.status.value }}">{{ item.status.marker }} {{ item.status.label }}</td>
-      <td>{{ item.summary }}</td>
+      <td class="tag {{ item.status.value }}">
+        <span class="orig">{{ item.status.marker }} {{ item.status.value | upper }}</span>
+      </td>
+      <td>{{ item.summary }}<span class="accept-note" data-note="{{ item.number }}"></span></td>
+      <td class="chk">
+        {% if item.status.value in ('warn', 'skip') %}
+        <input type="checkbox" class="accept-chk" data-key="r{{ item.number }}"
+               title="勾选表示已确认接受该项，转为通过">
+        <span class="chk-mark" data-mark="r{{ item.number }}">&#9744;</span>
+        {% else %}
+        —
+        {% endif %}
+      </td>
     </tr>
   {% endfor %}
   </tbody>
@@ -137,9 +225,20 @@
 <h2>逐项记录</h2>
 
 {% for item in report.results | sort(attribute='number') %}
-<div class="card {{ item.status.value }}">
+<div class="card {{ item.status.value }}" data-card="{{ item.number }}"
+     data-status="{{ item.status.value }}"
+     data-manual="{{ '1' if item.status.value in ('warn', 'skip') else '0' }}">
   <h3>{{ item.number }}. {{ item.title }}
-    <span class="tag {{ item.status.value }}">{{ item.status.marker }} {{ item.status.label }}</span>
+    <span class="tag {{ item.status.value }}">
+      <span class="orig">{{ item.status.marker }} {{ item.status.value | upper }}</span>
+    </span>
+    {% if item.status.value in ('warn', 'skip') %}
+    <label class="no-print" style="float:right;font-weight:400;font-size:14px;cursor:pointer">
+      <input type="checkbox" class="accept-chk" data-key="r{{ item.number }}"
+             style="width:16px;height:16px;vertical-align:middle;accent-color:#1a7f37">
+      确认接受
+    </label>
+    {% endif %}
   </h3>
 
   {% if item.summary %}<p><strong>结论</strong>：{{ item.summary }}</p>{% endif %}
@@ -170,20 +269,6 @@
 </div>
 {% endfor %}
 
-{% if report.noticed %}
-<h2>提示项（不影响出货）</h2>
-<p class="muted">以下项目已取到数据并判过，结论是「不影响本次出货」。原始观测值照录，
-出货判定按通过计算；如需追溯请核对下列事实。</p>
-<table>
-  <thead><tr><th>#</th><th>检测项</th><th>观测事实</th></tr></thead>
-  <tbody>
-  {% for item in report.noticed | sort(attribute='number') %}
-    <tr><td>{{ item.number }}</td><td>{{ item.title }}</td><td class="muted">{{ item.summary }}</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% endif %}
-
 <h2>未执行 / 未验证项</h2>
 {% if report.skipped %}
 <table>
@@ -194,24 +279,31 @@
   {% endfor %}
   </tbody>
 </table>
+<p class="muted no-print">
+  未验证项同样可以人工确认接受（例如已知本次不测运动），
+  但请在报告上写清原因 —— 确认后会计入通过数。
+</p>
 {% else %}
 <p>无。所有检测项均已执行。</p>
 {% endif %}
 
-<h3 id="manual">需要人工确认的项目</h3>
-<p class="muted">直接在下面打勾。勾选状态会保存在本机浏览器里，下次打开同一份报告不会丢；打印时会一并输出。</p>
-<table class="manual">
-  <thead><tr><th>项目</th><th>已确认</th><th>说明</th></tr></thead>
+<h3 id="manual">需要人工现场确认的项目</h3>
+<p class="muted">
+  以下内容程序无法判定，请在现场逐项操作后打勾。
+  勾选状态保存在本机浏览器；<strong>导出 PDF 时会一并带入</strong>。
+</p>
+<table class="accept">
+  <thead><tr><th>项目</th><th class="chk">已确认</th><th>说明</th></tr></thead>
   <tbody>
-    <tr><td>开关机（长按 3 秒）</td><td><input type="checkbox" class="manual-chk" data-key="m1"></td><td>正常上电到桌面</td></tr>
-    <tr><td>电调模式</td><td><input type="checkbox" class="manual-chk" data-key="m2"></td><td>Li 电模式 + F/R 模式</td></tr>
-    <tr><td>遥控手感（油门线性）</td><td><input type="checkbox" class="manual-chk" data-key="m3"></td><td>无顿挫、无突变</td></tr>
-    <tr><td>遥控转向（回中、对称）</td><td><input type="checkbox" class="manual-chk" data-key="m4"></td><td>无卡滞、无异响</td></tr>
-    <tr><td>车与遥控器是否匹配</td><td><input type="checkbox" class="manual-chk" data-key="m8"></td><td>上电后遥控器能直接控制本车，无需重新对频</td></tr>
-    <tr><td>车是否跑得直</td><td><input type="checkbox" class="manual-chk" data-key="m9"></td><td>遥控直线行驶 3~5 m 不跑偏，方向不回中需调整</td></tr>
-    <tr><td>建图实际效果</td><td><input type="checkbox" class="manual-chk" data-key="m5"></td><td>需遥控低速走场</td></tr>
-    <tr><td>teb 导航到点</td><td><input type="checkbox" class="manual-chk" data-key="m6"></td><td>需下发目标点</td></tr>
-    <tr><td>异响 / 异味 / 线缆 / 电池鼓包</td><td><input type="checkbox" class="manual-chk" data-key="m7"></td><td>目视与手感</td></tr>
+    <tr><td>开关机（长按 3 秒）</td><td><input type="checkbox" class="manual-chk" data-key="m1"><span class="chk-mark" data-mark="m1">&#9744;</span></td><td>正常上电到桌面</td></tr>
+    <tr><td>电调模式</td><td><input type="checkbox" class="manual-chk" data-key="m2"><span class="chk-mark" data-mark="m2">&#9744;</span></td><td>Li 电模式 + F/R 模式</td></tr>
+    <tr><td>遥控手感（油门线性）</td><td><input type="checkbox" class="manual-chk" data-key="m3"><span class="chk-mark" data-mark="m3">&#9744;</span></td><td>无顿挫、无突变</td></tr>
+    <tr><td>遥控转向（回中、对称）</td><td><input type="checkbox" class="manual-chk" data-key="m4"><span class="chk-mark" data-mark="m4">&#9744;</span></td><td>无卡滞、无异响</td></tr>
+    <tr><td>车与遥控器是否匹配</td><td><input type="checkbox" class="manual-chk" data-key="m8"><span class="chk-mark" data-mark="m8">&#9744;</span></td><td>上电后遥控器能直接控制本车，无需重新对频</td></tr>
+    <tr><td>车是否跑得直</td><td><input type="checkbox" class="manual-chk" data-key="m9"><span class="chk-mark" data-mark="m9">&#9744;</span></td><td>遥控直线行驶 3~5 m 不跑偏，方向不回中需调整</td></tr>
+    <tr><td>建图实际效果</td><td><input type="checkbox" class="manual-chk" data-key="m5"><span class="chk-mark" data-mark="m5">&#9744;</span></td><td>需遥控低速走场</td></tr>
+    <tr><td>teb 导航到点</td><td><input type="checkbox" class="manual-chk" data-key="m6"><span class="chk-mark" data-mark="m6">&#9744;</span></td><td>需下发目标点</td></tr>
+    <tr><td>异响 / 异味 / 线缆 / 电池鼓包</td><td><input type="checkbox" class="manual-chk" data-key="m7"><span class="chk-mark" data-mark="m7">&#9744;</span></td><td>目视与手感</td></tr>
   </tbody>
 </table>
 <p id="manual-progress" class="muted"></p>
@@ -220,7 +312,7 @@
 <ul>
   <li>传感器均为短时采样（5–10 秒），未做长时稳定性测试。</li>
   <li>建图与导航的<strong>实际效果</strong>需人工遥控验证，程序只验证链路能起。</li>
-  <li>「人工项」来自运行时问答，程序无法替代人的判断。</li>
+  <li>人工确认项与「确认接受」均为现场判断，程序无法替代人的决定。</li>
   <li>雷达有效视场约 ±120° 是 LakiBeam1 物理特性，后方无数据属正常。</li>
   <li>若记录中出现「已临时修正」字样，说明车辆环境变量配置有误，程序仅在本次会话内覆盖，<strong>未修改车辆任何文件</strong>。</li>
 </ul>
@@ -245,6 +337,14 @@
 </table>
 {% endif %}
 
+<h3>复核记录</h3>
+<table id="review-log">
+  <thead><tr><th>时间</th><th>操作</th></tr></thead>
+  <tbody>
+    <tr><td>{{ report.finished_at or report.started_at }}</td><td>程序完成自动检测</td></tr>
+  </tbody>
+</table>
+
 <p class="muted" style="margin-top:40px">
   本报告由 TianracerT110_Test_SoftWare_RDK 自动生成 · 原始命令记录见同目录 <code>raw.log</code>
 </p>
@@ -252,41 +352,244 @@
 </div>
 
 <script>
-/* 人工确认项打勾状态持久化。
-   报告是本地 file:// 打开的，localStorage 在某些浏览器设置下会被禁用，
-   所以全程 try/catch：存不了也不影响勾选和打印。 */
-(function () {
-  var KEY = 'ttr-manual-{{ report.started_at }}';
-  var boxes = Array.prototype.slice.call(
-    document.querySelectorAll('input.manual-chk'));
-  var saved = {};
-  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; }
-  catch (e) { saved = {}; }
+/* ============================================================
+   人工确认 + PDF 导出
 
-  function paint() {
-    var done = 0;
-    boxes.forEach(function (b) {
-      if (b.checked) done++;
-      var row = b.closest('tr');
-      if (row) row.classList.toggle('checked', b.checked);
+   设计原则（2026-11-03 用户要求）：
+   - 程序只报事实，黄条不自己变绿
+   - 由人在报告上逐条确认接受，勾了才转绿
+   - 「下载 PDF」就在报告里，勾选状态一并带入打印件
+   ============================================================ */
+(function () {
+  var KEY = 'ttr-review-{{ report.started_at }}';
+  var state = {};
+
+  var rows = Array.prototype.slice.call(document.querySelectorAll('tr[data-number]'));
+  var cards = Array.prototype.slice.call(document.querySelectorAll('div[data-card]'));
+  var chks = Array.prototype.slice.call(document.querySelectorAll('.accept-chk'));
+  var manualBoxes = Array.prototype.slice.call(document.querySelectorAll('.manual-chk'));
+
+  try { state = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; }
+  catch (e) { state = {}; }
+
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+  }
+
+  function nowText() {
+    var d = new Date();
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+           ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function addLog(action) {
+    var tbody = document.querySelector('#review-log tbody');
+    if (!tbody) return;
+    var tr = document.createElement('tr');
+    var td1 = document.createElement('td');
+    var td2 = document.createElement('td');
+    td1.textContent = nowText();
+    td2.textContent = action;
+    tr.appendChild(td1); tr.appendChild(td2);
+    tbody.appendChild(tr);
+  }
+
+  /* 把某一项标记为「已确认接受」或撤销 */
+  function applyRow(num, accepted) {
+    var row = rows.filter(function (r) { return r.dataset.number === String(num); })[0];
+    var card = cards.filter(function (c) { return c.dataset.card === String(num); })[0];
+    [row, card].forEach(function (el) {
+      if (!el) return;
+      el.classList.toggle('accepted', accepted);
     });
-    var el = document.getElementById('manual-progress');
-    if (el) {
-      el.textContent = done === boxes.length
-        ? '人工确认项已全部完成（' + done + ' / ' + boxes.length + '）'
-        : '人工确认进度：' + done + ' / ' + boxes.length;
+    var note = document.querySelector('.accept-note[data-note="' + num + '"]');
+    if (note) note.textContent = accepted ? '（已人工确认接受）' : '';
+    var mark = document.querySelector('.chk-mark[data-mark="r' + num + '"]');
+    if (mark) mark.textContent = accepted ? '\u2705' : '\u2610';
+  }
+
+  /* 重算「已执行项通过 N / M」与顶部判定 */
+  function recompute() {
+    var passed = 0, executed = 0, failed = 0, skipped = 0;
+    var acceptCount = 0;
+
+    rows.forEach(function (r) {
+      var base = r.dataset.status;
+      var accepted = r.classList.contains('accepted');
+      if (base === 'fail') { failed++; }
+      if (base === 'skip') { skipped++; }
+
+      // 已执行 = pass + warn + fail。
+      // skip 本来不算执行过；但一旦人工确认接受，就等于人替它做了验证，
+      // 分母也跟着 +1，否则会出现「通过数 > 已执行数」的怪值。
+      if (base === 'pass' || base === 'warn' || base === 'fail') executed++;
+      if (base === 'skip' && accepted) executed++;
+
+      if (base === 'pass' || (accepted && (base === 'warn' || base === 'skip'))) {
+        passed++;
+        if (accepted && base !== 'pass') acceptCount++;
+      }
+    });
+
+    var pct = executed ? Math.round(passed / executed * 100) : 0;
+    document.getElementById('pass-num').textContent = passed;
+    document.getElementById('exec-num').textContent = executed;
+    document.getElementById('pass-pct').textContent = pct;
+    document.getElementById('pass-bar').style.width = pct + '%';
+
+    // 「人工复核后判定」：没有 FAIL，且所有 warn/skip 都确认了才转绿
+    var pending = rows.filter(function (r) {
+      var b = r.dataset.status;
+      return (b === 'warn' || b === 'skip') && !r.classList.contains('accepted');
+    }).length;
+
+    var box = document.getElementById('verdict-reviewed');
+    var label = document.getElementById('verdict-label');
+
+    if (acceptCount > 0) {
+      box.style.display = '';
+      label.style.display = 'none';
+      var text;
+      var cls = 'verdict';
+      if (failed > 0) {
+        text = '仍不具备交付条件（存在 ' + failed + ' 项失败，人工确认不能覆盖失败项）';
+        cls = 'verdict bad';
+      } else if (pending > 0) {
+        text = '已确认接受 ' + acceptCount + ' 项，仍有 ' + pending + ' 项待确认';
+        cls = 'verdict warn';
+      } else {
+        text = '具备交付条件（人工确认接受 ' + acceptCount + ' 项）';
+        cls = 'verdict good';
+      }
+      var boxEl = document.getElementById('verdict-reviewed-box');
+      boxEl.textContent = text;
+      boxEl.className = cls;
+    } else {
+      box.style.display = 'none';
+      label.style.display = '';
+    }
+
+    // 工具条摘要
+    var summary = document.getElementById('review-summary');
+    if (summary) {
+      var doneM = manualBoxes.filter(function (b) { return b.checked; }).length;
+      summary.textContent = '现场确认 ' + doneM + '/' + manualBoxes.length +
+        ' · 确认接受 ' + acceptCount + ' 项' +
+        (pending ? ' · 待确认 ' + pending : '');
+    }
+
+    // 现场确认进度
+    var prog = document.getElementById('manual-progress');
+    if (prog) {
+      var m = manualBoxes.filter(function (b) { return b.checked; }).length;
+      prog.textContent = m === manualBoxes.length
+        ? '现场确认项已全部完成（' + m + ' / ' + manualBoxes.length + '）'
+        : '现场确认进度：' + m + ' / ' + manualBoxes.length;
     }
   }
 
-  boxes.forEach(function (b) {
-    if (saved[b.dataset.key]) b.checked = true;
-    b.addEventListener('change', function () {
-      saved[b.dataset.key] = b.checked;
-      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
-      paint();
+  /* 勾选框与行/card 双向同步（表格和卡片两个位置各有一个 checkbox） */
+  chks.forEach(function (box) {
+    var key = box.dataset.key;
+    var num = key.replace(/^r/, '');
+    if (state[key]) {
+      box.checked = true;
+    }
+    box.addEventListener('change', function () {
+      chks.forEach(function (other) {
+        if (other !== box && other.dataset.key === key) other.checked = box.checked;
+      });
+      state[key] = box.checked;
+      save();
+      applyRow(num, box.checked);
+      addLog((box.checked ? '确认接受' : '撤销确认') + '：第 ' + num + ' 项');
+      recompute();
     });
   });
-  paint();
+
+  /* 现场人工项 */
+  manualBoxes.forEach(function (b) {
+    var key = b.dataset.key;
+    if (state[key]) b.checked = true;
+    b.addEventListener('change', function () {
+      state[key] = b.checked;
+      save();
+      var row = b.closest('tr');
+      if (row) row.classList.toggle('accepted', b.checked);
+      var mk = document.querySelector('.chk-mark[data-mark="' + key + '"]');
+      if (mk) mk.textContent = b.checked ? '\u2705' : '\u2610';
+      var cell = row ? row.querySelector('td') : null;
+      var name = cell ? cell.textContent.trim() : key;
+      addLog((b.checked ? '现场确认' : '撤销现场确认') + '：' + name);
+      recompute();
+    });
+    if (b.checked) {
+      var row0 = b.closest('tr');
+      if (row0) row0.classList.add('accepted');
+      var mk0 = document.querySelector('.chk-mark[data-mark="' + key + '"]');
+      if (mk0) mk0.textContent = '\u2705';
+    }
+  });
+
+  /* 初始化：把已保存的确认状态画到行上 */
+  chks.forEach(function (box) {
+    var num = box.dataset.key.replace(/^r/, '');
+    applyRow(num, box.checked);
+  });
+  recompute();
+
+  /* ---- PDF / 打印 ---- */
+  function doPrint() {
+    recompute();
+    window.print();
+  }
+
+  document.getElementById('btn-pdf').addEventListener('click', function () {
+    var n = chks.filter(function (c) { return c.checked; }).length;
+    var m = manualBoxes.filter(function (c) { return c.checked; }).length;
+    var total = chks.length + manualBoxes.length;
+    if (n + m < total) {
+      var ok = window.confirm(
+        '还有 ' + (total - n - m) + ' 项未勾选确认。\n\n' +
+        '勾选状态会保存在本机浏览器，导出后仍可继续补勾。\n\n' +
+        '继续导出 PDF？\n\n' +
+        '提示：在弹出的打印窗口里，打印机选择「另存为 PDF」或\n' +
+        '「Microsoft Print to PDF」，再点「保存」即可得到 PDF 文件。'
+      );
+      if (!ok) return;
+    } else {
+      window.alert(
+        '即将打开打印窗口。\n\n' +
+        '打印机请选择「另存为 PDF」或「Microsoft Print to PDF」，\n' +
+        '再点「保存」即可得到 PDF 文件。'
+      );
+    }
+    doPrint();
+  });
+
+  document.getElementById('btn-print').addEventListener('click', doPrint);
+
+  document.getElementById('btn-reset').addEventListener('click', function () {
+    if (!window.confirm('清空全部勾选状态？此操作不可撤销。')) return;
+    state = {};
+    save();
+    chks.forEach(function (b) { b.checked = false; });
+    manualBoxes.forEach(function (b) {
+      b.checked = false;
+      var row = b.closest('tr');
+      if (row) row.classList.remove('accepted');
+    });
+    rows.concat(cards).forEach(function (el) { el.classList.remove('accepted'); });
+    Array.prototype.forEach.call(document.querySelectorAll('.accept-note'), function (n) {
+      n.textContent = '';
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.chk-mark'), function (m) {
+      m.textContent = '\u2610';
+    });
+    addLog('清空全部勾选');
+    recompute();
+  });
 })();
 </script>
 </body>

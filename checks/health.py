@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from core.verdict import CheckResult, Status, judge_range
+from core.verdict import CheckResult, Status, judge_max_only, judge_min_only, judge_range
 
 
 def run(ctx) -> CheckResult:
@@ -31,13 +31,8 @@ def run(ctx) -> CheckResult:
         result.add("最高温度", f"{max_temp:.1f}", "°C", expected=f"< {fail_c} °C")
         # 温度是单侧指标（越低越好）。不能用 judge_range(..., low=0,
         # warn_margin=...)：那等于「温度低于 warn_margin 也算告警」，
-        # 冬天冷启动读 5°C 就会误报。三段显式判定。
-        if max_temp >= fail_c:
-            temp_status = Status.FAIL
-        elif max_temp >= warn_c:
-            temp_status = Status.WARN
-        else:
-            temp_status = Status.PASS
+        # 冬天冷启动读 5°C 就会误报。
+        temp_status = judge_max_only(max_temp, warn_c, fail_c)
     else:
         result.add("最高温度", "读取失败")
         temp_status = Status.SKIP
@@ -64,13 +59,7 @@ def run(ctx) -> CheckResult:
         result.add("根分区占用", f"{disk_pct:.0f}", "%",
                    expected=f"< {disk_warn:.0f}%",
                    note=f"{disk_warn:.0f}% 警告，{disk_fail:.0f}% 失败")
-        # 超过 fail 才是 FAIL，在 warn..fail 之间是 WARN
-        if disk_pct >= disk_fail:
-            disk_status = Status.FAIL
-        elif disk_pct >= disk_warn:
-            disk_status = Status.WARN
-        else:
-            disk_status = Status.PASS
+        disk_status = judge_max_only(disk_pct, disk_warn, disk_fail)
     else:
         result.add("磁盘", "读取失败")
         disk_status = Status.SKIP
@@ -84,12 +73,7 @@ def run(ctx) -> CheckResult:
         # 负载同样是单侧指标。原来传 low=0/warn_margin=1.5，
         # 把「负载低于 1.5」也算成告警，导致空载的车被判 WARN
         # （2026-11-02 实测：load 1.26 报「指标接近阈值」）。
-        if load1 >= load_warn * 1.5:
-            load_status = Status.FAIL
-        elif load1 >= load_warn:
-            load_status = Status.WARN
-        else:
-            load_status = Status.PASS
+        load_status = judge_max_only(load1, load_warn, load_warn * 1.5)
     else:
         result.add("负载", "读取失败")
         load_status = Status.SKIP

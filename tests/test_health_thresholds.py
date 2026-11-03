@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from checks import health  # noqa: E402
+from core.verdict import Status  # noqa: E402
 
 
 class _Out:
@@ -91,3 +92,46 @@ class TestDiskStillJudged:
 
     def test_disk_above_fail_is_fail(self):
         assert health.run(_ctx(1.0, 40.0, disk_pct=97)).status.value == "fail"
+
+class TestJudgeMaxOnly:
+    """单侧指标（越低越好）的通用判定。"""
+
+    def test_low_value_passes(self):
+        from core.verdict import judge_max_only
+        assert judge_max_only(1.26, 3.0, 4.5) is Status.PASS
+
+    def test_above_warn_is_warn(self):
+        from core.verdict import judge_max_only
+        assert judge_max_only(3.5, 3.0, 4.5) is Status.WARN
+
+    def test_above_fail_is_fail(self):
+        from core.verdict import judge_max_only
+        assert judge_max_only(5.0, 3.0, 4.5) is Status.FAIL
+
+    def test_boundary_low_is_pass(self):
+        from core.verdict import judge_max_only
+        assert judge_max_only(0.0, 3.0, 4.5) is Status.PASS
+
+    def test_none_is_skip_not_pass(self):
+        from core.verdict import judge_max_only
+        assert judge_max_only(None, 3.0, 4.5) is Status.SKIP
+
+
+class TestJudgeMinOnly:
+    """单侧指标（越高越好）的通用判定。"""
+
+    def test_high_value_passes(self):
+        from core.verdict import judge_min_only
+        assert judge_min_only(6.0, 1.0, 0.5) is Status.PASS
+
+    def test_below_warn_is_warn(self):
+        from core.verdict import judge_min_only
+        assert judge_min_only(0.8, 1.0, 0.5) is Status.WARN
+
+    def test_below_fail_is_fail(self):
+        from core.verdict import judge_min_only
+        assert judge_min_only(0.3, 1.0, 0.5) is Status.FAIL
+
+    def test_none_is_skip(self):
+        from core.verdict import judge_min_only
+        assert judge_min_only(None, 1.0, 0.5) is Status.SKIP

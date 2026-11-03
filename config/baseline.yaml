@@ -62,6 +62,10 @@ odom:
 
 voltage:
   full_v: 12.4
+  # normal_v <= low_v 时为「单阈值模式」：没有「偏低提醒」档，
+  # 只有 通过 / 必须充电 两种结论。
+  # 若想让 11.0~11.7 之间显示「偏低（警告）」，把 normal_v 调高即可，
+  # 例如 normal_v: 11.7、low_v: 11.0。
   normal_v: 11.0
   low_v: 11.0
   stop_test_below_v: 11.0
@@ -80,10 +84,16 @@ health:
 traces:
   ros_log_size_warn_mb: 200
   bash_history_lines_warn: 800
-  # 测试完整跑完后，自动删除车上使用痕迹（ROS 日志 / bash_history / .viminfo）。
-  # 中途终止不删，保留日志便于排查。调试时改 false。
-  auto_cleanup: true
-  note: "完整跑完后自动清理；中止时保留供排查"
+  # 测试完整跑完后是否自动删除车上使用痕迹。
+  #
+  # 默认 **false**（2026-11-03 审查指出：默认开启会让用户在不知情的情况下
+  # 丢掉车上的命令历史，违反「绝不修改车辆持久配置」的约束）。
+  # 需要清痕迹时，用界面上的「清理使用记录」按钮显式执行，或把这里改成 true。
+  auto_cleanup: false
+  # 即使开启 auto_cleanup，是否保留 .bash_history。
+  # 命令历史是现场排查的证据，不是「痕迹」，建议保留。
+  keep_bash_history: true
+  note: "默认不自动清理；显式清理时也会保留命令历史，除非 keep_bash_history: false"
 
 motion:
   # ---------------------------------------------------------------------

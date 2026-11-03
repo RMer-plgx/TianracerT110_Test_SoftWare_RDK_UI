@@ -19,14 +19,6 @@ class Status(enum.Enum):
     FAIL = "fail"
     SKIP = "skip"
     MANUAL = "manual"
-    # 提示级：数据不完美，但对「能不能出货」没有影响。
-    # 显示为绿色、计入通过项，但原始观测值照样写进报告，
-    # 并在报告尾部的「提示项」表里集中列出，不藏信息。
-    #
-    # 引入原因（用户 2026-11-02）：出货人员拿到的报告如果一片黄条，
-    # 每一条都要他去判断「这车到底能不能发」，反而拖慢出货。
-    # 区分「真问题」和「看一眼就行的差异」，黄条才有意义。
-    NOTICE = "notice"
 
     @property
     def marker(self) -> str:
@@ -36,24 +28,15 @@ class Status(enum.Enum):
             Status.FAIL: "❌",
             Status.SKIP: "⏭️",
             Status.MANUAL: "👤",
-            Status.NOTICE: "✅",
         }[self]
-
-    @property
-    def label(self) -> str:
-        """报告里显示的英文标签。NOTICE 显示为 PASS。"""
-        if self is Status.NOTICE:
-            return "PASS"
-        return self.name
 
     @property
     def counts_as_pass(self) -> bool:
         """SKIP 不算通过。这是防漏报的核心规则。
 
         拿不到数据就是没验证过，不能因为「没有坏消息」就当成好消息。
-        NOTICE 算通过：它已经取到数据并判断过了，只是结论是「不影响出货」。
         """
-        return self in (Status.PASS, Status.NOTICE, Status.MANUAL)
+        return self is Status.PASS or self is Status.MANUAL
 
 
 @dataclass
@@ -117,6 +100,9 @@ class Report:
     environment: Dict[str, str] = field(default_factory=dict)
     aborted_reason: str = ""
     voltage_v: Optional[float] = None
+    # 若本次测试删除了车上的持久文件（ROS 日志等），这里写明，
+    # 报告开头要醒目展示 —— 读者必须知道拿到的是「被清过的车」。
+    cleanup_declaration: str = ""
 
     def add(self, result: CheckResult) -> None:
         self.results.append(result)
@@ -131,14 +117,7 @@ class Report:
 
     @property
     def passed(self) -> List[CheckResult]:
-        """通过项。含 NOTICE——两者对出货同等含义。"""
-        return [r for r in self.results
-                if r.status in (Status.PASS, Status.NOTICE)]
-
-    @property
-    def noticed(self) -> List[CheckResult]:
-        """提示项：不影响出货，但报告尾部要单列。"""
-        return [r for r in self.results if r.status is Status.NOTICE]
+        return [r for r in self.results if r.status is Status.PASS]
 
     @property
     def skipped(self) -> List[CheckResult]:
@@ -148,8 +127,7 @@ class Report:
     def executed(self) -> List[CheckResult]:
         """真正跑了的项（不含 SKIP 和 MANUAL）。"""
         return [r for r in self.results
-                if r.status in (Status.PASS, Status.NOTICE,
-                                Status.WARN, Status.FAIL)]
+                if r.status in (Status.PASS, Status.WARN, Status.FAIL)]
 
     @property
     def judged(self) -> List[CheckResult]:
@@ -227,7 +205,6 @@ class Report:
         """给 HTML 模板用的 CSS class。
 
         中止的报告不能用绿色，否则读者只看颜色会误以为合格（审查发现）。
-        NOTICE 不影响颜色——它的定义就是「对出货无影响」。
         """
         if self.aborted_reason:
             return "bad"
@@ -270,6 +247,11 @@ def judge_voltage(volts: Optional[float], normal_v: float, low_v: float) -> Stat
     >= normal_v    满电/正常     PASS
     >= low_v       偏低          WARN
     <  low_v       必须充电      FAIL
+
+    **单阈值模式**：当 normal_v <= low_v 时没有「偏低」档，
+    只有 PASS / FAIL 两种结果（>= low_v 通过，否则必须充电）。
+    这是 2026-11-01 把交付线定到 11.0 V 后的实际配置，
+    在这里写明是为了让调用方知道 WARN 分支在该配置下不可达。
     """
     if volts is None:
         return Status.SKIP
@@ -282,6 +264,53 @@ def judge_voltage(volts: Optional[float], normal_v: float, low_v: float) -> Stat
     if v >= low_v:
         return Status.WARN
     return Status.FAIL
+
+
+def is_single_threshold(normal_v: float, low_v: float) -> bool:
+    """电压配置是否处于单阈值模式（没有「偏低提醒」档）。"""
+    return float(normal_v) <= float(low_v)
+
+
+def judge_max_only(value: Optional[float], warn: float, fail: float) -> Status:
+    """单侧指标：越低越好（温度、负载、噪音、延迟）。
+
+    正常 → PASS；>= warn → WARN；>= fail → FAIL。
+    **低值永远不告警** —— 这正是 2026-11-02 实车踩到的坑：
+    用 judge_range(low=0, warn_margin=m) 会把「负载 1.26 < 1.5」
+    也判成告警，空载的车被报「指标接近阈值」。
+
+    取不到数据返回 SKIP（不冒充合格）。
+    """
+    if value is None:
+        return Status.SKIP
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return Status.SKIP
+    if v >= float(fail):
+        return Status.FAIL
+    if v >= float(warn):
+        return Status.WARN
+    return Status.PASS
+
+
+def judge_min_only(value: Optional[float], warn: float, fail: float) -> Status:
+    """单侧指标：越高越好（可用内存、信号强度）。
+
+    正常 → PASS；<= warn → WARN；<= fail → FAIL。
+    **高值永远不告警**。
+    """
+    if value is None:
+        return Status.SKIP
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return Status.SKIP
+    if v <= float(fail):
+        return Status.FAIL
+    if v <= float(warn):
+        return Status.WARN
+    return Status.PASS
 
 
 def judge_envvar(actual: Optional[str], expected: str,
