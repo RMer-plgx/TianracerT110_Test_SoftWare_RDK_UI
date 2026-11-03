@@ -23,6 +23,8 @@ DARK = {
     "warn": "#E0A030",
     "fail": "#E05252",
     "skip": "#7A7268",
+    # 中间态：已测一部分，等落地段。青蓝色，与告警黄、跳过灰都能区分
+    "pending": "#4A9BC4",
     "running": BRAND_LIGHT,
 }
 
@@ -40,6 +42,7 @@ LIGHT = {
     "warn": "#B47600",
     "fail": "#C0332E",
     "skip": "#8A8278",
+    "pending": "#1F6F94",
     "running": BRAND_DARK,
 }
 

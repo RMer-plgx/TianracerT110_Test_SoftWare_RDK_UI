@@ -19,6 +19,7 @@ STATUS_COLOR_KEY = {
     Status.FAIL: "fail",
     Status.SKIP: "skip",
     Status.MANUAL: "skip",
+    Status.PENDING: "pending",
 }
 
 STATUS_TEXT = {
@@ -27,6 +28,7 @@ STATUS_TEXT = {
     Status.FAIL: "失败",
     Status.SKIP: "跳过",
     Status.MANUAL: "人工",
+    Status.PENDING: "待验证",
 }
 
 

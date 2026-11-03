@@ -6,7 +6,7 @@
 <title>Tianracer T110 检测报告 — {{ report.host }}</title>
 <style>
   :root {
-    --good: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --good: #1a7f37; --warn: #9a6700; --bad: #cf222e; --pending: #1f6f94;
     --bg: #ffffff; --fg: #1f2328; --muted: #656d76;
     --line: #d1d9e0; --soft: #f6f8fa;
   }
@@ -46,6 +46,8 @@
   .tag.warn { color: var(--warn); }
   .tag.fail { color: var(--bad); }
   .tag.skip { color: var(--muted); }
+  /* 中间态：已测一部分，等落地段。青色，与告警黄、跳过灰都不同 */
+  .tag.pending { color: var(--pending); }
   .tag.manual { color: #8250df; }
   .bar { height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; margin: 8px 0; }
   .bar > span { display: block; height: 100%; background: var(--good); transition: width .25s ease; }
@@ -54,6 +56,7 @@
   .card.warn { border-left: 4px solid var(--warn); }
   .card.pass { border-left: 4px solid var(--good); }
   .card.skip { border-left: 4px solid var(--muted); }
+  .card.pending { border-left: 4px solid var(--pending); }
   .muted { color: var(--muted); }
   ul { padding-left: 22px; }
   .aborted { background: #ffebe9; border: 1px solid #ffcecb; border-radius: 6px; padding: 12px 16px; margin: 16px 0; }
@@ -174,10 +177,11 @@
 <div class="muted" id="pass-line">
   已执行项通过 <strong id="pass-num">{{ report.passed | length }}</strong> / <span id="exec-num">{{ report.executed | length }}</span>
   （<span id="pass-pct">{{ '%.0f' % (report.pass_ratio * 100) }}</span>%，仅供参考）
-  {% if report.skipped %}
-  · <strong>未验证 {{ report.skipped | length }} / {{ report.judged | length }} 项
+  {% if report.unverified %}
+  · <strong>未验证 {{ report.unverified | length }} / {{ report.judged | length }} 项
   （{{ '%.0f' % (report.skip_ratio * 100) }}%）</strong>
   {% endif %}
+  {% if report.pending %}· 待落地验证 {{ report.pending | length }} 项{% endif %}
   {% if report.warned %}· 告警 {{ report.warned | length }} 项{% endif %}
   {% if report.failed %}· 失败 {{ report.failed | length }} 项{% endif %}
 </div>
@@ -201,7 +205,7 @@
   <tbody>
   {% for item in report.results | sort(attribute='number') %}
     <tr data-number="{{ item.number }}" data-status="{{ item.status.value }}"
-        data-manual="{{ '1' if item.status.value in ('warn', 'skip') else '0' }}">
+        data-manual="{{ '1' if item.status.value in ('warn', 'skip', 'pending') else '0' }}">
       <td>{{ item.number }}</td>
       <td>{{ item.title }}</td>
       <td class="tag {{ item.status.value }}">
@@ -209,7 +213,7 @@
       </td>
       <td>{{ item.summary }}<span class="accept-note" data-note="{{ item.number }}"></span></td>
       <td class="chk">
-        {% if item.status.value in ('warn', 'skip') %}
+        {% if item.status.value in ('warn', 'skip', 'pending') %}
         <input type="checkbox" class="accept-chk" data-key="r{{ item.number }}"
                title="勾选表示已确认接受该项，转为通过">
         <span class="chk-mark" data-mark="r{{ item.number }}">&#9744;</span>
@@ -227,12 +231,12 @@
 {% for item in report.results | sort(attribute='number') %}
 <div class="card {{ item.status.value }}" data-card="{{ item.number }}"
      data-status="{{ item.status.value }}"
-     data-manual="{{ '1' if item.status.value in ('warn', 'skip') else '0' }}">
+     data-manual="{{ '1' if item.status.value in ('warn', 'skip', 'pending') else '0' }}">
   <h3>{{ item.number }}. {{ item.title }}
     <span class="tag {{ item.status.value }}">
       <span class="orig">{{ item.status.marker }} {{ item.status.value | upper }}</span>
     </span>
-    {% if item.status.value in ('warn', 'skip') %}
+    {% if item.status.value in ('warn', 'skip', 'pending') %}
     <label class="no-print" style="float:right;font-weight:400;font-size:14px;cursor:pointer">
       <input type="checkbox" class="accept-chk" data-key="r{{ item.number }}"
              style="width:16px;height:16px;vertical-align:middle;accent-color:#1a7f37">
@@ -270,7 +274,24 @@
 {% endfor %}
 
 <h2>未执行 / 未验证项</h2>
+{% if report.pending %}
+<h3>待落地验证（{{ report.pending | length }} 项）</h3>
+<p class="muted">
+  这些项在本阶段已经测过，但结论要等落地段的转向互校才能确定。
+  <strong>它们现在不算通过</strong>。如果本次不做落地测试，可人工确认接受。
+</p>
+<table>
+  <thead><tr><th>#</th><th>项目</th><th>说明</th></tr></thead>
+  <tbody>
+  {% for item in report.pending | sort(attribute='number') %}
+    <tr><td>{{ item.number }}</td><td>{{ item.title }}</td><td>{{ item.summary }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 {% if report.skipped %}
+<h3>完全未执行（{{ report.skipped | length }} 项）</h3>
 <table>
   <thead><tr><th>#</th><th>项目</th><th>原因</th></tr></thead>
   <tbody>
@@ -283,8 +304,10 @@
   未验证项同样可以人工确认接受（例如已知本次不测运动），
   但请在报告上写清原因 —— 确认后会计入通过数。
 </p>
-{% else %}
-<p>无。所有检测项均已执行。</p>
+{% endif %}
+
+{% if not report.unverified %}
+<p>无。所有检测项均已执行并可判定。</p>
 {% endif %}
 
 <h3 id="manual">需要人工现场确认的项目</h3>
@@ -411,7 +434,7 @@
 
   /* 重算「已执行项通过 N / M」与顶部判定 */
   function recompute() {
-    var passed = 0, executed = 0, failed = 0, skipped = 0;
+    var passed = 0, executed = 0, failed = 0, skipped = 0, pendingCount = 0;
     var acceptCount = 0;
 
     rows.forEach(function (r) {
@@ -419,14 +442,16 @@
       var accepted = r.classList.contains('accepted');
       if (base === 'fail') { failed++; }
       if (base === 'skip') { skipped++; }
+      if (base === 'pending') { pendingCount++; }
 
       // 已执行 = pass + warn + fail。
       // skip 本来不算执行过；但一旦人工确认接受，就等于人替它做了验证，
       // 分母也跟着 +1，否则会出现「通过数 > 已执行数」的怪值。
       if (base === 'pass' || base === 'warn' || base === 'fail') executed++;
-      if (base === 'skip' && accepted) executed++;
+      if ((base === 'skip' || base === 'pending') && accepted) executed++;
 
-      if (base === 'pass' || (accepted && (base === 'warn' || base === 'skip'))) {
+      if (base === 'pass' ||
+          (accepted && (base === 'warn' || base === 'skip' || base === 'pending'))) {
         passed++;
         if (accepted && base !== 'pass') acceptCount++;
       }
@@ -441,7 +466,8 @@
     // 「人工复核后判定」：没有 FAIL，且所有 warn/skip 都确认了才转绿
     var pending = rows.filter(function (r) {
       var b = r.dataset.status;
-      return (b === 'warn' || b === 'skip') && !r.classList.contains('accepted');
+      return (b === 'warn' || b === 'skip' || b === 'pending') &&
+             !r.classList.contains('accepted');
     }).length;
 
     var box = document.getElementById('verdict-reviewed');

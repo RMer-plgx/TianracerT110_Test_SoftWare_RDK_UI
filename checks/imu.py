@@ -6,6 +6,10 @@ from core.verdict import CheckResult, Status, judge_all, judge_range
 
 from ._util import measure_hz, run_probe
 
+# 架空段测完后追加的固定后缀。runner 在落地段结束时按这个字串回填，
+# 所以它必须是常量、不能各处手写。
+PENDING_SUFFIX = "；频率与静态指标正常，航向精度待落地互校"
+
 
 def run(ctx) -> CheckResult:
     result = CheckResult(number=8, title="IMU", status=Status.PASS)
@@ -102,5 +106,16 @@ def run(ctx) -> CheckResult:
         if roll is not None and pitch is not None:
             parts.append(f"roll {roll:.2f}° / pitch {pitch:.2f}°")
         result.summary = "，".join(parts) if parts else "IMU 正常"
+
+        # 架空段只能证明「有数据、频率对、静止不漂」。
+        # 陀螺仪准不准，必须落地转一整圈、与里程计比对航向才知道。
+        # 用户 2026-11-03：这种「测了一半」不能直接标绿。
+        level = getattr(ctx, "motion_level", "none")
+        if level != "none":
+            result.status = Status.PENDING
+            result.needs_ground = True
+            result.summary += PENDING_SUFFIX
+        else:
+            result.summary += "；本次未做运动测试，航向精度未验证"
 
     return result

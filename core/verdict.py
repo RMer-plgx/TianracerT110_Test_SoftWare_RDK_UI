@@ -19,6 +19,15 @@ class Status(enum.Enum):
     FAIL = "fail"
     SKIP = "skip"
     MANUAL = "manual"
+    # 中间态：这一项在**本阶段**已经测了，完整结论要等后续阶段。
+    #
+    # 用例（用户 2026-11-03）：IMU / 里程计在架空段只能验证频率和静态指标，
+    # 数据准不准必须落地跑 360° 互校才知道。架空段一测完就标绿，
+    # 等于把「测了一半」当成「测完了」。
+    #
+    # 关键：counts_as_pass = False，且计入未验证比例。
+    # 它不是「放宽」，而是「明确还没验证完」。
+    PENDING = "pending"
 
     @property
     def marker(self) -> str:
@@ -28,6 +37,7 @@ class Status(enum.Enum):
             Status.FAIL: "❌",
             Status.SKIP: "⏭️",
             Status.MANUAL: "👤",
+            Status.PENDING: "⏳",
         }[self]
 
     @property
@@ -35,6 +45,7 @@ class Status(enum.Enum):
         """SKIP 不算通过。这是防漏报的核心规则。
 
         拿不到数据就是没验证过，不能因为「没有坏消息」就当成好消息。
+        PENDING 同理：只测了一半，没验证完就不算通过。
         """
         return self is Status.PASS or self is Status.MANUAL
 
@@ -71,6 +82,10 @@ class CheckResult:
     duration_sec: float = 0.0
     # 该检测属于哪个测试阶段：bench（架空）/ ground（落地）/ static（无需移动）
     phase: str = "static"
+    # 本阶段测完但结论要等落地段。置位后由 runner 在落地段结束时回填：
+    #   落地互校通过 → PASS；没做落地段 → 保持 PENDING
+    # 用例：IMU / 里程计在架空段只能验证频率与静态指标。
+    needs_ground: bool = False
 
     def add(self, name: str, value: Any, unit: str = "",
             expected: Optional[str] = None, note: str = "") -> None:
@@ -130,6 +145,21 @@ class Report:
                 if r.status in (Status.PASS, Status.WARN, Status.FAIL)]
 
     @property
+    def pending(self) -> List[CheckResult]:
+        """中间态：本阶段测过，但要等后续阶段才能下结论。"""
+        return [r for r in self.results if r.status is Status.PENDING]
+
+    @property
+    def unverified(self) -> List[CheckResult]:
+        """未验证 = 完全没测（SKIP） + 只测了一半（PENDING）。
+
+        两者对「能不能交付」是同一件事：都还没验证完。
+        报告里分开列，是为了让读者知道是「没做」还是「做了一半」。
+        """
+        return [r for r in self.results
+                if r.status in (Status.SKIP, Status.PENDING)]
+
+    @property
     def judged(self) -> List[CheckResult]:
         """可参与判定的项：排除人工项，但 SKIP 计入。"""
         return [r for r in self.results if r.status is not Status.MANUAL]
@@ -152,7 +182,8 @@ class Report:
         judged = self.judged
         if not judged:
             return 1.0
-        return len(self.skipped) / len(judged)
+        # PENDING 也计入：只测一半不等于验证过
+        return len(self.unverified) / len(judged)
 
     @property
     def verdict(self) -> str:
@@ -183,17 +214,30 @@ class Report:
             return "不具备交付条件（没有可判定的检测项）"
 
         if not self.executed:
+            # 全 PENDING（只有「测了一半」的项）不能说「未取得数据」——
+            # 数据其实是有的，只是还没到能下结论的阶段。
+            if self.pending:
+                titles = "、".join(r.title for r in self.pending[:3])
+                return (f"不具备交付条件（{len(self.pending)} 项待落地验证，"
+                        f"尚无任何项完成完整验证：{titles}）")
             return "不具备交付条件（所有检测项均未取得数据）"
 
-        # SKIP 意味着「没验证」，超过容忍比例就不能说合格
+        # 未验证（完全没测 + 只测一半）超过容忍比例就不能说合格
         if self.skip_ratio > MAX_SKIP_RATIO:
-            return (f"不具备交付条件（{len(self.skipped)}/{len(judged)} 项未取得数据，"
+            return (f"不具备交付条件（{len(self.unverified)}/{len(judged)} 项未验证，"
                     f"未验证比例 {self.skip_ratio:.0%} 超过 {MAX_SKIP_RATIO:.0%}）")
 
-        if self.skipped:
-            titles = "、".join(r.title for r in self.skipped[:3])
-            more = "等" if len(self.skipped) > 3 else ""
-            return f"可交付，但需确认 {len(self.skipped)} 项未验证（{titles}{more}）"
+        if self.unverified:
+            parts = []
+            if self.pending:
+                titles = "、".join(r.title for r in self.pending[:2])
+                more = "等" if len(self.pending) > 2 else ""
+                parts.append(f"{len(self.pending)} 项待落地验证（{titles}{more}）")
+            if self.skipped:
+                titles = "、".join(r.title for r in self.skipped[:2])
+                more = "等" if len(self.skipped) > 2 else ""
+                parts.append(f"{len(self.skipped)} 项未验证（{titles}{more}）")
+            return "可交付，但需确认 " + "，".join(parts)
 
         if self.warned:
             return "可交付，但存在需要确认的告警项"
@@ -210,7 +254,7 @@ class Report:
             return "bad"
         if self.failed or self.skip_ratio > MAX_SKIP_RATIO:
             return "bad"
-        if self.warned or self.skipped:
+        if self.warned or self.unverified:
             return "warn"
         return "good"
 

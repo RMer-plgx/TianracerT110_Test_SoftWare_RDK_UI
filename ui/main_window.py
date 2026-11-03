@@ -337,7 +337,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.allow_pulse)
         layout.addWidget(self.full_motion)
 
-        hint = QLabel("不勾选微动则第 18 项记为未验证。")
+        hint = QLabel(
+            "不勾选微动则第 18 项记为未验证。\n"
+            "完整运动测试的落地段会让车左转、右转各一整圈，\n"
+            "需要约 2.5 m × 2.5 m 开阔平地。"
+        )
         hint.setObjectName("HeaderSub")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -547,10 +551,13 @@ class MainWindow(QMainWindow):
                 self, "安全确认",
                 f"即将执行：{detail}\n\n"
                 "请确认：\n"
-                "  · 车辆周围 1 米内无人、无障碍\n"
                 "  · 遥控器在手，可随时接管\n"
-                "  · 车轮已离地（若只做微脉冲可架空）\n\n"
-                "确认继续？",
+                "  · 车轮已离地（若只做微脉冲可架空）\n"
+                + ("  · 落地段会让车左转、右转各一整圈，\n"
+                   "    需要约 2.5 m × 2.5 m 开阔平地，周围无人无障碍\n"
+                   if full_motion else
+                   "  · 车辆周围 1 米内无人、无障碍\n")
+                + "\n确认继续？",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
             )
             if reply != QMessageBox.Yes:
@@ -711,8 +718,10 @@ class MainWindow(QMainWindow):
         dialog.setIcon(QMessageBox.Information)
         dialog.setText(
             "架空段已通过。\n\n"
-            "需要验证落地行驶时：把车放到开阔平地、轮子着地，"
-            "确认周围 1 米内无人。\n\n"
+            "把车放到开阔平地、轮子着地。\n\n"
+            "落地段会让车前进后退、左右转向，"
+            "并<strong>左转、右转各转一整圈</strong>做航向互校。\n"
+            "请确认周围约 <strong>2.5 m × 2.5 m</strong> 内无人无障碍。\n\n"
             "放好后点「继续落地段」；不需要则点「跳过」。"
         )
         continue_btn = dialog.addButton("继续落地段", QMessageBox.AcceptRole)

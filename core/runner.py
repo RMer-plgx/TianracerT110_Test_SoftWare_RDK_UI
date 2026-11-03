@@ -137,6 +137,11 @@ class Context:
     force_motion: bool = False
     # 电压是否确实取到了（未知不能当成安全）
     voltage_known: bool = False
+    # 落地段转向互校是否真的做成功（左右两圈都过）。
+    # 由 checks/motion.py 写入，供 IMU / 里程计两项回填状态用。
+    spin_verified: bool = False
+    # 落地段是否执行过（用于区分「没做」和「做了但没通过」）
+    ground_attempted: bool = False
     # 架空段结束后调用，返回值决定是否继续落地段。None 表示不询问。
     # 架空段结束后调用：True=继续落地，False=用户选 No，None=超时未回应
     pause_for_ground: Optional[Callable[[], Optional[bool]]] = None
@@ -336,6 +341,8 @@ class Runner:
             if self._should_abort():
                 return
             self._run_motion_phase(ctx)
+            # 落地段结束后，回填「架空段测了一半」的项（IMU / 里程计）
+            self._resolve_ground_dependents(ctx)
         except KeyboardInterrupt:
             self.report.aborted_reason = "用户中断（Ctrl-C）"
             ctx.say("\n⚠ 收到中断信号，正在清理…")
@@ -518,6 +525,9 @@ class Runner:
             quick = Remote(self.host, self.user, self._password, timeout=6)
             quick.connect()
             try:
+                # 先通知探针自己停：转圈探针 20 Hz 发指令，
+                # 直接发零速会被它覆盖，车停不下来。
+                quick.run("touch /tmp/tt_spin_abort", timeout=8, record=False)
                 for _ in range(2):
                     quick.run(
                         ros_remote.ros(
@@ -616,6 +626,37 @@ class Runner:
         ctx.say("\n【阶段 3/3】运动控制")
         for entry in entries:
             self._execute(ctx, entry)
+
+    def _resolve_ground_dependents(self, ctx: Context) -> None:
+        """落地段结束后，把「待落地验证」的项落定。
+
+        背景：IMU / 里程计的频率和静态指标在架空段就能测，但
+        「航向准不准」必须落地转一整圈比对才成立。
+        架空段一测完就标绿，等于把「测了一半」当成「测完了」。
+
+        所以架空段结束时它们标 PENDING；这里根据落地互校结果落定：
+          · 互校通过 → PASS
+          · 没做 / 没通过 → 保持 PENDING（未验证，计入未验证比例）
+        """
+        dependents = [r for r in self.report.results if r.needs_ground]
+        if not dependents:
+            return
+
+        verified = bool(getattr(ctx, "spin_verified", False))
+        for item in dependents:
+            if verified:
+                item.status = Status.PASS
+                item.summary = item.summary.replace(
+                    "航向精度待落地互校", "航向精度已由落地转向互校确认")
+                ctx.say(f"       ↑ [{item.number:02d}] {item.title} "
+                        f"落地互校通过，转为 PASS")
+            else:
+                # 保持 PENDING：只测了一半，不能算通过
+                item.summary = item.summary.replace(
+                    "航向精度待落地互校",
+                    "航向精度未验证（落地互校未执行或未通过）")
+                ctx.say(f"       ⏳ [{item.number:02d}] {item.title} "
+                        f"保持待验证（落地互校未通过）")
 
     # -- 单项执行 ---------------------------------------------------------
 
