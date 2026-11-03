@@ -132,12 +132,12 @@ class TestManualAcceptInHtml:
 class TestCleanupIsOptIn:
     def test_auto_cleanup_defaults_to_false(self):
         import yaml
-        cfg = yaml.safe_load((ROOT / "config/baseline.yaml").read_text(encoding="utf-8"))
+        cfg = yaml.safe_load((ROOT / "products/tianracer_t110_rdk/baseline.yaml").read_text(encoding="utf-8"))
         assert cfg["traces"]["auto_cleanup"] is False
 
     def test_keep_bash_history_defaults_to_true(self):
         import yaml
-        cfg = yaml.safe_load((ROOT / "config/baseline.yaml").read_text(encoding="utf-8"))
+        cfg = yaml.safe_load((ROOT / "products/tianracer_t110_rdk/baseline.yaml").read_text(encoding="utf-8"))
         assert cfg["traces"]["keep_bash_history"] is True
 
     def test_script_keeps_history_by_default(self):
@@ -163,7 +163,7 @@ class TestCleanupIsOptIn:
 class TestVoltageSingleThreshold:
     def test_baseline_is_single_threshold(self):
         import yaml
-        cfg = yaml.safe_load((ROOT / "config/baseline.yaml").read_text(encoding="utf-8"))
+        cfg = yaml.safe_load((ROOT / "products/tianracer_t110_rdk/baseline.yaml").read_text(encoding="utf-8"))
         from core.verdict import is_single_threshold
         assert is_single_threshold(cfg["voltage"]["normal_v"],
                                    cfg["voltage"]["low_v"])

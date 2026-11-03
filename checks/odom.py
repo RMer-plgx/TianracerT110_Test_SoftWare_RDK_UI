@@ -16,11 +16,12 @@ def run(ctx) -> CheckResult:
     freq = ctx.baseline.get("frequency", {}).get("odom_hz", {})
     window = float(cfg.get("sample_seconds", 5))
 
-    data = run_probe(ctx, "odom_probe", "/tianracer/odom", str(window),
+    odom_topic = ctx.profile.ros.topic("odom")
+    data = run_probe(ctx, "odom_probe", odom_topic, str(window),
                      timeout=int(window) + 40)
     if not data or not data.get("ok"):
         result.status = Status.FAIL
-        result.summary = "里程计无数据（话题 /tianracer/odom 未发布）"
+        result.summary = f"里程计无数据（话题 {odom_topic} 未发布）"
         return result
 
     low = float(freq.get("min", 95.0))

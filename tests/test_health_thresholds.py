@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests._fixtures import attach_profile  # noqa: E402
 from checks import health  # noqa: E402
 from core.verdict import Status  # noqa: E402
 

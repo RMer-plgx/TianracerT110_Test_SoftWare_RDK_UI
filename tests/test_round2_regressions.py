@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests._fixtures import attach_profile, get_profile  # noqa: E402
 from core.verdict import CheckResult, Report, Status
 
 
@@ -23,6 +24,7 @@ class TestMicroPulseOnlyIsNotPass:
     @staticmethod
     def _ctx(voltage_known=True, voltage_v=11.8):
         class FakeCtx:
+            profile = get_profile()
             baseline = {
                 "motion": {
                     "micro_pulse": {"speed": 0.05, "duration": 0.3,
@@ -111,6 +113,7 @@ class TestEnvvarOverrideHonesty:
 
             def __init__(self):
                 self.remote = None
+                self.profile = attach_profile(self).profile
 
         actual = {
             "TIANRACER_BASE_PORT": "/dev/tianbot_base",
@@ -148,6 +151,7 @@ class TestTfDanglingFrame:
 
             def __init__(self):
                 self.remote = None
+                self.profile = attach_profile(self).profile
 
         frames = {
             "tianracer/base_link": "tianracer/odom",
@@ -195,8 +199,10 @@ class TestVoltageTap:
         assert hasattr(remote_mod, "start_voltage_tap")
         import inspect
         source = inspect.getsource(remote_mod.start_voltage_tap)
-        # 必须把输出落到文件，并抢 /voltage/data
-        assert "/tianracer/voltage/data" in source
+        # 必须把输出落到文件，并抢产品配置里声明的电压话题。
+        # 多产品重构后话题由 profile 提供，不再写死 /tianracer/voltage/data；
+        # 这里验证「确实从 profile 取话题」而不是硬编码。
+        assert 'topic("voltage")' in source
         assert "VOLTAGE_TAP_PATH" in source or "/tmp/tt_voltage.txt" in source
         # 后台启动必须断掉所有 fd，避免 SSH 通道挂死
         assert "< /dev/null" in source

@@ -10,19 +10,25 @@ import re
 
 from core.verdict import CheckResult, Status
 
-REPOS = ["tianracer", "tianbot_core", "webrtc_ros_bridge"]
-WS = "~/tianracer_ros1_ws"
+# 仓库清单与工作空间来自产品配置档（profile.yaml 的 ros.repos / ros.workspace）
 
 
 def run(ctx) -> CheckResult:
     result = CheckResult(number=7, title="源码一致性", status=Status.PASS)
     r = ctx.remote
 
+    repos = ctx.profile.ros.repos
+    ws = ctx.profile.ros.workspace
+    if not repos:
+        result.status = Status.SKIP
+        result.summary = "产品配置未声明源码仓库（ros.repos 为空），本项跳过"
+        return result
+
     dirty_total = 0
     problems = []
 
-    for repo in REPOS:
-        path = f"{WS}/src/{repo}"
+    for repo in repos:
+        path = f"{ws}/src/{repo}"
         head = r.run(
             f"cd {path} 2>/dev/null && "
             f"git rev-parse --abbrev-ref HEAD && "
@@ -56,16 +62,15 @@ def run(ctx) -> CheckResult:
         result.status = Status.WARN
         result.summary = "部分仓库无法读取 git 信息：" + "、".join(problems)
     elif dirty_total == 0:
-        result.summary = "三个仓库均与远端一致，无未提交改动"
+        result.summary = f"{len(repos)} 个仓库均与远端一致，无未提交改动"
     else:
         # 未提交改动不影响车能不能跑，影响的是买家拿到的代码版本。
         # 这是归档问题，需人工确认后接受。
         result.status = Status.WARN
-        result.summary = (f"共 {dirty_total} 项未提交改动，需确认是否为 RDK 适配所需")
+        result.summary = (f"共 {dirty_total} 项未提交改动，需确认是否为适配所需")
         result.detail = (
-            "已知情况（2026-10-30）：tianracer 4 改 + 1 未跟踪，"
-            "tianbot_core 3 改（波特率、底盘类型、依赖声明）。\n"
-            "这些改动是 RDK 适配所必需，判定为 WARN 而非 FAIL。\n"
-            "交付前需确认归属并修复 tianbot_core 的 remote URL。"
+            "未提交改动不影响车能不能跑，影响的是买家拿到的代码版本。\n"
+            "这属于归档问题，需人工确认后接受。\n"
+            "交付前应把适配改动提交到仓库，或修复异常的 remote URL。"
         )
     return result

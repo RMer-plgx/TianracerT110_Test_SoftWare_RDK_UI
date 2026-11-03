@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from . import profile as product_profile
 from . import remote as ros_remote
 from .paths import lock_file_path, make_record_dir, resource_path
 from .ssh import Remote, SSHError
@@ -120,6 +121,9 @@ class Context:
 
     remote: Remote
     baseline: Dict
+    # 产品配置档。话题名、工作空间、检测项清单都从这里取，
+    # 代码里不再出现任何具体产品名。
+    profile: "product_profile.Profile" = None
     # 用户输入的连接地址（TianbotOffice-5G 下看到的车 IP）。
     # 报告的「本机地址」用它，不再拿 hostname -I 的全部网卡凑数。
     host: str = ""
@@ -169,42 +173,33 @@ class Context:
 
 
 # ---------------------------------------------------------------------------
-# 检测项注册表
+# 检测项清单
 # ---------------------------------------------------------------------------
-# 每项： (编号, 标题, 模块名, 函数名, 是否致命, 阶段)
-# 阶段取值：static（不需要 bringup） / runtime（需 bringup） / motion
+# 19 项不再写死在这里，改为由产品配置档提供：
 #
-# 执行顺序按依赖排，不按编号排；报告仍按编号展示。
+#     products/<产品>/profile.yaml   →  checks.items
+#
+# 每项的格式仍是 (编号, 标题, 模块名, 函数名, 是否致命, 阶段)，
+# 由 core.profile.CheckSpec.as_registry_tuple() 生成。
+#
+# **顺序即执行顺序**，profile 加载时会校验 static → runtime → motion
+# 不回头的约束。
 
-REGISTRY = [
-    (1,  "网络连通性",       "network",  "run", True,  "static"),
-    (2,  "系统身份",         "identity", "run", False, "static"),
-    (3,  "RustDesk 远程桌面", "rustdesk", "run", False, "static"),
-    (4,  "环境变量",         "envvars",  "run", False, "static"),
-    (5,  "设备节点",         "devices",  "run", False, "static"),
-    (6,  "主控硬件 ID",      "hardware", "run", False, "static"),
-    (7,  "源码一致性",       "source",   "run", False, "static"),
-    (10, "雷达以太网",       "lannet",   "run", False, "static"),
-    (16, "teb 导航插件",     "teb",      "run", False, "static"),
-    (17, "系统健康",         "health",   "run", False, "static"),
-    (19, "使用痕迹",         "traces",   "run", False, "static"),
-    # --- 以下需要 bringup ---
-    (8,  "IMU",              "imu",      "run", True,  "runtime"),
-    (9,  "激光雷达",         "lidar",    "run", True,  "runtime"),
-    (11, "USB 摄像头",       "camera",   "run", False, "runtime"),
-    (12, "里程计",           "odom",     "run", True,  "runtime"),
-    (13, "TF 树",            "tf",       "run", False, "runtime"),
-    (14, "电池电压",         "voltage",  "run", False, "runtime"),
-    (15, "激光建图链路",     "mapping",  "run", False, "runtime"),
-    # --- 运动 ---
-    (18, "运动控制",         "motion",   "run", False, "motion"),
-]
+
+def default_registry() -> List[tuple]:
+    """默认产品的检测项清单。
+
+    仅为向后兼容保留：老代码/测试直接 `from core.runner import REGISTRY`。
+    新代码应当用 `Runner.profile.registry()` —— 那才支持多产品。
+    """
+    return product_profile.load().registry()
 
 
 class Runner:
     def __init__(self, host: str, user: str, password: str,
                  answers: Optional[Dict[str, str]] = None,
                  mode: str = "auto", motion: str = "none",
+                 profile_id: Optional[str] = None,
                  pause_for_ground=None,
                  on_output=None, on_check_start=None, on_check_done=None):
         """
@@ -213,6 +208,7 @@ class Runner:
         motion: none   = 完全不做运动测试
                 bench  = 只做架空段
                 full   = 架空段 + 落地段
+        profile_id: 产品 id（products/<id>/）。None = 用默认产品。
         """
         self.host = host
         self.user = user
@@ -220,6 +216,10 @@ class Runner:
         self.answers = answers or {}
         self.mode = mode
         self.motion = motion
+        # 产品配置档。_run_inner 里加载成功后会填进来；
+        # 加载失败时保持 None，request_cancel 等路径要能容忍。
+        self.profile_id = profile_id
+        self.profile: Optional["product_profile.Profile"] = None
         self.pause_for_ground = pause_for_ground
         # GUI 回调：实时日志与单项状态
         self.on_output = on_output
@@ -282,17 +282,24 @@ class Runner:
 
     def _run_inner(self) -> None:
         try:
-            baseline = _load_baseline()
-        except Exception as exc:
+            profile = product_profile.load(self.profile_id)
+        except product_profile.ProfileError as exc:
             # 配置读不到时也要给出可读错误并生成报告，
-            # 不能只抛一个 ModuleNotFoundError 就没了（审查发现）
+            # 不能只抛一个 KeyError 就没了（审查发现）
             self.report.add(CheckResult(
-                number=1, title="加载配置", status=Status.FAIL,
-                summary=f"无法读取 config/baseline.yaml：{exc}", fatal=True,
+                number=1, title="加载产品配置", status=Status.FAIL,
+                summary=f"产品配置有问题：{exc}", fatal=True,
             ))
             self.report.aborted_reason = "配置加载失败"
             print(f"\n❌ 配置加载失败：{exc}", flush=True)
             return
+
+        self.profile = profile
+        baseline = profile.baseline
+        # 报告头部要标明这次用的是哪套配置
+        self.report.product = profile.name
+        self.report.product_id = profile.id
+        self.report.product_revision = profile.revision
 
         try:
             self._remote = Remote(self.host, self.user, self._password)
@@ -313,7 +320,8 @@ class Runner:
                     pass
             return
 
-        ctx = Context(remote=self._remote, baseline=baseline, host=self.host,
+        ctx = Context(remote=self._remote, baseline=baseline, profile=profile,
+                      host=self.host,
                       answers=self.answers, owns_bringup=(self.mode == "auto"),
                       motion_level=self.motion,
                       motion_armed=bool(self.answers.get("motion_armed")),
@@ -327,7 +335,7 @@ class Runner:
         try:
             if self.mode == "auto":
                 ctx.say("清理残留 ROS 进程…")
-                ros_remote.kill_all(self._remote, wait=3)
+                ros_remote.kill_all(self._remote, profile, wait=3)
 
             # 无条件清掉上次运行残留的电压文件（不只 auto）。
             # 否则本次可能读到旧值，导致低电压车被当成合格并放行运动测试
@@ -358,7 +366,7 @@ class Runner:
             if self.mode == "auto":
                 ctx.say("停止 roslaunch…")
                 try:
-                    ros_remote.stop_launch(self._remote)
+                    ros_remote.stop_launch(self._remote, profile)
                 except Exception as exc:
                     ctx.say(f"⚠ 停止 roslaunch 时出错（可能需要手动清理）：{exc}")
 
@@ -528,12 +536,15 @@ class Runner:
                 # 先通知探针自己停：转圈探针 20 Hz 发指令，
                 # 直接发零速会被它覆盖，车停不下来。
                 quick.run("touch /tmp/tt_spin_abort", timeout=8, record=False)
+                cmd_topic = (self.profile.ros.topic("cmd")
+                             if self.profile else "/tianracer/ackermann_cmd")
                 for _ in range(2):
                     quick.run(
                         ros_remote.ros(
-                            "timeout 3 rostopic pub -1 /tianracer/ackermann_cmd "
+                            f"timeout 3 rostopic pub -1 {cmd_topic} "
                             "ackermann_msgs/AckermannDrive "
-                            "'{speed: 0.0, steering_angle: 0.0}'"
+                            "'{speed: 0.0, steering_angle: 0.0}'",
+                            self.profile,
                         ),
                         timeout=12, record=False,
                     )
@@ -548,28 +559,28 @@ class Runner:
 
     def _run_static_phase(self, ctx: Context) -> None:
         ctx.say("\n【阶段 1/3】静态检查（不需要启动 ROS）")
-        for entry in REGISTRY:
+        for entry in self.profile.registry():
             if entry[5] != "static":
                 continue
             self._execute(ctx, entry)
 
     def _run_runtime_phase(self, ctx: Context) -> None:
-        entries = [e for e in REGISTRY if e[5] == "runtime"]
+        entries = [e for e in self.profile.registry() if e[5] == "runtime"]
         if not entries:
             return
 
         if self.mode == "auto":
             ctx.say("\n【阶段 2/3】启动整车 bringup")
-            ros_remote.start_launch(
+            ros_remote.start_launch(ctx.remote, profile, 
                 ctx.remote, "tianracer_bringup", "tianracer_bringup.launch"
             )
             # 先等 rosmaster 真的监听 11311，再抢订阅电压。
             # 直接 tap 会立即报 Unable to communicate 并退出，tap 白做（Round 3）。
-            if ros_remote.wait_for_master(ctx.remote, timeout=40):
-                ros_remote.start_voltage_tap(ctx.remote)
+            if ros_remote.wait_for_master(ctx.remote, profile, timeout=40):
+                ros_remote.start_voltage_tap(ctx.remote, profile)
             else:
                 ctx.say("    ⚠ rosmaster 未在预期时间内就绪，跳过电压抢订阅")
-            status = ros_remote.wait_for_nodes(ctx.remote, timeout=60)
+            status = ros_remote.wait_for_nodes(ctx.remote, profile, timeout=60)
             if not status["ready"]:
                 missing = "、".join(status["missing"])  # type: ignore[arg-type]
                 result = CheckResult(
@@ -589,8 +600,8 @@ class Runner:
             # 实车验证时曾因此把 IMU 测成「无数据」。
             ctx.say("   等待传感器稳定（5s）…")
             time.sleep(5)
-            nodes_now = ros_remote.list_nodes(ctx.remote)
-            missing_optional = [n for n in ros_remote.OPTIONAL_NODES
+            nodes_now = ros_remote.list_nodes(ctx.remote, profile)
+            missing_optional = [n for n in profile.ros.nodes_optional
                                 if n not in nodes_now]
             if missing_optional:
                 ctx.say(f"   ⚠ 非必需节点未启动：{'、'.join(missing_optional)}")
@@ -598,7 +609,7 @@ class Runner:
             ctx.say("\n【阶段 2/3】检测已运行的 ROS 环境")
             # attach 模式下若 master 根本没起，每项都会等到超时（电压一项就要 90 秒），
             # 用户会以为程序卡死。这里快速失败并给出可操作的提示。
-            if not ros_remote.is_master_running(ctx.remote):
+            if not ros_remote.is_master_running(ctx.remote, profile):
                 result = CheckResult(
                     number=8, title="IMU", status=Status.FAIL, fatal=True,
                     summary="ROS master 未运行，无法进行传感器检测",
@@ -620,7 +631,7 @@ class Runner:
                 return
 
     def _run_motion_phase(self, ctx: Context) -> None:
-        entries = [e for e in REGISTRY if e[5] == "motion"]
+        entries = [e for e in self.profile.registry() if e[5] == "motion"]
         if not entries:
             return
         ctx.say("\n【阶段 3/3】运动控制")
@@ -747,19 +758,6 @@ class Runner:
         if self.record_dir is None:
             return
         _write_raw_log(self.record_dir, self._remote, self._ctx)
-
-
-def _load_baseline() -> Dict:
-    path = resource_path("config/baseline.yaml")
-    try:
-        import yaml
-    except ImportError as exc:
-        raise RuntimeError(
-            "缺少 PyYAML。请先执行：pip install -r requirements.txt"
-        ) from exc
-
-    with open(path, encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
 
 
 def _extract_voltage(result: CheckResult) -> Optional[float]:

@@ -23,11 +23,12 @@ def run(ctx) -> CheckResult:
     r = ctx.remote
 
     log_path = "/tmp/tt_slam.log"
-    start_launch(r, "tianracer_slam", "tianracer_gmapping.launch",
-                 log_path=log_path)
+    start_launch(r, ctx.profile, extra_args="", log_path=log_path,
+                 package=ctx.profile.ros.slam_package or None,
+                 launch_file=ctx.profile.ros.slam_file or None)
     time.sleep(12)
 
-    nodes = r.run(ros("rosnode list 2>/dev/null"), timeout=20).stdout
+    nodes = r.run(ros("rosnode list 2>/dev/null", ctx.profile), timeout=20).stdout
     has_slam = "slam_gmapping" in nodes
     result.add("gmapping 节点", "已启动" if has_slam else "未出现")
 
@@ -40,7 +41,8 @@ def run(ctx) -> CheckResult:
         return result
 
     info = r.run(
-        ros("timeout 20 rostopic echo -n 1 /tianracer/map/info 2>&1"),
+        ros(f"timeout 20 rostopic echo -n 1 {ctx.profile.ros.topic('map')}/info 2>&1",
+                       ctx.profile),
         timeout=35,
     )
     resolution = _grab(info.stdout, "resolution")
@@ -52,7 +54,8 @@ def run(ctx) -> CheckResult:
 
     if resolution is None:
         result.status = Status.FAIL
-        result.summary = "gmapping 已启动但未产出 /tianracer/map（可能拍丢了 odom TF）"
+        result.summary = (f"gmapping 已启动但未产出 {ctx.profile.ros.topic('map')}"
+                          f"（可能拍丢了 odom TF）")
         warn = r.run(f"grep -c Dropped {log_path} 2>&1", timeout=15).stdout.strip()
         if warn and warn != "0":
             result.detail = ("日志出现 Dropped 告警，说明 gmapping 收不到 odom。\n"
@@ -89,7 +92,7 @@ def _grab(text: str, key: str):
 
 def _cleanup(ctx, log_path: str) -> None:
     """停掉本项启动的 gmapping，避免影响后续运动测试。"""
-    ctx.remote.run("pkill -INT -f 'roslaunch tianracer_slam' || true",
-                   record=False)
+    pkg = ctx.profile.ros.slam_package or "slam"
+    ctx.remote.run(f"pkill -INT -f 'roslaunch {pkg}' || true", record=False)
     time.sleep(3)
     ctx.remote.run("pkill -9 -f slam_gmapping || true", record=False)

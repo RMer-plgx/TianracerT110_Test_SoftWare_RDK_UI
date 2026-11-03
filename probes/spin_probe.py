@@ -14,6 +14,9 @@
 用法
 ----
     spin_probe.py <speed> <steer> <target_yaw_deg> <max_seconds> <label>
+                  [cmd_topic] [odom_topic] [imu_topic]
+
+话题由上位机按产品配置传入，探针里不写死任何产品名。
 
 `steer` 的符号决定方向：正数左转（yaw 增大），负数右转。
 
@@ -38,9 +41,10 @@ from ackermann_msgs.msg import AckermannDrive
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 
-CMD_TOPIC = "/tianracer/ackermann_cmd"
-ODOM_TOPIC = "/tianracer/odom"
-IMU_TOPIC = "/tianracer/imu_raw"
+# 默认值只在手工调试时用到；正式调用一律由上位机传参
+DEFAULT_CMD_TOPIC = "/tianracer/ackermann_cmd"
+DEFAULT_ODOM_TOPIC = "/tianracer/odom"
+DEFAULT_IMU_TOPIC = "/tianracer/imu_raw"
 ABORT_FILE = "/tmp/tt_spin_abort"
 
 # 硬编码上限：转圈比直线危险得多，必须由脚本自己守死
@@ -99,6 +103,9 @@ def main():
     target = float(sys.argv[3]) if len(sys.argv) > 3 else 360.0
     max_seconds = float(sys.argv[4]) if len(sys.argv) > 4 else 90.0
     label = sys.argv[5] if len(sys.argv) > 5 else "spin"
+    cmd_topic = sys.argv[6] if len(sys.argv) > 6 else DEFAULT_CMD_TOPIC
+    odom_topic = sys.argv[7] if len(sys.argv) > 7 else DEFAULT_ODOM_TOPIC
+    imu_topic = sys.argv[8] if len(sys.argv) > 8 else DEFAULT_IMU_TOPIC
 
     # 参数只能收紧，不能放宽硬上限
     if abs(speed) > HARD_MAX_SPEED:
@@ -129,7 +136,7 @@ def main():
         pass
 
     rospy.init_node("tt_spin_probe", anonymous=True, disable_signals=True)
-    pub = rospy.Publisher(CMD_TOPIC, AckermannDrive, queue_size=10)
+    pub = rospy.Publisher(cmd_topic, AckermannDrive, queue_size=10)
 
     deadline = rospy.Time.now().to_sec() + 10
     while pub.get_num_connections() == 0 and rospy.Time.now().to_sec() < deadline:
@@ -168,8 +175,8 @@ def main():
         imu_gyro["z"] += msg.angular_velocity.z
         imu_gyro["samples"] += 1
 
-    rospy.Subscriber(ODOM_TOPIC, Odometry, on_odom, queue_size=50)
-    rospy.Subscriber(IMU_TOPIC, Imu, on_imu, queue_size=50)
+    rospy.Subscriber(odom_topic, Odometry, on_odom, queue_size=50)
+    rospy.Subscriber(imu_topic, Imu, on_imu, queue_size=50)
 
     # 等两路数据都到，否则起点位置和初始 yaw 会漏
     wait_until = rospy.Time.now().to_sec() + 8

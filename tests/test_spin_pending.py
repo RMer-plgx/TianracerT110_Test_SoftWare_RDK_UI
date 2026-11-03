@@ -22,6 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests._fixtures import attach_profile  # noqa: E402
 from core.verdict import (  # noqa: E402
     CheckResult, Report, Status,
 )
@@ -94,6 +95,7 @@ class _ProbeRecorder:
 
 class _FakeCtx:
     def __init__(self, baseline=None, motion_level="full"):
+        self.profile = attach_profile(self).profile
         self.baseline = baseline or {}
         self.motion_level = motion_level
         self.cancel_requested = False

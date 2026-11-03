@@ -1,8 +1,9 @@
-# Tianracer T110（RDK）整车自动检测记录
+# {{ report.product or "产品" }}整车自动检测记录
 
 **记录编号**：TTR-AUTO-{{ report.started_at | replace('-','') | replace(':','') | replace(' ','-') }}
 **检测日期**：{{ report.started_at }}
-**执行方式**：自动化脚本（TianracerT110_Test_SoftWare_RDK），SSH 远程检测
+**执行方式**：自动化脚本（tianbot_prodtest_cli），SSH 远程检测
+**产品**：{{ report.product or '未指定' }}{% if report.product_revision %}（配置版本 {{ report.product_revision }}）{% endif %}
 **目标车辆**：{{ report.host }}（用户 {{ report.user }}）
 **完成时间**：{{ report.finished_at or '未完成' }}
 
@@ -190,5 +191,5 @@ MD 版本只能手工添加标记：
 
 ---
 
-*本报告由 TianracerT110_Test_SoftWare_RDK 自动生成*
+*本报告由 tianbot_prodtest_cli 自动生成*
 *原始命令记录见同目录 `raw.log`*

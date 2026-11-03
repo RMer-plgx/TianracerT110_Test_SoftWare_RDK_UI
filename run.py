@@ -110,9 +110,17 @@ def main() -> int:
     # stdin 保持系统默认即可；输出侧由 ensure_utf8_env() 处理。
 
     # 先解析参数：--help 应该只输出帮助，不先刷 banner
+    # 产品配置：默认用 products/ 下的默认产品，可用 --product 指定
+    from core import profile as product_profile
+    products = product_profile.list_profiles()
+    default_pid = product_profile.default_profile_id() if products else ""
+
     parser = argparse.ArgumentParser(
-        description="Tianracer T110（RDK）整车自动测试",
+        description="产品出厂自动检测（多产品共用）",
     )
+    parser.add_argument("--product", default="",
+                        choices=products or None,
+                        help=f"产品 id，默认 {default_pid}；可选：{'、'.join(products)}")
     parser.add_argument("--host", default="", help="车辆 IP")
     parser.add_argument("--user", default="", help="SSH 用户名")
     parser.add_argument("--password", default="", help="SSH 密码")
@@ -125,6 +133,14 @@ def main() -> int:
     args = parser.parse_args()
 
     print(BANNER)
+
+    product_id = args.product or default_pid
+    try:
+        active = product_profile.load(product_id)
+    except product_profile.ProfileError as exc:
+        print(f"\n❌ 产品配置有问题：\n{exc}")
+        return 1
+    print(f"产品：{active.name}（{active.total_checks} 项检测）")
 
     host = args.host or ask_required("车辆 IP 地址")
     user = args.user or ask("SSH 用户名", DEFAULT_USER)
@@ -246,6 +262,7 @@ def main() -> int:
     runner = Runner(
         host=host, user=user, password=password,
         answers=answers, mode=mode, motion=motion_level,
+        profile_id=product_id,
         pause_for_ground=pause_for_ground if motion_level == "full" else None,
     )
     runner_ref[0] = runner

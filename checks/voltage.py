@@ -52,11 +52,12 @@ def run(ctx) -> CheckResult:
     # 先确认底盘节点在不在。不在的话电压话题肯定没发布，
     # 没必要干等 90 秒超时。
     # 用 ros() 前缀而不是手写，保证多网卡时 ROS_IP 也是一致的（Round 2 建议）。
-    nodes = ctx.remote.run(ros("rosnode list 2>/dev/null"),
+    nodes = ctx.remote.run(ros("rosnode list 2>/dev/null", ctx.profile),
                            timeout=20, record=False).stdout
-    if "/tianracer/tianracer" not in nodes:
+    base_node = ctx.profile.ros.topics.get("base_node", "")
+    if base_node and base_node not in nodes:
         result.status = Status.FAIL
-        result.summary = "底盘节点 /tianracer/tianracer 未运行，无法读取电压"
+        result.summary = f"底盘节点 {base_node} 未运行，无法读取电压"
         result.detail = (
             "电压话题由底盘节点发布。节点不在，说明串口可能没打开。\n"
             "检查：sudo lsof /dev/ttyUSB0，以及环境变量 TIANRACER_BASE_PORT 是否指向真实设备。"
@@ -66,7 +67,8 @@ def run(ctx) -> CheckResult:
     # 先现订阅。这是唯一可靠的来源——
     # tap 文件可能残留上次运行的旧值（Round 3 审查发现：低电压车会拿到旧值并放行运动）。
     raw = ctx.remote.run(
-        ros(f"timeout {timeout} rostopic echo -n 1 /tianracer/voltage/data 2>&1"),
+        ros(f"timeout {timeout} rostopic echo -n 1 "
+            f"{ctx.profile.ros.topic('voltage')} 2>&1", ctx.profile),
         timeout=timeout + 15,
     )
     volts = _strict_float(raw.stdout)
