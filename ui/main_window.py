@@ -14,7 +14,7 @@ from pathlib import Path
 from PyQt5.QtCore import QThread, Qt, pyqtSignal
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+    QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
@@ -158,9 +158,10 @@ class CleanupWorker(QThread):
 
     done = pyqtSignal(dict)
 
-    def __init__(self, config: dict, parent=None):
+    def __init__(self, config: dict, keep_history: bool = True, parent=None):
         super().__init__(parent)
         self._config = dict(config)
+        self._keep_history = keep_history
 
     def run(self) -> None:
         from checks import traces
@@ -177,7 +178,10 @@ class CleanupWorker(QThread):
 
             ctx = _Ctx()
             ctx.remote = remote
-            data = traces.cleanup(ctx)
+            # 默认保留命令历史：它是排查证据，不是「痕迹」
+            data = traces.cleanup(
+                ctx, keep_bash_history=self._keep_history
+            )
         except Exception as exc:
             data = {"error": f"{type(exc).__name__}: {exc}"}
         finally:
@@ -202,7 +206,6 @@ class MainWindow(QMainWindow):
         # 不能只留在输入框里——用户测完可能把 IP 改掉了。
         self._last_config: dict | None = None
         self._cleaner = None
-        self._pdf_engine = None
 
         self.setWindowTitle("Tianracer T110 整车测试")
         icon_path = resource_path("assets/app.ico")
@@ -265,7 +268,6 @@ class MainWindow(QMainWindow):
         outer.addLayout(body, stretch=1)
 
         outer.addWidget(self._build_footer())
-        outer.addWidget(self._build_pdf_bar())
 
     def _build_header(self) -> QWidget:
         header = QWidget()
@@ -451,7 +453,9 @@ class MainWindow(QMainWindow):
         self.manual_btn = QPushButton("人工检测项")
         self.manual_btn.setObjectName("Ghost")
         self.manual_btn.setEnabled(False)
-        self.manual_btn.setToolTip("打开报告，在「需要人工确认的项目」里直接打勾")
+        self.manual_btn.setToolTip(
+            "打开报告：逐条勾选人工确认项、「确认接受」告警项，并在报告里下载 PDF"
+        )
         self.manual_btn.clicked.connect(self.open_manual_check)
         layout.addWidget(self.manual_btn)
 
@@ -464,28 +468,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.clean_btn)
 
         return footer
-
-    def _build_pdf_bar(self) -> QWidget:
-        """页面最底部：导出 PDF。
-
-        出货人员需要纸质报告，所以这一条单独放在最下方、用主按钮样式，
-        不和上面的「查看/清理」挤在一起。
-        """
-        bar = QWidget()
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(4, 2, 4, 4)
-
-        hint = QLabel("交付留档：把本次报告导出为 PDF，可直接打印")
-        hint.setObjectName("HeaderSub")
-        layout.addWidget(hint)
-        layout.addStretch(1)
-
-        self.pdf_btn = QPushButton("下载 PDF 检测报告")
-        self.pdf_btn.setEnabled(False)
-        self.pdf_btn.clicked.connect(self.export_pdf)
-        layout.addWidget(self.pdf_btn)
-
-        return bar
 
     @staticmethod
     def _section(text: str) -> QLabel:
@@ -781,7 +763,6 @@ class MainWindow(QMainWindow):
             self.view_btn.setEnabled(True)
             self.open_btn.setEnabled(True)
             self.manual_btn.setEnabled(True)
-            self.pdf_btn.setEnabled(True)
             self._log(f"报告已生成：{self.record_dir}")
 
         # 清理按钮只要有过一次可用的连接参数就放开——
@@ -854,8 +835,11 @@ class MainWindow(QMainWindow):
     def open_manual_check(self) -> None:
         """打开报告并直接定位到「需要人工确认的项目」。
 
-        用默认浏览器打开，而不是内置窗口：报告里的勾选状态存在浏览器
-        的 localStorage，用户下次从同一浏览器打开还能看到，一致性更好。
+        用默认浏览器打开，而不是内置窗口：
+        - 报告里勾选状态存在浏览器 localStorage，下次打开还在
+        - 「下载 PDF」按钮在报告内部，用浏览器自己的打印转 PDF，
+          勾选状态天然带进 PDF（内置 QWebEngine 是独立 profile，
+          拿不到浏览器里勾的东西，这是 2026-11-03 审查指出的问题）
         """
         if self.record_dir is None:
             return
@@ -895,8 +879,10 @@ class MainWindow(QMainWindow):
             self, "确认清理",
             f"将删除 {cfg['host']} 上的以下内容：\n\n"
             "  · ~/.ros/log 下的全部 ROS 日志\n"
-            "  · ~/.bash_history 命令历史\n"
             "  · ~/.viminfo\n\n"
+            "命令历史 ~/.bash_history 会**保留**（现场排查需要）。\n"
+            "  如需一并清空，请在 config/baseline.yaml 里\n"
+            "  把 traces.keep_bash_history 改为 false。\n\n"
             "删除后不可恢复。确认继续？",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
@@ -905,7 +891,7 @@ class MainWindow(QMainWindow):
 
         self.clean_btn.setEnabled(False)
         self._log("清理使用记录…")
-        self._cleaner = CleanupWorker(cfg, self)
+        self._cleaner = CleanupWorker(cfg, keep_history=True, parent=self)
         self._cleaner.done.connect(self._on_cleanup_done)
         self._cleaner.start()
 
@@ -927,89 +913,3 @@ class MainWindow(QMainWindow):
         self._log("✅ 清理完成：" + message.replace("\n", "；"))
         QMessageBox.information(self, "清理完成", message)
 
-    def export_pdf(self) -> None:
-        """把 report.html 渲染成 PDF，供出货人员打印。"""
-        if self.record_dir is None or self.report is None:
-            QMessageBox.information(self, "还没有报告", "先完成一次检测。")
-            return
-        html = self.record_dir / "report.html"
-        if not html.exists():
-            QMessageBox.warning(self, "报告不存在", f"没有找到 {html}。")
-            return
-
-        try:
-            stamp = datetime.strptime(
-                self.report.started_at, "%Y-%m-%d %H:%M:%S"
-            ).strftime("%Y%m%d_%H%M%S")
-        except Exception:
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        host = (self.report.host or "car").replace(":", "_")
-        default = self.record_dir / f"TianracerT110_检测报告_{host}_{stamp}.pdf"
-
-        chosen, _ = QFileDialog.getSaveFileName(
-            self, "保存 PDF 报告", str(default), "PDF 文件 (*.pdf)"
-        )
-        if not chosen:
-            return
-        out_path = Path(chosen)
-        if out_path.suffix.lower() != ".pdf":
-            out_path = out_path.with_suffix(".pdf")
-
-        try:
-            from PyQt5.QtWebEngineWidgets import QWebEngineView
-        except Exception:
-            self._pdf_fallback(html)
-            return
-
-        self.pdf_btn.setEnabled(False)
-        self.pdf_btn.setText("正在生成…")
-        self._log(f"生成 PDF：{out_path}")
-
-        view = QWebEngineView()
-        view.resize(1240, 1754)
-        page = view.page()
-        # 必须保引用：局部变量被回收后回调永远不会触发，按钮就卡在「正在生成」
-        self._pdf_view = view
-
-        def on_finished(path: str, ok: bool) -> None:
-            self.pdf_btn.setText("下载 PDF 检测报告")
-            self.pdf_btn.setEnabled(True)
-            if not ok:
-                self._log("❌ PDF 生成失败")
-                QMessageBox.warning(
-                    self, "PDF 生成失败",
-                    "浏览器内核没能写出 PDF。\n"
-                    "可以改用「查看报告」后按 Ctrl+P 打印为 PDF。",
-                )
-                return
-            self._log(f"✅ PDF 已保存：{path}")
-            if QMessageBox.question(
-                self, "PDF 已生成",
-                f"已保存到：\n{path}\n\n现在打开吗？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
-            ) == QMessageBox.Yes:
-                import os
-                os.startfile(path)  # noqa: S606
-
-        page.pdfPrintingFinished.connect(on_finished)
-
-        def on_load(ok: bool) -> None:
-            if not ok:
-                self.pdf_btn.setText("下载 PDF 检测报告")
-                self.pdf_btn.setEnabled(True)
-                QMessageBox.warning(self, "报告加载失败", f"无法加载 {html}")
-                return
-            page.printToPdf(str(out_path))
-
-        view.loadFinished.connect(on_load)
-        from PyQt5.QtCore import QUrl
-        view.load(QUrl.fromLocalFile(str(html)))
-
-    def _pdf_fallback(self, html: Path) -> None:
-        QMessageBox.information(
-            self, "无法直接生成 PDF",
-            "当前环境缺少浏览器内核组件。\n\n"
-            "请用「查看报告」打开报告，在浏览器里按 Ctrl+P，\n"
-            "打印机选择「另存为 PDF」即可。",
-        )
-        self.open_report()

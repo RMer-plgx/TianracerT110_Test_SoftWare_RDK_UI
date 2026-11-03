@@ -4,12 +4,9 @@ test records/
 # 并发锁文件，运行时会生成
 .tianracer_test.lock
 
-# 界面截图（由 tools/make_screenshots.py 生成）
-_ui_preview_*.png
-_ui_result.png
-_exe_window.png
-_exe_screen.png
-_exe_icon*.png
+# 界面截图 / 临时产物（仓根下以 _ 开头的 png 一律不入库）
+# docs/ 下的正式文档截图不受影响
+_*.png
 diag.txt
 
 # PyInstaller 构建产物

@@ -122,7 +122,7 @@ def run(ctx) -> CheckResult:
     elif status is Status.WARN:
         result.summary = f"{volts:.2f} V 偏低（交付线 {normal_v} V），建议充电"
     else:
-        result.summary = (f"{volts:.2f} V 低于 {low_v} V，必须充电。"
+        result.summary = (f"{volts:.2f} V 低于交付线 {low_v} V，必须充电。"
                           f"后续运动测试将被跳过")
 
     # 电压低时明确告知已阻止运动

@@ -374,17 +374,23 @@ class Runner:
             self._remote.close()
 
     def _cleanup_traces(self, ctx: Context) -> None:
-        """测试结束后删除车上使用痕迹，并把结果写回第 19 项。
+        """测试结束后按配置清理车上使用痕迹，并把结果写回第 19 项。
 
-        只在完整跑完时清理。中途终止意味着还有项没验证、要重测，
-        这时保留车上日志便于排查，不删。
+        默认 **不清理**（`traces.auto_cleanup: false`）。
+        原因：清理会删 `$HOME` 下的持久文件，属于「修改车辆状态」，
+        不能在用户不知情时作为测试的副作用发生。
+        需要清时用界面「清理使用记录」按钮显式执行。
+
+        即使开启 auto_cleanup，也会保留 .bash_history
+        （`keep_bash_history: true`）—— 命令历史是排查证据，不是痕迹。
         """
         result = next((r for r in self.report.results if r.number == 19), None)
         traces_cfg = ctx.baseline.get("traces", {})
 
-        if not traces_cfg.get("auto_cleanup", True):
-            if result is not None:
-                result.summary += "；配置关闭了自动清理"
+        if not traces_cfg.get("auto_cleanup", False):
+            # 不清理时也要在报告里说清楚，避免读者以为车被清过
+            if result is not None and "不会自动清理" not in result.summary:
+                result.summary += "；本次未清理车上痕迹"
             return
 
         if self.report.aborted_reason:
@@ -392,10 +398,11 @@ class Runner:
                 result.summary += "；本次未完整执行，保留痕迹供排查"
             return
 
+        keep_hist = bool(traces_cfg.get("keep_bash_history", True))
         ctx.say("清理使用痕迹…")
         try:
             module = __import__("checks.traces", fromlist=["cleanup"])
-            data = module.cleanup(ctx)
+            data = module.cleanup(ctx, keep_bash_history=keep_hist)
         except Exception as exc:
             data = {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -404,6 +411,7 @@ class Runner:
             if result is not None:
                 result.status = Status.WARN
                 result.summary = f"使用痕迹清理失败：{data['error']}"
+            self._write_cleanup_log({"error": data["error"]})
             return
 
         if result is None:
@@ -426,22 +434,57 @@ class Runner:
                    expected="0 个条目")
         result.add("清理后 bash_history",
                    hist_after if hist_after is not None else "读取失败", "行",
-                   expected="0 行")
+                   note="已保留（keep_bash_history）" if keep_hist else "已清空")
         result.add("清理后 .viminfo",
                    "不存在" if vim_after == 0 else "仍存在")
 
-        # 三项都归零才算清理到位；没清干净不能报 PASS（与防漏报原则一致）
-        clean_ok = (dirs_after == 0 and hist_after == 0 and vim_after == 0)
+        # 清干净的判据：日志清空 + viminfo 删除 + 历史按策略处理
+        clean_ok = (dirs_after == 0 and vim_after == 0
+                    and (keep_hist or hist_after == 0))
         result.status = Status.PASS if clean_ok else Status.WARN
         result.summary = (
-            f"测试结束后已自动清理：ROS 日志 {logs_before} MB → {logs_after} MB"
+            f"测试结束后已清理：ROS 日志 {logs_before} MB → {logs_after} MB"
             f"（{dirs_after} 个条目），"
-            f"bash_history {hist_before} → {hist_after} 行"
+            + (f"bash_history 保留 {hist_after} 行"
+               if keep_hist else
+               f"bash_history {hist_before} → {hist_after} 行")
             + ("，.viminfo 已删除" if vim_after == 0 else "，.viminfo 仍在")
         )
         if not clean_ok:
             result.summary += "（部分痕迹未清干净，交付前请手工确认）"
         ctx.say(f"       {result.status.marker} {result.summary}")
+
+        # 报告开头声明：本次删了车上的哪些东西
+        removed = ["ROS 日志"]
+        if vim_after == 0:
+            removed.append(".viminfo")
+        if not keep_hist:
+            removed.append(".bash_history")
+        self.report.cleanup_declaration = (
+            "本次测试已清理车辆使用痕迹：" + "、".join(removed)
+            + ("（命令历史已保留）" if keep_hist else "")
+            + "。如需完整现场记录，请在下次测试时关闭 traces.auto_cleanup。"
+        )
+
+        self._write_cleanup_log(data)
+
+    def _write_cleanup_log(self, data: dict) -> None:
+        """在报告目录留一份 cleanup.log，方便事后追溯清理动作。"""
+        if self.record_dir is None:
+            return
+        try:
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            lines = [f"# 清理记录 {stamp}", ""]
+            for key in ("error", "kept_history", "logs_before_mb", "logs_before_dirs",
+                        "logs_after_mb", "logs_after_dirs", "hist_before",
+                        "hist_after", "vim_after"):
+                if key in data:
+                    lines.append(f"{key} = {data[key]}")
+            (self.record_dir / "cleanup.log").write_text(
+                "\n".join(lines) + "\n", encoding="utf-8"
+            )
+        except Exception:
+            pass
 
     def _should_abort(self) -> bool:
         """致命项失败或用户请求停止时，不再继续。"""

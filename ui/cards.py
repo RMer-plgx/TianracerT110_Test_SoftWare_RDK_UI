@@ -19,8 +19,6 @@ STATUS_COLOR_KEY = {
     Status.FAIL: "fail",
     Status.SKIP: "skip",
     Status.MANUAL: "skip",
-    # 提示级用通过色：出货判定上它与 PASS 等价
-    Status.NOTICE: "pass",
 }
 
 STATUS_TEXT = {
@@ -29,7 +27,6 @@ STATUS_TEXT = {
     Status.FAIL: "失败",
     Status.SKIP: "跳过",
     Status.MANUAL: "人工",
-    Status.NOTICE: "通过",
 }
 
 

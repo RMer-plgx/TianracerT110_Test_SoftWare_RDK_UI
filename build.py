@@ -4,7 +4,7 @@
 产物：dist/TianracerT110_Test_SoftWare_RDK_UI.exe
 
 注意：
-- UI 版含 QWebEngine（PDF 导出），体积明显更大（约 130 MB）
+- UI 版比命令行版多一个 PyQt5 依赖，体积会明显更大（约 58 MB）
 - config/、report/、probes/、assets/ 会作为资源打进 exe
 - test records/ 创建在 exe 所在目录
 """
@@ -39,15 +39,12 @@ HIDDEN_IMPORTS = [
     "ui.main_window",
     "ui.cards",
     "ui.theme",
-    # PDF 导出用的浏览器内核。代码里是函数内 import（缺了要能优雅降级），
-    # PyInstaller 静态分析看不到，必须显式声明。
-    "PyQt5.QtWebEngineWidgets",
-    "PyQt5.QtWebEngineCore",
-    "PyQt5.QtWebChannel",
 ] + [f"checks.{name}" for name in CHECK_MODULES]
 
 # PyQt5 里用不到的 Qt 模块，排除后能显著减小体积
 EXCLUDES = [
+    "PyQt5.QtWebEngineWidgets",
+    "PyQt5.QtWebEngineCore",
     "PyQt5.QtMultimedia",
     "PyQt5.QtQml",
     "PyQt5.QtQuick",
@@ -64,20 +61,6 @@ EXCLUDES = [
     "matplotlib",
     "numpy",
     "pandas",
-]
-
-
-# UPX 压过的 QtWebEngine 组件会在启动时崩溃，必须原样保留
-UPX_EXCLUDE = [
-    "QtWebEngineProcess.exe",
-    "QtWebEngineCore.dll",
-    "Qt5WebEngineCore.dll",
-    "icudtl.dat",
-    "v8_context_snapshot.bin",
-    "qtwebengine_resources.pak",
-    "qtwebengine_resources_100p.pak",
-    "qtwebengine_resources_200p.pak",
-    "qtwebengine_devtools_resources.pak",
 ]
 
 
@@ -144,9 +127,6 @@ def main() -> int:
         args += ["--hidden-import", module]
     for module in EXCLUDES:
         args += ["--exclude-module", module]
-    # QtWebEngine 的二进制压过之后 QtWebEngineProcess 启动即崩（Qt 已知问题）
-    for pattern in UPX_EXCLUDE:
-        args += ["--upx-exclude", pattern]
 
     args.append("app.py")
 
@@ -176,23 +156,6 @@ def main() -> int:
         print("  打包产物可能不可用，请手动双击验证。")
     else:
         print("  ✅ 自检通过（资源 + 19 个 checks + 报告模板均正常）")
-
-    # PDF 导出是打包版最容易翻车的功能（QtWebEngineProcess 子进程），
-    # 必须用真实产物跑一次，不能只靠 import 成功。
-    print("  验证 PDF 导出…")
-    pdf_out = ROOT / "dist" / "_pdf_smoke.pdf"
-    pdf_test = subprocess.run(
-        [str(exe), "--pdf-smoke", str(pdf_out)], cwd=ROOT,
-        capture_output=True, text=True, timeout=180,
-        encoding="utf-8", errors="replace",
-    )
-    if pdf_test.returncode == 0 and pdf_out.exists():
-        print(f"  ✅ PDF 导出可用（{pdf_out.stat().st_size} 字节）")
-        pdf_out.unlink(missing_ok=True)
-    else:
-        print("  ⚠ PDF 导出不可用，界面会降级为「浏览器 Ctrl+P」")
-        for line in (pdf_test.stdout or "").splitlines()[-6:]:
-            print(f"    {line}")
 
     print("\n" + "=" * 60)
     print(f"  ✅ 打包完成：{exe}")

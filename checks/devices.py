@@ -71,9 +71,9 @@ def run(ctx) -> CheckResult:
             result.status = Status.FAIL
             result.summary = "底盘串口 /dev/ttyUSB0 缺失，无法继续"
     elif warnings:
-        # 软链指向重复不影响底盘通信（/dev/ttyUSB0 本身正常），
-        # 只是交付前该清理的卫生问题 —— 提示级。
-        result.status = Status.NOTICE
+        # 软链重复指向不影响底盘通信，但属于交付前该清理的卫生问题。
+        # 如实报 WARN，是否接受由人在报告里逐条确认。
+        result.status = Status.WARN
         result.summary = f"{len(warnings)} 个软链指向可疑，建议清理（不影响本次测试）"
     else:
         result.summary = f"必需节点齐全（共检测 {len(REQUIRED) + len(OPTIONAL) + len(SUSPICIOUS)} 项）"

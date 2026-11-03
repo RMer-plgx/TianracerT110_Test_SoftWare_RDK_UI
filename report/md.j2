@@ -13,6 +13,10 @@
 > ⚠ **本次测试未完整执行**：{{ report.aborted_reason }}
 {% endif %}
 
+{% if report.cleanup_declaration %}
+> ℹ **车辆状态提示**：{{ report.cleanup_declaration }}
+{% endif %}
+
 ---
 
 ## 一、检测对象
@@ -44,7 +48,7 @@
 | # | 检测项 | 结果 | 摘要 |
 |---|---|---|---|
 {% for item in report.results | sort(attribute='number') %}
-| {{ item.number }} | {{ item.title }} | {{ item.status.marker }} {{ item.status.label }} | {{ item.summary | replace('\n', ' ') }} |
+| {{ item.number }} | {{ item.title }} | {{ item.status.marker }} {{ item.status.value | upper }} | {{ item.summary | replace('\n', ' ') }} |
 {% endfor %}
 
 **已执行项通过率**：{{ report.passed | length }} / {{ report.executed | length }}
@@ -60,7 +64,7 @@
 ## 三、逐项记录
 
 {% for item in report.results | sort(attribute='number') %}
-### {{ item.number }}. {{ item.title }} — {{ item.status.marker }} {{ item.status.label }}
+### {{ item.number }}. {{ item.title }} — {{ item.status.marker }} {{ item.status.value | upper }}
 
 {% if item.summary %}
 **结论**：{{ item.summary }}
@@ -109,7 +113,7 @@
 ### 需要人工确认的项目
 
 以下内容程序无法自动判定，需人工确认。
-同目录的 <code>report.html</code> 可以直接勾选（勾选状态自动保存）。
+同目录的 **report.html** 可以直接勾选（勾选状态自动保存，并会带入 PDF）。
 MD 版本只能手工添加标记：
 
 | 项目 | 结果 | 说明 |
@@ -138,21 +142,11 @@ MD 版本只能手工添加标记：
 {% endfor %}
 {% endif %}
 
-{% if report.noticed %}
-**提示项（不影响出货）**
-
-以下已取到数据并判过，结论是不影响本次出货，判定按通过计算：
-
-| # | 检测项 | 观测事实 |
-|---|---|---|
-{% for item in report.noticed | sort(attribute='number') %}
-| {{ item.number }} | {{ item.title }} | {{ item.summary | replace('\n', ' ') }} |
-{% endfor %}
-
-{% endif %}
-
 {% if report.warned %}
 **告警项（需确认，不阻断交付）**
+
+> 这些项在 `report.html` 里可以逐条勾选「确认接受」，勾选后转为通过并计入通过数。
+> 下方为程序原始判定。
 
 {% for item in report.warned %}
 - **{{ item.number }}. {{ item.title }}** — {{ item.summary }}
