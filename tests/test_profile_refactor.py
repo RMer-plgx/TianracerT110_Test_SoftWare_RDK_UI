@@ -93,15 +93,25 @@ class TestRosConfigUnchanged:
         assert prof.ros.launch_file == "tianracer_bringup.launch"
 
     def test_env_overrides(self, prof):
+        """覆盖清单。
+
+        2026-11-05 实车修复：移除了 TIANRACER_LIDAR_PORT。
+        原因见 profile.yaml 注释 —— 那台车的 richbeam_lidar.launch.xml
+        里 lidar_serial 写死 /dev/ttyUSB0，而 /dev/tianbot_lidar 也指向
+        ttyUSB0，雷达与底盘抢串口，bringup 起不来。
+        """
         expected = {
             "TIANRACER_BASE_PORT": "/dev/ttyUSB0",
             "TIANRACER_BASE_BAUDRATE": "115200",
             "TIANRACER_LIDAR": "richbeam_lidar",
             "TIANRACER_LIDAR_IP": "192.168.198.2",
-            "TIANRACER_LIDAR_PORT": "/dev/tianbot_lidar",
             "TIANRACER_NAME": "tianracer",
         }
         assert prof.ros.env_overrides == expected
+
+    def test_no_lidar_serial_override(self, prof):
+        """不该覆盖 LIDAR_PORT —— 会让雷达与底盘抢同一个串口。"""
+        assert "TIANRACER_LIDAR_PORT" not in prof.ros.env_overrides
 
     def test_ros_env_prefix_contains_all_overrides(self, prof):
         prefix = prof.ros_env_prefix()
@@ -350,4 +360,53 @@ class TestEnvPrefixOptional:
         result = envvars.run(_Ctx())
         assert result.status.value == "skip"
         assert "未配置环境变量" in result.summary
+
+class TestVersionConsistency:
+    """版本号、CHANGELOG、git tag 必须一致。
+
+    2026-11-05 的教训：连续 7 轮结构性改造全挂在 v1.0 下，
+    GitHub 上完全看不出演进过程。根因是没有机制强制三者同步，
+    只靠人记。这组测试把同步变成机械检查。
+    """
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def test_version_is_semver(self):
+        import re
+        from core import __version__
+        assert re.fullmatch(r"\d+\.\d+\.\d+", __version__), \
+            f"版本号 {__version__!r} 不是 MAJOR.MINOR.PATCH 格式"
+
+    def test_changelog_exists(self):
+        assert (self.ROOT / "CHANGELOG.md").is_file(), "缺 CHANGELOG.md"
+
+    def test_changelog_top_entry_matches_version(self):
+        """CHANGELOG 最上面那一节必须是当前版本。"""
+        import re
+        from core import __version__
+
+        text = (self.ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        match = re.search(r"^## \[([\d.]+)\]", text, re.M)
+        assert match, "CHANGELOG 里没有 `## [x.y.z]` 格式的版本标题"
+        assert match.group(1) == __version__, (
+            f"CHANGELOG 顶部是 {match.group(1)}，"
+            f"但 core/__init__.py 是 {__version__} —— 发版时漏改了一个"
+        )
+
+    def test_release_doc_exists(self):
+        assert (self.ROOT / "RELEASE.md").is_file(), "缺 RELEASE.md（发布流程）"
+
+    def test_version_reaches_report(self):
+        """报告要带上版本号，否则拿到一份报告无法反查是哪版生成的。"""
+        from core.verdict import Report
+        assert hasattr(Report, "__dataclass_fields__")
+        assert "tool_version" in Report.__dataclass_fields__
+
+    def test_runner_fills_version(self):
+        """Runner 必须把版本写进报告。"""
+        import inspect
+        from core import runner
+
+        src = inspect.getsource(runner.Runner._run_inner)
+        assert "self.report.tool_version" in src
 

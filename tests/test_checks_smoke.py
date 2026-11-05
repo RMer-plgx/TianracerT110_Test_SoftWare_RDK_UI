@@ -309,3 +309,84 @@ class TestProfileEnvPrefix:
     def test_env_note_present(self, profile):
         assert profile.env_note.strip()
         assert "TIANRACER" in profile.env_note
+
+class TestNoSwallowedLaunchErrors:
+    """start_launch 的调用必须严格匹配签名。
+
+    2026-11-05 实车发现：`_run_runtime_phase` 里残留了一次机械替换的错误：
+
+        ros_remote.start_launch(ctx.remote, profile,
+            ctx.remote, "tianracer_bringup", "tianracer_bringup.launch")
+
+    多传了参数，导致 TypeError；而 start_launch 内部 except 掉所有异常，
+    表现为「roslaunch 完全没执行、日志文件都不生成」，实车排查花了很久。
+
+    静态检查签名，比靠实车发现便宜得多。
+    """
+
+    @staticmethod
+    def _callers():
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parent.parent
+        skip = {"build", "dist", "__pycache__", ".pytest_cache", "tests"}
+        return [p for p in root.rglob("*.py")
+                if not any(s in p.parts for s in skip)
+                and p.name != "remote.py"]
+
+    def test_start_launch_arg_count(self):
+        import ast
+        import inspect
+        from core import remote
+
+        sig = inspect.signature(remote.start_launch)
+        params = list(sig.parameters.values())
+        max_positional = sum(
+            1 for p in params
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        )
+        required = sum(
+            1 for p in params
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            and p.default is p.empty
+        )
+
+        problems = []
+        for path in self._callers():
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = getattr(func, "attr", None) or getattr(func, "id", None)
+                if name != "start_launch":
+                    continue
+                n_pos = len(node.args)
+                n_kw = len([k for k in node.keywords if k.arg])
+                if n_pos > max_positional:
+                    problems.append(
+                        f"{path.name}:{node.lineno} 传了 {n_pos} 个位置参数，"
+                        f"最多 {max_positional} 个"
+                    )
+                elif n_pos + n_kw < required:
+                    problems.append(
+                        f"{path.name}:{node.lineno} 只传了 {n_pos + n_kw} 个参数，"
+                        f"至少需要 {required} 个"
+                    )
+
+        assert not problems, "start_launch 调用参数不匹配：\n" + "\n".join(problems)
+
+    def test_start_launch_does_not_hide_caller_bugs(self):
+        """调用方传错参数时，start_launch 不该静默成功。
+
+        现在它只吞 SSH/超时类异常 —— 参数错误是 TypeError，
+        在进入 try 之前就会抛出，不会被吞。
+        """
+        import inspect
+        from core import remote
+
+        src = inspect.getsource(remote.start_launch)
+        # rename/赋值必须在 try 之前
+        try_pos = src.find("try:")
+        assign_pos = src.find("package = package or profile.ros.launch_package")
+        assert assign_pos < try_pos, "参数解析被包进了 try，错误会被吞掉"
+

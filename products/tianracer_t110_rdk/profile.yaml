@@ -27,13 +27,24 @@ ros:
   # 这些是 2026-10-30 实车验证过的正确值；devel/setup.bash 里的
   # env-hooks 默认值是错的（/dev/tianbot_base、460800、oradar_lidar），
   # 会覆盖 ~/.bashrc 的正确配置，导致底盘完全打不开。
+  # 只覆盖「确实需要纠正」的变量。少一个覆盖比多一个安全 ——
+  # 覆盖错的值会真的弄坏启动，而 .bashrc 里本来就有正确值。
   env_overrides:
     TIANRACER_BASE_PORT: /dev/ttyUSB0
     TIANRACER_BASE_BAUDRATE: "115200"
     TIANRACER_LIDAR: richbeam_lidar
     TIANRACER_LIDAR_IP: 192.168.198.2
-    TIANRACER_LIDAR_PORT: /dev/tianbot_lidar
     TIANRACER_NAME: tianracer
+    # 注意：**不要**覆盖 TIANRACER_LIDAR_PORT。
+    #
+    # 这台车的 richbeam_lidar.launch.xml 里写死了
+    #   <arg name="lidar_serial" default="/dev/ttyUSB0" />
+    # 而 /dev/tianbot_lidar 这个软链也指向 ttyUSB0 —— 雷达和底盘会抢
+    # 同一个串口，报 "Device /dev/ttyUSB0 open failed" 并反复重试，
+    # 导致 bringup 起不来（2026-11-05 实车复现）。
+    #
+    # 去掉这个覆盖后，雷达走 richbeam 分支（网口 192.168.198.2），
+    # 串口只留给底盘，8 个节点全部就绪、零错误。
 
   # ROS 话题。代码里一律通过 profile 取，不写死。
   topics:

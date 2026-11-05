@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from . import __version__ as _pkg_version
 from . import profile as product_profile
 from . import remote as ros_remote
 from .paths import lock_file_path, make_record_dir, resource_path
@@ -303,6 +304,7 @@ class Runner:
         self.report.product_id = profile.id
         self.report.product_revision = profile.revision
         self.report.tool_name = self.tool_name
+        self.report.tool_version = _pkg_version
 
         try:
             self._remote = Remote(self.host, self.user, self._password)
@@ -576,15 +578,21 @@ class Runner:
             self._execute(ctx, entry)
 
     def _run_runtime_phase(self, ctx: Context) -> None:
+        # 局部别名：本函数里大量调用 core.remote 的函数，它们都要 profile。
+        # 写成 self.profile 每处都加前缀太长；用局部变量更清楚，
+        # 也避免再出现「漏加 self. 变成未定义变量」这类错。
+        profile = self.profile
         entries = [e for e in self.profile.registry() if e[5] == "runtime"]
         if not entries:
             return
 
         if self.mode == "auto":
             ctx.say("\n【阶段 2/3】启动整车 bringup")
-            ros_remote.start_launch(ctx.remote, profile, 
-                ctx.remote, "tianracer_bringup", "tianracer_bringup.launch"
-            )
+            # 只用 profile 里声明的包名/launch 名。
+            # 之前这里残留了一次机械替换的错误调用（多传了 ctx.remote
+            # 和写死的包名），异常被 start_launch 的 except 吞掉，
+            # 表现为「roslaunch 完全没执行、日志文件不生成」。
+            ros_remote.start_launch(ctx.remote, profile)
             # 先等 rosmaster 真的监听 11311，再抢订阅电压。
             # 直接 tap 会立即报 Unable to communicate 并退出，tap 白做（Round 3）。
             if ros_remote.wait_for_master(ctx.remote, profile, timeout=40):
