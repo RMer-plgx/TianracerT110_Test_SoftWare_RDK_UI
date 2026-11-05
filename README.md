@@ -1,6 +1,10 @@
-# Tianracer T110（RDK）整车自动测试工具
+# 产品出厂自动检测工具（命令行版）
 
-输入车辆 IP，自动完成 19 项检测，输出 Markdown / HTML 测试报告。
+输入车辆 IP，按产品配置档自动执行检测，输出 Markdown / HTML 测试报告。
+
+> 原名 `TianracerT110_Test_SoftWare_RDK`。2026-11-03 起改为多产品架构：
+> 一套代码服务多个产品，产品差异全部放在 `products/<产品id>/` 里。
+> 当前默认产品 `tianracer_t110_rdk` 有 19 项检测。
 
 ## 快速开始
 
@@ -89,7 +93,7 @@ test records/
 
 跳过的代价要写清楚：第 18 项会记 SKIP，报告里的“未验证项”会列出它。
 
-## 19 项检测
+## 检测项
 
 | # | 项目 | 致命 | 依赖 |
 |---|---|---|---|
@@ -144,7 +148,7 @@ test records/
 ### 三重安全保护
 
 1. `run.py` 里两道确认（是否要测 + 安全条件是否满足），默认都是「否」
-2. `config/baseline.yaml` 的 `motion.safety` 给出硬上限
+2. `products/<产品id>/baseline.yaml` 的 `motion.safety` 给出硬上限
 3. `probes/motion_probe.py` 内部二次校验，超限直接拒绝执行
 4. 任何情况下 `finally` 都会发一次零速指令
 
@@ -162,7 +166,8 @@ test records/
 
 ## 修改阈值
 
-所有阈值集中在 `config/baseline.yaml`，带详细注释：
+所有阈值集中在 `products/<产品id>/baseline.yaml`，带详细注释。
+**换产品就是换目录** —— 每个产品有自己独立的一份阈值。
 
 ```yaml
 frequency:
@@ -194,9 +199,13 @@ python -m pytest tests/ -v
 
 ```
 core/       SSH、远端执行、主流程、判定
-checks/     19 项检测，每项一个模块
+checks/     检测项模块（按产品配置挑用）
 probes/     下发到车辆 /tmp 执行的测量脚本
 report/     Jinja2 报告模板
-config/     阈值基线与检测元数据
+products/   产品配置档
+  _template/               新产品模板
+  tianracer_t110_rdk/
+    profile.yaml           产品定义：ROS 话题、工作空间、检测项清单
+    baseline.yaml          判定阈值
 tests/      单元测试
 ```

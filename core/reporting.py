@@ -11,11 +11,21 @@ from .paths import resource_path
 from .verdict import Report
 
 
-def _env() -> Environment:
+def _env(autoescape: bool = False) -> Environment:
+    """构造 Jinja 环境。
+
+    autoescape 对 HTML 必须为 True：报告里要插入车辆命令的输出
+    （hostname、环境变量值、git remote、frame_id、ls -l 结果），
+    这些内容不完全受控。若某个环境变量值是 `<script>...</script>`，
+    报告在浏览器里打开就会执行 —— 而 PDF 导出用的是同一个内核。
+
+    Markdown 必须为 False：`<` 在 Markdown 里是普通字符，
+    转成 `&lt;` 会直接显示成乱码。
+    """
     template_dir = resource_path("report")
     environment = Environment(
         loader=FileSystemLoader(str(template_dir)),
-        autoescape=False,
+        autoescape=autoescape,
         trim_blocks=True,
         lstrip_blocks=True,
         undefined=StrictUndefined,
@@ -23,6 +33,18 @@ def _env() -> Environment:
     )
     environment.filters["pct"] = lambda v: f"{float(v) * 100:.0f}%"
     return environment
+
+
+def _safe_filename_part(text: str) -> str:
+    """把任意字符串压成可安全放进文件名/JS 字符串的形式。
+
+    只保留字母、数字、点、横线、下划线。host 目前经 UI 的 `_valid_host`
+    校验过，但 CLI 版的 `--host` 参数不经过那里，所以统一在这里消毒。
+    """
+    cleaned = "".join(
+        c for c in (text or "") if c.isalnum() or c in ".-_"
+    )
+    return cleaned or "unknown"
 
 
 # 报告内「下载 PDF」需要的两个库。复制到每份报告目录旁，
@@ -57,18 +79,17 @@ def render(report: Report, record_dir: Path) -> Tuple[Path, Path]:
     同时把 PDF 导出用的两个 JS 库复制到目录旁（若存在）。
     报告 HTML 里以相对路径引用，因此整个文件夹可以搬走/压缩/邮件发送。
     """
-    environment = _env()
-
     md_path = record_dir / "report.md"
-    md_text = environment.get_template("md.j2").render(report=report)
+    md_text = _env(autoescape=False).get_template("md.j2").render(report=report)
     md_path.write_text(md_text, encoding="utf-8")
 
     # 先准备库文件，模板里据此决定是否显示「下载 PDF」按钮
     available = _copy_vendor(record_dir)
 
     html_path = record_dir / "report.html"
-    html_text = environment.get_template("html.j2").render(
+    html_text = _env(autoescape=True).get_template("html.j2").render(
         report=report, pdf_vendor=available,
+        safe_host=_safe_filename_part(report.host),
     )
     html_path.write_text(html_text, encoding="utf-8")
 
