@@ -25,9 +25,13 @@ from core import connect as conn
 from core.paths import resource_path
 from core.reporting import render
 from core.runner import Runner, default_registry
+# 模块级导入：WiredSetupWorker 与 CleanupWorker 都要用。
+# 之前只有 CleanupWorker 在函数内局部 import，导致有线模式 NameError。
+from core.ssh import Remote
 from core.verdict import Report, Status
 
 from .cards import CheckCard
+from .switch import CapsuleSwitch, ConnectionSwitch
 from .theme import palette, stylesheet
 
 
@@ -322,7 +326,6 @@ class CleanupWorker(QThread):
 
     def run(self) -> None:
         from checks import traces
-        from core.ssh import Remote
 
         cfg = self._config
         remote = None
@@ -385,7 +388,7 @@ class MainWindow(QMainWindow):
         self._fit_to_screen()
 
         self._build_ui()
-        self.set_conn_mode("wired")
+        self.set_conn_mode("wired", animate=False)
         self.apply_theme()
         self._log("就绪。填写车辆地址后点击「开始检测」。")
 
@@ -480,52 +483,48 @@ class MainWindow(QMainWindow):
         return header
 
     def _build_mode_switch(self) -> QWidget:
-        """有线 / 无线分段按钮（用户 2026-11-03 选乙：两个并排按钮各带图标）。
+        """有线 / 无线 胶囊滑动开关。
 
-        为什么不用 QRadioButton：两个选项是「连接方式」的二选一，
-        分段控件比单选圆点更直观，也更省侧栏宽度。
+        用户 2026-11-05 明确要求：胶囊外形、一明一暗、有滑动动画。
+        不用两个分段按钮 —— 那样做不出「滑块滑过去」的连续感。
+
+        放在一个横向布局里并居中，避免被侧栏拉满宽度后变形
+        （胶囊的圆角半径依赖固定高度，宽度随意拉伸会显得很扁）。
         """
         box = QWidget()
         layout = QHBoxLayout(box)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(0)
 
-        self.wired_btn = QPushButton("有线")
-        self.wireless_btn = QPushButton("无线")
+        self.mode_switch = ConnectionSwitch(resource_path("assets/icons"))
+        # 固定尺寸：胶囊的圆角半径 = 高度/2，被拉伸就变形
+        self.mode_switch.setFixedSize(186, CapsuleSwitch.HEIGHT)
+        self.mode_switch.set_theme(self.theme)
+        self.mode_switch.changed.connect(self._on_switch_changed)
 
-        icon_dir = resource_path("assets/icons")
-        for btn, icon_name in ((self.wired_btn, "usb.png"),
-                               (self.wireless_btn, "wifi.png")):
-            icon_path = icon_dir / icon_name
-            if icon_path.exists():
-                btn.setIcon(QIcon(str(icon_path)))
-                btn.setIconSize(QSize(18, 18))
-            btn.setCheckable(True)
-            btn.setMinimumHeight(34)
-
-        self.wired_btn.setToolTip(
-            "USB-C 直连上位机（车机固定 192.168.128.10）\n"
-            "软件会自动让车连上与电脑相同的 WiFi，然后提示拔线"
-        )
-        self.wireless_btn.setToolTip(
-            "车已经连在 WiFi 上，直接填它的 IP 开始检测"
-        )
-
-        layout.addWidget(self.wired_btn, 1)
-        layout.addWidget(self.wireless_btn, 1)
-
-        self.wired_btn.clicked.connect(lambda: self.set_conn_mode("wired"))
-        self.wireless_btn.clicked.connect(lambda: self.set_conn_mode("wireless"))
-
-        self._mode_box = box
+        layout.addStretch(1)
+        layout.addWidget(self.mode_switch)
+        layout.addStretch(1)
         return box
 
-    def set_conn_mode(self, mode: str) -> None:
-        """切换连接模式，同步按钮状态与 IP 输入框可见性。"""
+    def _on_switch_changed(self, index: int) -> None:
+        """开关自身被点击时同步状态。"""
+        mode = "wired" if index == 0 else "wireless"
+        if mode != self.conn_mode:
+            self.set_conn_mode(mode, from_switch=True)
+
+    def set_conn_mode(self, mode: str, from_switch: bool = False,
+                      animate: bool = True) -> None:
+        """切换连接模式。
+
+        from_switch=True 表示是开关自己发出的（避免回环触发动画重启）。
+        animate=False 用于程序初始化，不要一启动就滑一下。
+        """
         self.conn_mode = mode
         wired = mode == "wired"
-        self.wired_btn.setChecked(wired)
-        self.wireless_btn.setChecked(not wired)
+        if hasattr(self, "mode_switch"):
+            self.mode_switch.set_index(0 if wired else 1,
+                                       animate=animate and not from_switch)
         # 有线模式隐藏 IP 框（地址固定），无线模式显示
         self.host_edit.setVisible(not wired)
         self._update_mode_hint()
@@ -761,6 +760,9 @@ class MainWindow(QMainWindow):
 
     def apply_theme(self) -> None:
         self.setStyleSheet(stylesheet(self.theme))
+        # 开关是自绘的，不吃 QSS，要单独喂颜色
+        if hasattr(self, "mode_switch"):
+            self.mode_switch.set_theme(self.theme)
         for card in self.cards.values():
             card.set_theme(self.theme)
         c = palette(self.theme)

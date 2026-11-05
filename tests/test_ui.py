@@ -264,3 +264,100 @@ class TestCloseEventExists:
             "必须覆写 closeEvent，否则关窗口时工作线程仍在跑，"
             "车上的 roslaunch 不会被清理"
         )
+
+class TestWiredModeDependencies:
+    """有线模式用到的符号必须在模块级可见。
+
+    2026-11-05 实车：点「有线模式 → 开始检测」立即报
+    `NameError: name 'Remote' is not defined`。
+    根因：`Remote` 只在 CleanupWorker 某个方法里做过局部 import，
+    WiredSetupWorker 在另一个作用域，拿不到。
+
+    这类错误测试抓不到（因为 WiredSetupWorker 需要真实线程才会执行），
+    所以改成静态检查「模块级可见性」。
+    """
+
+    def test_remote_imported_at_module_level(self):
+        import ui.main_window as mw
+        assert hasattr(mw, "Remote"), "Remote 不是模块级可见，有线模式会 NameError"
+
+    def test_both_workers_can_resolve_remote(self):
+        import inspect
+        import ui.main_window as mw
+
+        for worker, method in ((mw.WiredSetupWorker, "_run"),
+                               (mw.CleanupWorker, "run")):
+            src = inspect.getsource(getattr(worker, method))
+            if "Remote(" not in src:
+                continue
+            # 模块级有就够了，不需要方法内再 import
+            assert hasattr(mw, "Remote"), f"{worker.__name__}.{method} 用 Remote 但模块级没有"
+
+    def test_no_function_local_ssh_import(self):
+        """不要在方法里局部 import Remote —— 其他方法拿不到。"""
+        import inspect
+        import ui.main_window as mw
+
+        src = inspect.getsource(mw)
+        assert "            from core.ssh import Remote" not in src, (
+            "方法内局部 import Remote 会让别的方法 NameError"
+        )
+
+
+class TestCapsuleSwitch:
+    """胶囊滑动开关的行为。"""
+
+    @staticmethod
+    def _switch():
+        from PyQt5.QtWidgets import QApplication
+        QApplication.instance() or QApplication([])
+        from PyQt5.QtCore import QSize
+        from core.paths import resource_path
+        from ui.switch import ConnectionSwitch
+        sw = ConnectionSwitch(resource_path("assets/icons"))
+        sw.resize(QSize(186, sw.HEIGHT))
+        return sw
+
+    def test_has_animation(self):
+        sw = self._switch()
+        assert sw._anim.duration() > 0, "没有动画时长，就是瞬移"
+        assert sw._anim.propertyName() == b"offset"
+
+    def test_offset_interpolates(self):
+        """offset 必须是连续量，不能只有 0/1 两态。"""
+        sw = self._switch()
+        sw._anim.stop()
+        sw.set_offset(0.0)
+        sw._anim.setStartValue(0.0)
+        sw._anim.setEndValue(1.0)
+        sw._anim.start()
+        samples = []
+        for ms in (0, 45, 90, 135, 180):
+            sw._anim.setCurrentTime(ms)
+            samples.append(sw.get_offset())
+        assert samples[0] == 0.0
+        assert samples[-1] == 1.0
+        # 中间必须落在 0~1 之间（说明真的在插值）
+        assert any(0.0 < s < 1.0 for s in samples)
+        assert all(samples[i] <= samples[i + 1] for i in range(len(samples) - 1))
+
+    def test_index_and_signal(self):
+        sw = self._switch()
+        seen = []
+        sw.changed.connect(seen.append)
+        sw.set_index(1, animate=False)
+        assert sw.index == 1
+        assert seen == [1]
+
+    def test_colors_differ_between_states(self):
+        """一明一暗：轨道暗、滑块亮，两者颜色必须不同。"""
+        sw = self._switch()
+        assert sw.TRACK_OFF.name() != sw.TRACK_ON.name()
+
+    def test_theme_colors_switch(self):
+        sw = self._switch()
+        sw.set_theme("dark")
+        dark_off = sw.TRACK_OFF.name()
+        sw.set_theme("light")
+        assert sw.TRACK_OFF.name() != dark_off
+
