@@ -184,7 +184,10 @@ class WiredSetupWorker(QThread):
       3. 需要重连时：扫描 → 匹配 SSID → 若需要密码则请求界面弹窗
       4. 连上后读 IP，交给界面提示拔线
 
-    任何一步失败都不改车辆配置，只回报原因。
+    注意：第 3 步的 `nmcli device wifi connect` 会在车上**新建**
+    持久化 WiFi 配置（含密码、默认自动连接）。这是让车联网的必要动作，
+    不是测试副作用 —— 界面在开始前会明确告知。
+    除这一步外，其余操作都不改车辆配置。
     整个流程跑在后台线程，避免连车+连WiFi 的几十秒把界面冻住。
     """
 
@@ -802,6 +805,24 @@ class MainWindow(QMainWindow):
             return
         if self.worker is not None and self.worker.isRunning():
             QMessageBox.warning(self, "正在检测", "请先停止当前检测。")
+            return
+
+        reply = QMessageBox.question(
+            self, "有线模式说明",
+            f"接下来会做三件事：\n\n"
+            f"  1. 确认上位机 {conn.WIRED_CAR_IP} 可达\n"
+            f"  2. 让车连上与电脑相同的 WiFi\n"
+            f"     （如果车上已有该网络配置则直接启用；\n"
+            f"      没有则新建一个，写到车机的 NetworkManager 配置里，\n"
+            f"      含密码、默认自动连接）\n"
+            f"  3. 读出 WiFi 地址后提示你拔掉 USB 线\n\n"
+            f"第 2 步会改动车机的网络配置 —— 这是让车联网的必要动作，\n"
+            f"但和「只读检测」不同，所以先说清楚。\n\n"
+            f"需要清掉时在车机执行：nmcli connection delete <SSID>\n\n"
+            f"继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
             return
 
         cfg = {

@@ -217,6 +217,19 @@ class Report:
         if self.failed:
             return "不具备交付条件（存在失败项）"
 
+        # 致命项停在 PENDING（只测了一半）也不能说可交付。
+        #
+        # 为什么单列这一条：fatal 的含义是「这项不过，后面测了也没意义」。
+        # IMU / 里程计的航向精度要等落地转圈互校才有结论，在那之前它们
+        # 既不是 PASS 也不是 FAIL —— 若照常放行，「致命项没验证完」就会
+        # 被 skip_ratio 这条宽松阈值（20%）掩盖掉。
+        # 报告里仍可人工勾选「确认接受」，那是显式的责任承担。
+        fatal_pending = [r for r in self.results
+                         if r.fatal and r.status is Status.PENDING]
+        if fatal_pending:
+            titles = "、".join(r.title for r in fatal_pending[:3])
+            return f"不具备交付条件（致命项未完成落地互校：{titles}）"
+
         judged = self.judged
         if not judged:
             return "不具备交付条件（没有可判定的检测项）"
@@ -261,6 +274,10 @@ class Report:
         if self.aborted_reason:
             return "bad"
         if self.failed or self.skip_ratio > MAX_SKIP_RATIO:
+            return "bad"
+        # 与 verdict 保持一致：致命项停在 PENDING 也是「不具备交付条件」，
+        # 颜色必须是红的。两处分开实现很容易漂移，所以条件写全。
+        if any(r.fatal and r.status is Status.PENDING for r in self.results):
             return "bad"
         if self.warned or self.unverified:
             return "warn"

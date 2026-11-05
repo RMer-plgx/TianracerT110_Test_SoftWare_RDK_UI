@@ -588,7 +588,9 @@
      做法：把整份报告画成 canvas，再按 A4 切成多页塞进 PDF。
      中文由浏览器自己的字体渲染进 canvas，不需要嵌字体。 */
 
-  var PDF_FILENAME = '检测报告_{{ report.host }}_{{ report.started_at | replace("-","") | replace(":","") | replace(" ","-") }}.pdf';
+  // 文件名里的 host 已消毒（只留字母数字点横线），
+  // 避免特殊字符破坏 JS 字符串或路径。
+  var PDF_FILENAME = '检测报告_{{ safe_host }}_{{ report.started_at | replace("-","") | replace(":","") | replace(" ","-") }}.pdf';
 
   function sliceCanvasToPdf(canvas) {
     var jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
