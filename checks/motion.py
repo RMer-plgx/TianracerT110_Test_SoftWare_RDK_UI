@@ -465,12 +465,15 @@ def _run_spin(ctx, cfg, result, safety):
             result.add(f"{side}转闭合误差", f"{closure:.3f}", "m",
                        note=f"转完一圈回到起点的距离，> {closure_warn} m 提示打滑")
 
-        # 没转够一圈（异常提前停）不能算验证过
+        # 没转够一圈（异常提前停）不能算验证过。
+        #
+        # 统一记 SKIP 而不是 WARN：这里的语义是「没验证完」，
+        # 不是「验证了但有偏差」。记 WARN 会让报告多一条黄色条目，
+        # 读者容易误以为「只是有警告」，实际是根本没测到。
         if not data.get("reached"):
             anomaly = data.get("anomaly") or "未转到目标角度"
             result.add(f"{side}转未完成", anomaly)
-            if not data.get("anomaly"):
-                statuses.append(Status.WARN)
+            statuses.append(Status.SKIP)
             verified_all = False
 
     return statuses, verified_all and all(s is Status.PASS for s in statuses)

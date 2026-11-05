@@ -118,6 +118,25 @@ class TestParseNetsh:
         assert ssid == "My:Net:5G"
         assert connected is True
 
+    def test_fullwidth_colon_is_normalised(self):
+        """全角冒号也要能解析。
+
+        某些系统/输入法会输出「状态：已连接」。不归一化的话
+        会静默判成未连接 —— 和 Round 7 那个 bug 是同一种失败形态。
+        """
+        out = "    状态：已连接\n    SSID：TestNet\n"
+        ssid, state, connected = connect.parse_netsh_output(out)
+        assert ssid == "TestNet"
+        assert state == "已连接"
+        assert connected is True
+
+    def test_mixed_colon_styles(self):
+        """全角键 + 半角值（或反之）也要能处理。"""
+        out = "    状态: 已连接\n    SSID：TestNet\n"
+        ssid, _state, connected = connect.parse_netsh_output(out)
+        assert ssid == "TestNet"
+        assert connected is True
+
     def test_empty_output(self):
         ssid, state, connected = connect.parse_netsh_output("")
         assert (ssid, state, connected) == ("", "", False)
