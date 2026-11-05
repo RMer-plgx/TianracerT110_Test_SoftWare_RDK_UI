@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._fixtures import attach_profile, get_profile  # noqa: E402
+from tests._fixtures import attach_profile, get_profile, get_profile  # noqa: E402
 from core.verdict import CheckResult, Report, Status
 
 
@@ -99,31 +99,41 @@ class TestMicroPulseOnlyIsNotPass:
 # ---------------------------------------------------------------------------
 
 class TestEnvvarOverrideHonesty:
+    """「已临时修正」只能标在真的被 export 的变量上。
+
+    2026-11-05 重构后，「白名单」不再是代码里的常量，
+    而是产品的 `ros.env_overrides`（也就是 ros_env_prefix 实际 export 的键）。
+    这里验证判断依据确实换成了 profile，而不是残留的硬编码集合。
+    """
+
     def test_only_prefix_vars_marked_overridden(self):
         from checks import envvars
 
+        profile = get_profile()
+        overridden_keys = set(profile.ros.env_overrides)
+        # 取一个真的会被 export 的，和一个不会的
+        exported = sorted(overridden_keys)[0]
+        not_exported = "TIANRACER_BASE"      # T110 不 export 这个
+
         class FakeCtx:
             baseline = {
-                "envvars": {
-                    "TIANRACER_BASE_PORT": "/dev/ttyUSB0",   # 在白名单
-                    "TIANRACER_BASE": "compact",             # 不在白名单
-                },
+                "envvars": {exported: "expected-value", not_exported: "compact"},
                 "envvars_known_deviations": {},
             }
 
             def __init__(self):
                 self.remote = None
-                self.profile = attach_profile(self).profile
+                self.profile = profile
 
-        actual = {
-            "TIANRACER_BASE_PORT": "/dev/tianbot_base",
-            "TIANRACER_BASE": "standard",
-        }
+        actual = {exported: "wrong-value", not_exported: "standard"}
 
         import core.remote as remote_mod
         original = remote_mod.read_env_vars
         try:
-            remote_mod.read_env_vars = lambda _r: actual
+            # 签名必须与真实函数一致（2 个参数）。
+            # 之前写成 lambda _r: actual 恰好「兼容」了漏传 profile 的错误调用，
+            # 导致第 4 项在真机上 TypeError 而测试全绿（Round 6 指出）。
+            remote_mod.read_env_vars = lambda r, p: actual
             import importlib
             importlib.reload(envvars)
             result = envvars.run(FakeCtx())
@@ -132,10 +142,20 @@ class TestEnvvarOverrideHonesty:
             importlib.reload(envvars)
 
         detail = result.detail or ""
-        # BASE_PORT 真的被覆盖了，可以列
-        assert "TIANRACER_BASE_PORT" in detail
-        # BASE 没被覆盖，必须列在「未修正」而不是「已覆盖」
+        assert exported in detail
         assert "不在自动修正白名单" in detail or "未修正" in detail
+
+    def test_override_set_comes_from_profile(self):
+        """白名单必须来自 profile，不能是硬编码常量。"""
+        from checks import envvars
+
+        source = __import__("inspect").getsource(envvars)
+        # 不该再有写死的产品变量集合
+        assert "OVERRIDDEN_BY_PREFIX = {" not in source
+
+        profile = get_profile()
+        ctx = type("C", (), {"profile": profile})()
+        assert envvars._overridden_names(ctx) == set(profile.ros.env_overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +192,7 @@ class TestTfDanglingFrame:
         from checks import tf
 
         class FakeCtx:
+            profile = get_profile()
             baseline = {"tf": {"required_frames": [], "required_transforms": []}}
 
             def __init__(self):

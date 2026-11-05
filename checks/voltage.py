@@ -54,13 +54,16 @@ def run(ctx) -> CheckResult:
     # 用 ros() 前缀而不是手写，保证多网卡时 ROS_IP 也是一致的（Round 2 建议）。
     nodes = ctx.remote.run(ros("rosnode list 2>/dev/null", ctx.profile),
                            timeout=20, record=False).stdout
-    base_node = ctx.profile.ros.topics.get("base_node", "")
-    if base_node and base_node not in nodes:
+    # 用 topic() 而不是 topics.get()：漏配 base_node 时要报错，
+    # 不能静默跳过底盘预检 —— 那样底盘没起来就只能干等 90 秒超时，
+    # 报告写「无数据」而不是「底盘节点未运行」，把人往硬件方向带。
+    base_node = ctx.profile.ros.topic("base_node")
+    if base_node not in nodes:
         result.status = Status.FAIL
         result.summary = f"底盘节点 {base_node} 未运行，无法读取电压"
         result.detail = (
             "电压话题由底盘节点发布。节点不在，说明串口可能没打开。\n"
-            "检查：sudo lsof /dev/ttyUSB0，以及环境变量 TIANRACER_BASE_PORT 是否指向真实设备。"
+            f"检查：{_serial_hint(ctx)}"
         )
         return result
 
@@ -104,7 +107,8 @@ def run(ctx) -> CheckResult:
                           f"可能原因：底盘未连接、话题未发布")
         result.detail = (
             "rosclean 后重新启动 bringup 再试一次。\n"
-            "如果仍然读不到，用 debug_cmd_srv 查询，或检查 /dev/ttyUSB0 是否被占用。"
+            f"如果仍然读不到，用 debug_cmd_srv 查询，或检查 "
+            f"{_serial_hint(ctx)}"
             + (f"\n后台抢订阅：{tap_note}" if tap_note else "")
         )
         return result
@@ -133,3 +137,25 @@ def run(ctx) -> CheckResult:
         result.detail = (f"电压低于 {stop_below} V。按文档 7.7，"
                          f"此状态下不得继续带载测试。\n程序会跳过第 18 项运动控制。")
     return result
+
+
+def _serial_hint(ctx) -> str:
+    """拼出「查哪个串口、哪个变量」的提示，从产品配置取，不写死。
+
+    T110 是 /dev/ttyUSB0 + TIANRACER_BASE_PORT，换成别的产品时
+    这些值都不同，写死等于给错误指引。
+    """
+    overrides = getattr(ctx.profile.ros, "env_overrides", {}) or {}
+
+    # 找形如 *_BASE_PORT 的变量
+    port_var = next((name for name in overrides if name.endswith("_BASE_PORT")), "")
+    port_value = overrides.get(port_var, "") if port_var else ""
+
+    parts = []
+    if port_value:
+        parts.append(f"sudo lsof {port_value}")
+    if port_var:
+        parts.append(f"环境变量 {port_var} 是否指向真实设备")
+    if not parts:
+        return "底盘串口是否被占用，以及环境变量是否指向真实设备"
+    return "，以及".join(parts[:1] + ([" ".join(parts[1:])] if len(parts) > 1 else [])) + "。"

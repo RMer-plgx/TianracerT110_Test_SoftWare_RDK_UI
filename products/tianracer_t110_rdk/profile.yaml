@@ -47,6 +47,20 @@ ros:
     # 底盘节点本体（用于判断 bringup 是否起来）
     base_node: /tianracer/tianracer
 
+  # 报告第 13 项里额外展示父节点的 frame（可选，缺了只是不显示）。
+  # 新产品按自己实际的 frame 名填，不要照抄。
+  display_frames:
+    - tianracer/laser
+    - tianracer/base_footprint
+    - tianracer/imu_link
+
+  # 环境变量前缀。第 4 项按它 `env | grep '^TIANRACER'` 过滤。
+  # 不写也行，会从 env_overrides 的键推导；显式写更清楚。
+  env_prefix: TIANRACER
+
+  # env-hooks 文件（相对工作空间）。只用于报告里的「根本修复方式」指引。
+  env_hook_file: src/tianracer/env-hooks/99.my_tianracer.sh.em
+
   # 建图链路的 roslaunch（第 15 项用）
   slam:
     package: tianracer_slam
@@ -113,3 +127,21 @@ checks:
 
     # --- motion：会让车动，必须人工确认 ---
     - {number: 18, title: 运动控制,         module: motion,   phase: motion}
+
+# -----------------------------------------------------------------------------
+# 环境变量分组说明（可选）
+#
+# 这段文字会原样出现在报告第 4 项的 detail 里，用来回答
+# 「为什么这么多变量」。多产品后每个产品的变量清单不同，
+# 所以由产品自己声明，不再写死在代码里。
+# -----------------------------------------------------------------------------
+env_note: |
+  这 17 个变量不是 17 项手工配置，而是 tianracer 把每个功能模块
+  做成了一个开关（装什么填什么，没装的填 none）：
+    · 底盘通信：TIANRACER_BASE / _BASE_PORT / _BASE_BAUDRATE
+      —— 写错就完全打不开底盘，这三项最重要
+    · 雷达：TIANRACER_LIDAR / _LIDAR_IP / _LIDAR_PORT / _LIDAR_MODEL
+    · 功能模块（本车没装的填 none）：GPS / RGBD_CAMERA / RGBD_CAMERA_MODEL
+      / BRIDGE / VIDEO_DEVICE
+    · 手感与方向：TIANRACER_STEERING_DIRECTION / _THROTTLE_DIRECTION / _JOY_MODE
+    · 名称：TIANRACER_NAME / TIANBOT_NAME

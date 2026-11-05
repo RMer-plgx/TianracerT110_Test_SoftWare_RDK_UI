@@ -173,17 +173,32 @@ class TestTapTiming:
 # ---------------------------------------------------------------------------
 
 class TestEnvvarWhitelistConsistency:
+    """「已修正」白名单必须与真正 export 的变量一致。
+
+    重构后白名单不再是代码里的常量，而是直接取
+    `profile.ros.env_overrides` —— 也就是 ros_env_prefix 实际 export 的键。
+    两者同源，所以永远不会漂移。
+    """
+
     def test_whitelist_matches_prefix_exports(self):
         from core import profile as product_profile
-        from checks.envvars import OVERRIDDEN_BY_PREFIX
-        ROS_ENV_PREFIX = product_profile.load().ros_env_prefix()
+        from checks import envvars
 
-        exported = set(re.findall(r"export (TIAN\w+)=", ROS_ENV_PREFIX))
-        assert exported, "ROS_ENV_PREFIX 里没找到 export TIAN* 变量"
-        assert OVERRIDDEN_BY_PREFIX == exported, (
+        profile = product_profile.load("tianracer_t110_rdk")
+        prefix_text = profile.ros_env_prefix()
+
+        exported = set(re.findall(r"export (\w+)=", prefix_text))
+        # 去掉 ROS 自身的变量，只看产品的
+        exported = {n for n in exported if n.startswith(profile.env_prefix)}
+        assert exported, "ros_env_prefix 里没找到产品的 export 变量"
+
+        ctx = type("C", (), {"profile": profile})()
+        whitelist = envvars._overridden_names(ctx)
+
+        assert whitelist == exported, (
             f"白名单与实际导出不一致。\n"
-            f"  只在白名单：{OVERRIDDEN_BY_PREFIX - exported}\n"
-            f"  只在前缀：  {exported - OVERRIDDEN_BY_PREFIX}"
+            f"  只在白名单：{whitelist - exported}\n"
+            f"  只在前缀：  {exported - whitelist}"
         )
 
 

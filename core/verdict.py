@@ -120,6 +120,9 @@ class Report:
     product: str = ""
     product_id: str = ""
     product_revision: str = ""
+    # 生成这份报告的工具名（CLI 版 / UI 版不同）。
+    # md 与 html 两个模板必须用同一个值，否则同一份报告会出现两个工具名。
+    tool_name: str = "tianbot_prodtest"
     # 若本次测试删除了车上的持久文件（ROS 日志等），这里写明，
     # 报告开头要醒目展示 —— 读者必须知道拿到的是「被清过的车」。
     cleanup_declaration: str = ""

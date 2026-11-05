@@ -63,11 +63,12 @@ def run(ctx) -> CheckResult:
     if missing:
         result.status = Status.FAIL
         result.summary = "缺少必需 frame：" + "、".join(missing)
+        pkg = ctx.profile.ros.launch_package
+        launch = ctx.profile.ros.launch_file
         result.detail = (
-            "常见原因：只启动了 tianracer_core.launch 而没有启动 "
-            "tianracer_description.launch，导致 robot_state_publisher 未运行，\n"
-            "base_link / base_footprint 等 frame 不存在。\n"
-            "正确做法：roslaunch tianracer_bringup tianracer_bringup.launch"
+            "常见原因：只启动了底盘驱动，没有启动带 robot_state_publisher 的 "
+            "description/urdf 部分，导致 base_link / base_footprint 等 frame 不存在。\n"
+            f"正确做法：roslaunch {pkg} {launch}"
         )
     elif missing_tf:
         result.status = Status.FAIL
@@ -76,7 +77,9 @@ def run(ctx) -> CheckResult:
         result.status = Status.WARN
         result.summary = "疑似断链：" + "、".join(dangling[:3]) + " 无父节点"
     else:
-        for frame in ("tianracer/laser", "tianracer/base_footprint", "tianracer/imu_link"):
+        # frame 列表来自产品配置，不写死 —— 不同产品的 frame 名不同，
+        # 写死的后果是新产品报告里这一块静默消失，不报错也不提示。
+        for frame in ctx.profile.ros.display_frames:
             if frame in frames:
                 result.add(frame, f"← {frames[frame]}")
         if roots:
