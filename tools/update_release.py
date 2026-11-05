@@ -1,4 +1,4 @@
-﻿"""更新 GitHub Release 的 exe 附件。
+"""更新 GitHub Release 的 exe 附件。
 
 用法：python tools/update_release.py <token>
 

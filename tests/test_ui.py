@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._fixtures import attach_profile  # noqa: E402
+from tests._fixtures import attach_profile, get_profile  # noqa: E402
 from core.verdict import CheckResult, Report, Status  # noqa: E402
 
 
@@ -183,6 +183,7 @@ class TestCancellationWired:
                         mode="attach", motion="none")
 
         class FakeCtx:
+            profile = get_profile()
             cancel_requested = True
 
             def say(self, text):
@@ -207,6 +208,7 @@ class TestCancellationWired:
         monkeypatch.setattr(motion, "run_probe", fake_probe)
 
         class Ctx:
+            profile = get_profile()
             cancel_requested = True
 
             def say(self, text):

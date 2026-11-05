@@ -200,6 +200,7 @@ class Runner:
                  answers: Optional[Dict[str, str]] = None,
                  mode: str = "auto", motion: str = "none",
                  profile_id: Optional[str] = None,
+                 tool_name: str = "tianbot_prodtest",
                  pause_for_ground=None,
                  on_output=None, on_check_start=None, on_check_done=None):
         """
@@ -219,6 +220,7 @@ class Runner:
         # 产品配置档。_run_inner 里加载成功后会填进来；
         # 加载失败时保持 None，request_cancel 等路径要能容忍。
         self.profile_id = profile_id
+        self.tool_name = tool_name
         self.profile: Optional["product_profile.Profile"] = None
         self.pause_for_ground = pause_for_ground
         # GUI 回调：实时日志与单项状态
@@ -300,6 +302,7 @@ class Runner:
         self.report.product = profile.name
         self.report.product_id = profile.id
         self.report.product_revision = profile.revision
+        self.report.tool_name = self.tool_name
 
         try:
             self._remote = Remote(self.host, self.user, self._password)

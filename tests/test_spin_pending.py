@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._fixtures import attach_profile  # noqa: E402
+from tests._fixtures import attach_profile, get_profile  # noqa: E402
 from core.verdict import (  # noqa: E402
     CheckResult, Report, Status,
 )
@@ -302,6 +302,7 @@ class TestHealthWording:
                 return outer._Out("")
 
         class _Ctx:
+            profile = get_profile()
             remote = _Remote()
             baseline = outer.BASELINE
         return _Ctx()
@@ -421,6 +422,7 @@ class TestGroundDependentsResolution:
     @staticmethod
     def _ctx(verified):
         class _Ctx:
+            profile = get_profile()
             spin_verified = verified
             def say(self, text):
                 pass

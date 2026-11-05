@@ -254,3 +254,100 @@ class TestNoHardcodedProduct:
                     continue
                 offenders.append(f"{path.name}:{no} {stripped[:70]}")
         assert not offenders, "探针里仍有硬编码：\n" + "\n".join(offenders)
+
+class TestBaselineSchemaValidation:
+    """baseline 缺键必须在加载时报错，不能静默用代码里的默认值。
+
+    这是 76 处 `cfg.get("x", 默认值)` 的统一防线：
+    键一定存在时，默认分支永远走不到。
+    """
+
+    def _load_with(self, monkeypatch, mutate):
+        """改一份 baseline 再加载，返回 (profile, error)。"""
+        import tempfile, shutil
+        from pathlib import Path as _Path
+        from core import profile as pp
+
+        src_dir = pp.products_root() / "tianracer_t110_rdk"
+        tmp_root = _Path(tempfile.mkdtemp())
+        dst = tmp_root / "tianracer_t110_rdk"
+        shutil.copytree(src_dir, dst)
+
+        baseline = dst / "baseline.yaml"
+        baseline.write_text(mutate(baseline.read_text(encoding="utf-8")),
+                            encoding="utf-8")
+        monkeypatch.setattr(pp, "products_root", lambda: tmp_root)
+        try:
+            return pp.load("tianracer_t110_rdk"), ""
+        except pp.ProfileError as exc:
+            return None, str(exc)
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+
+    def test_missing_threshold_key_raises(self, monkeypatch):
+        def mutate(text):
+            return text.replace("""  imu_hz:
+    nominal: 50.0
+    min: 45.0""", """  imu_hz:
+    nominal: 50.0""", 1)
+
+        prof, err = self._load_with(monkeypatch, mutate)
+        assert prof is None
+        assert "frequency.imu_hz.min" in err
+        # 要说清是哪一项需要它
+        assert "IMU" in err
+
+    def test_error_lists_all_missing_keys(self, monkeypatch):
+        def mutate(text):
+            text = text.replace("  low_v: 11.0\n", "", 1)
+            text = text.replace("  load_warn: 3.0\n", "", 1)
+            return text
+
+        prof, err = self._load_with(monkeypatch, mutate)
+        assert prof is None
+        assert "voltage.low_v" in err
+        assert "health.load_warn" in err
+
+    def test_valid_baseline_loads(self, monkeypatch):
+        prof, err = self._load_with(monkeypatch, lambda text: text)
+        assert prof is not None, err
+
+
+class TestTemplate:
+    def test_template_loads(self):
+        """模板必须能被加载 —— 它是新产品的起点。"""
+        tpl = product_profile.load("_template")
+        assert tpl.total_checks >= 1
+        assert tpl.id == "_template"
+
+    def test_template_not_listed_as_product(self):
+        """模板不该出现在产品下拉里。"""
+        assert "_template" not in product_profile.list_profiles()
+
+    def test_template_has_no_env_prefix(self):
+        """模板可以没有环境变量前缀（很多产品不涉及）。"""
+        tpl = product_profile.load("_template")
+        assert tpl.env_prefix == ""
+
+
+class TestEnvPrefixOptional:
+    def test_profile_without_prefix_is_valid(self):
+        tpl = product_profile.load("_template")
+        # 不抛异常即可
+        assert tpl.env_prefix == ""
+
+    def test_envvars_check_skips_without_prefix(self, monkeypatch):
+        from checks import envvars
+        from core import profile as pp
+
+        tpl = pp.load("_template")
+
+        class _Ctx:
+            profile = tpl
+            baseline = tpl.baseline
+            remote = None
+
+        result = envvars.run(_Ctx())
+        assert result.status.value == "skip"
+        assert "未配置环境变量" in result.summary
+

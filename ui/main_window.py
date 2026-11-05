@@ -369,7 +369,8 @@ class MainWindow(QMainWindow):
         self._wired_worker = None
         self._wait_unplug_worker = None
 
-        self.setWindowTitle("Tianracer T110 整车测试")
+        _title = (self.profile.name if self.profile else "产品") + " 整车测试"
+        self.setWindowTitle(_title)
         icon_path = resource_path("assets/app.ico")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
@@ -431,6 +432,22 @@ class MainWindow(QMainWindow):
         outer.addLayout(body, stretch=1)
 
         outer.addWidget(self._build_footer())
+
+    def _total_checks(self) -> int:
+        """本产品的检测项数。
+
+        用 __init__ 里缓存的 self.profile，不每次重新读 YAML ——
+        default_registry() 每次调用都要解析两个配置文件（约 51 ms）。
+        """
+        if self.profile is not None:
+            return self.profile.total_checks
+        return len(default_registry())
+
+    def _registry(self) -> list:
+        """本产品的检测项清单（缓存的 profile）。"""
+        if self.profile is not None:
+            return self.profile.registry()
+        return default_registry()
 
     def _build_header(self) -> QWidget:
         header = QWidget()
@@ -614,13 +631,13 @@ class MainWindow(QMainWindow):
         title.setObjectName("SectionTitle")
         top.addWidget(title)
         top.addStretch(1)
-        self.counter_label = QLabel("0 / 19")
+        self.counter_label = QLabel(f"0 / {self._total_checks()}")
         self.counter_label.setObjectName("HeaderSub")
         top.addWidget(self.counter_label)
         layout.addLayout(top)
 
         self.progress = QProgressBar()
-        self.progress.setMaximum(len(default_registry()))
+        self.progress.setMaximum(self._total_checks())
         self.progress.setValue(0)
         self.progress.setTextVisible(False)
         layout.addWidget(self.progress)
@@ -634,13 +651,13 @@ class MainWindow(QMainWindow):
         grid.setSpacing(6)
 
         # 按编号排序展示，执行顺序与展示顺序无关
-        for index, entry in enumerate(sorted(default_registry(), key=lambda e: e[0])):
+        for index, entry in enumerate(sorted(self._registry(), key=lambda e: e[0])):
             number, title_text = entry[0], entry[1]
             card = CheckCard(number, title_text, self.theme)
             self.cards[number] = card
             grid.addWidget(card, index, 0)
 
-        grid.setRowStretch(len(default_registry()), 1)
+        grid.setRowStretch(self._total_checks(), 1)
         scroll.setWidget(inner)
         layout.addWidget(scroll, stretch=1)
 
@@ -941,7 +958,7 @@ class MainWindow(QMainWindow):
         for card in self.cards.values():
             card.reset()
         self.progress.setValue(0)
-        total = self.profile.total_checks if self.profile else len(default_registry())
+        total = self._total_checks()
         self.counter_label.setText(f"0 / {total}")
         self.report = None
         self.view_btn.setEnabled(False)

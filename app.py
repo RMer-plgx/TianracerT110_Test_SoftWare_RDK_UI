@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tianracer T110 整车测试 — 图形界面版。
+"""产品出厂自动检测 — 图形界面版。
 
 用法：
     python app.py                正常启动界面
@@ -45,9 +45,8 @@ def self_check() -> int:
     print("self-check 开始")
     problems = []
 
-    for rel in ("products/tianracer_t110_rdk/profile.yaml",
-                "products/tianracer_t110_rdk/baseline.yaml",
-                "report/md.j2", "report/html.j2",
+    # 固定资源
+    for rel in ("report/md.j2", "report/html.j2",
                 "assets/app.ico", "probes/motion_probe.py",
                 "probes/spin_probe.py"):
         path = resource_path(rel)
@@ -55,6 +54,26 @@ def self_check() -> int:
         print(f"  resource {rel}: {status}")
         if not path.exists():
             problems.append(f"资源缺失: {rel}")
+
+    # 产品配置：遍历所有产品，确认每份都能被加载。
+    # 不写死具体产品名 —— 加新产品后这里自动覆盖。
+    try:
+        from core import profile as product_profile
+        ids = product_profile.list_profiles()
+    except Exception as exc:
+        ids = []
+        problems.append(f"产品目录不可读: {exc}")
+
+    if not ids:
+        problems.append("products/ 下没有任何产品配置")
+    for pid in ids:
+        try:
+            loaded = product_profile.load(pid)
+            print(f"  product {pid}: OK（{loaded.total_checks} 项，"
+                  f"前缀 {loaded.env_prefix}）")
+        except Exception as exc:
+            print(f"  product {pid}: FAIL {type(exc).__name__}: {exc}")
+            problems.append(f"产品配置 {pid} 加载失败: {exc}")
 
     import importlib
     for name in CHECK_MODULES:
@@ -197,7 +216,12 @@ def main() -> int:
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Tianracer T110 整车测试")
+    try:
+        from core import profile as _pp
+        _app_name = _pp.load().name + " 整车测试"
+    except Exception:
+        _app_name = "产品整车测试"
+    app.setApplicationName(_app_name)
     app.setFont(QFont("Microsoft YaHei UI", 9))
 
     try:

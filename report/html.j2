@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ report.product or "产品" }} 检测报告 — {{ report.host }}</title>
+<title>{% if report.product %}{{ report.product }} {% endif %}检测报告 — {{ report.host }}</title>
 <style>
   :root {
     --good: #1a7f37; --warn: #9a6700; --bad: #cf222e; --pending: #1f6f94;
@@ -149,7 +149,7 @@
 
 <header>
   <div class="wrap">
-    <h1>{{ report.product or "产品" }}整车自动检测记录</h1>
+    <h1>{% if report.product %}{{ report.product }} {% endif %}整车自动检测记录</h1>
     <div class="meta">
       {% if report.product %}产品 <strong>{{ report.product }}</strong>
       {% if report.product_revision %}（配置版本 {{ report.product_revision }}）{% endif %} · {% endif %}目标车辆 <strong>{{ report.host }}</strong> · 用户 {{ report.user }}<br>
@@ -381,7 +381,7 @@
 </table>
 
 <p class="muted" style="margin-top:40px">
-  本报告由 tianbot_prodtest_ui 自动生成 · 原始命令记录见同目录 <code>raw.log</code>
+  本报告由 {{ report.tool_name }} 自动生成 · 原始命令记录见同目录 <code>raw.log</code>
 </p>
 
 </div>

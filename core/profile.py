@@ -58,6 +58,17 @@ class RosConfig:
     maps_dir: str = ""
     # 参与「源码一致性」检查的仓库目录名（相对 <workspace>/src）
     repos: List[str] = field(default_factory=list)
+    # 报告里要额外展示父节点的 frame（可选）。
+    # 这些是「看着有用」而非「必需」的，缺了不报错，只是不显示。
+    display_frames: List[str] = field(default_factory=list)
+    # env-hooks 文件路径（相对工作空间）。用于「根本修复方式」文案，
+    # 留空则报告不提这一句 —— 不猜不存在的文件。
+    env_hook_file: str = ""
+    # 环境变量前缀，例如 TIANRACER。
+    # 用于「读取车辆自身环境变量」时按前缀过滤（第 4 项）。
+    # 可在 profile.yaml 的 ros.env_prefix 显式声明；
+    # 未声明时由 env_overrides 的键推导公共前缀。
+    env_prefix: str = ""
 
     def topic(self, key: str) -> str:
         """取话题名。缺了就报错，不用默认值糊过去。"""
@@ -103,6 +114,9 @@ class Profile:
     source_dir: Path
     # 版本号，进报告便于追溯「这份结果是用哪套配置跑的」
     revision: str = ""
+    # 环境变量分组说明（可选，多行）。多产品后不能再把 T110 的
+    # 变量清单写死在 checks/envvars.py 里，改由产品自己声明。
+    env_note: str = ""
 
     # -- 便捷访问 ---------------------------------------------------------
 
@@ -128,7 +142,7 @@ class Profile:
 
     @property
     def env_prefix(self) -> str:
-        """环境变量前缀，例如 TIANRACER。"""
+        """环境变量前缀，例如 TIANRACER。空串表示本产品不涉及环境变量。"""
         return self.ros.env_prefix
 
     def env_export_lines(self) -> List[str]:
@@ -169,6 +183,198 @@ class Profile:
 # ---------------------------------------------------------------------------
 # 加载
 # ---------------------------------------------------------------------------
+
+def _resolve_env_prefix(ros_data: Dict[str, Any],
+                        overrides: Dict[str, Any]) -> str:
+    """确定环境变量前缀。
+
+    优先用 profile.yaml 里显式写的 ros.env_prefix；
+    没写就从 env_overrides 的键推导公共前缀（到最后一个下划线）。
+
+    为什么要推导：每个产品的变量前缀不同（TIANRACER_* / ROBOT_*），
+    第 4 项按前缀 `env | grep '^PREFIX'` 过滤，前缀错了会读不到任何变量，
+    报告会误判成「车辆没有配置环境变量」。
+    """
+    explicit = ros_data.get("env_prefix")
+    if explicit:
+        return str(explicit).strip()
+
+    names = [str(k) for k in overrides]
+    if not names:
+        # 没有任何 env_overrides：很多产品确实不配环境变量。
+        # 返回空串，由第 4 项自己判断「本产品不适用」并判 SKIP，
+        # 而不是让整个程序启动失败。
+        return ""
+    if len(names) == 1:
+        head = names[0].split("_")[0]
+        return head
+
+    common = names[0]
+    for name in names[1:]:
+        while not name.startswith(common):
+            common = common[:-1]
+            if not common:
+                break
+    # 截到最后一个下划线之前
+    if "_" in common:
+        common = common[: common.rindex("_")]
+    if not common:
+        raise ProfileError(
+            "无法从 env_overrides 的键推导出公共前缀："
+            f"{', '.join(sorted(names)[:5])}。\n"
+            "请在 profile.yaml 显式写 ros.env_prefix。"
+        )
+    return common
+
+
+# ---------------------------------------------------------------------------
+# baseline 必需键（声明式校验）
+# ---------------------------------------------------------------------------
+# 为什么要有这张表
+# ----------------
+# checks/ 里到处是 `cfg.get("min", 45.0)` 这种写法。默认值本来是"兜底"，
+# 但在多产品架构下它是个陷阱：baseline.yaml 少写一个键，检测项会安静地
+# 用默认值继续跑，报告看起来正常，实际判的是另一套标准 —— 而没人知道。
+#
+# 逐个改掉 76 处调用点风险大、收益低。更好的办法是在**加载时**校验：
+# 只要这些键都在，代码里的默认分支就永远走不到。
+#
+# 只校验「本产品启用了的检测项」需要的键 —— 没启用 lidar 的产品
+# 不需要 radar 配置，不能因为没写就拒绝启动。
+#
+# 路径用点号分隔，例如 "frequency.imu_hz.min"。
+BASELINE_REQUIREMENTS: Dict[str, List[str]] = {
+    "camera": [
+        "frequency.camera_hz.min", "frequency.camera_hz.max",
+        "camera.expected_width", "camera.expected_height",
+        "camera.expected_encoding",
+    ],
+    "hardware": [
+        "hardware.vendor_id", "hardware.model_id",
+        "hardware.expected_serial", "hardware.acceptable_serials",
+    ],
+    "health": [
+        "health.temp_warn_c", "health.temp_fail_c",
+        "health.disk_warn_pct", "health.disk_fail_pct",
+        "health.mem_available_min_gib", "health.load_warn",
+    ],
+    "imu": [
+        "frequency.imu_hz.min", "frequency.imu_hz.max",
+        "imu.accel_z_min", "imu.accel_z_max", "imu.accel_z_warn_high",
+        "imu.gyro_static_max", "imu.roll_pitch_max_deg",
+    ],
+    "lannet": [
+        "network.lidar_ip", "network.lidar_host_ip_prefix",
+        "network.ping_count", "network.ping_max_loss_pct",
+        "network.ping_max_rtt_ms",
+    ],
+    "lidar": [
+        "frequency.radar_hz.min", "frequency.radar_hz.max",
+        "radar.expected_points", "radar.angle_tolerance_deg",
+        "radar.angle_max_deg", "radar.min_valid_ratio",
+    ],
+    "mapping": [
+        "mapping.expected_resolution", "mapping.expected_map_size",
+    ],
+    "motion": [
+        "motion.micro_pulse.speed", "motion.micro_pulse.duration",
+        "motion.micro_pulse.min_displacement_m",
+        "motion.bench.forward_speed", "motion.bench.forward_duration",
+        "motion.bench.reverse_speed", "motion.bench.reverse_duration",
+        "motion.bench.min_displacement_m",
+        "motion.bench.steer_angle", "motion.bench.steer_duration",
+        "motion.bench.steer_speed",
+        "motion.ground.forward_speed", "motion.ground.forward_duration",
+        "motion.ground.forward_expected_m", "motion.ground.forward_tolerance",
+        "motion.ground.reverse_speed", "motion.ground.reverse_duration",
+        "motion.ground.reverse_expected_m", "motion.ground.reverse_tolerance",
+        "motion.ground.steer_angle", "motion.ground.steer_duration",
+        "motion.ground.steer_expected_yaw_deg",
+        "motion.ground.steer_tolerance_deg",
+        "motion.spin.speed", "motion.spin.steer_angle",
+        "motion.spin.target_yaw_deg", "motion.spin.max_seconds",
+        "motion.spin.yaw_tolerance_deg", "motion.spin.yaw_warn_deg",
+        "motion.spin.closure_warn_m",
+        "motion.safety.max_speed_mps", "motion.safety.max_duration_sec",
+        "motion.safety.spin_max_speed_mps", "motion.safety.spin_max_seconds",
+    ],
+    "odom": [
+        "frequency.odom_hz.min", "frequency.odom_hz.max",
+        "odom.static_drift_max_m", "odom.sample_seconds",
+    ],
+    "tf": [
+        "tf.required_frames", "tf.required_transforms",
+    ],
+    "traces": [
+        "traces.ros_log_size_warn_mb", "traces.bash_history_lines_warn",
+    ],
+    "voltage": [
+        "voltage.full_v", "voltage.normal_v", "voltage.low_v",
+        "voltage.stop_test_below_v", "voltage.sample_timeout_sec",
+    ],
+}
+# 其余模块（network / identity / rustdesk / envvars / devices / source / teb）
+# 不读阈值，无需声明。
+
+
+def _lookup_path(data: Dict[str, Any], dotted: str) -> tuple:
+    """按点分路径取值，返回 (是否找到, 值)。"""
+    node: Any = data
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
+
+
+def _validate_baseline(specs, baseline: Dict[str, Any],
+                       baseline_path: Path) -> None:
+    """校验启用检测项所需的 baseline 键都存在。
+
+    一次性报出**所有**缺失项，而不是遇到第一个就抛 ——
+    配置写错时用户想一次看全，不想改一个跑一次。
+    """
+    missing: List[str] = []
+    for spec in specs:
+        for path in BASELINE_REQUIREMENTS.get(spec.module, []):
+            found, _ = _lookup_path(baseline, path)
+            if not found:
+                missing.append(f"  {path}    （第 {spec.number} 项 {spec.title} 需要）")
+
+    if missing:
+        raise ProfileError(
+            f"{baseline_path.name} 缺少以下必需键（共 {len(missing)} 处）：\n"
+            + "\n".join(missing)
+            + f"\n\n文件：{baseline_path}\n"
+            "这些不是可选项 —— 代码里有同名的默认值，但那是给"
+            "「读不到数据」用的兜底，不该由配置缺失来触发。"
+        )
+
+
+def _validate_env_var_config(specs, baseline: Dict[str, Any],
+                             ros: "RosConfig", where: str) -> None:
+    """环境变量配置的自洽性。
+
+    两种合法情形：
+      · 没前缀 + 没有期望值 → 第 4 项判 SKIP（本产品不涉及）
+      · 有前缀 → 正常比对
+
+    不合法：配了期望值却没有前缀 —— 那第 4 项永远读不到，
+    每次都报「不符」，实际是配置本身矛盾。
+    """
+    wants_env_check = any(spec.module == "envvars" for spec in specs)
+    if not wants_env_check:
+        return
+
+    expected = baseline.get("envvars") or {}
+    if not ros.env_prefix and expected:
+        raise ProfileError(
+            f"{where} 启用了「环境变量」检测，baseline.envvars 也写了 "
+            f"{len(expected)} 项期望值，\n"
+            f"但 ros.env_prefix 为空 —— 无法按前缀读取，第 4 项永远不可能通过。\n"
+            f"请补 ros.env_prefix，或从 checks.items 里去掉 envvars。"
+        )
+
 
 def _require(data: Dict[str, Any], key: str, where: str) -> Any:
     """取必填字段。缺失时报出完整路径。"""
@@ -305,6 +511,9 @@ def load(profile_id: Optional[str] = None) -> Profile:
         slam_file=str(slam.get("file", "")),
         maps_dir=str(ros_data.get("maps_dir", "")),
         repos=[str(r) for r in (ros_data.get("repos") or [])],
+        env_prefix=_resolve_env_prefix(ros_data, overrides),
+        env_hook_file=str(ros_data.get("env_hook_file", "")),
+        display_frames=[str(f) for f in (ros_data.get("display_frames") or [])],
     )
 
     # ---- 检测项 ----
@@ -355,6 +564,8 @@ def load(profile_id: Optional[str] = None) -> Profile:
     # ---- 跨字段校验 ----
     _validate_ordering(specs, where)
     _validate_requires(specs, where)
+    _validate_baseline(specs, baseline, baseline_path)
+    _validate_env_var_config(specs, baseline, ros, where)
 
     return Profile(
         id=pid,
@@ -367,6 +578,7 @@ def load(profile_id: Optional[str] = None) -> Profile:
         baseline=copy.deepcopy(baseline),
         source_dir=source_dir,
         revision=str(data.get("revision", "")),
+        env_note=str(data.get("env_note", "") or ""),
     )
 
 

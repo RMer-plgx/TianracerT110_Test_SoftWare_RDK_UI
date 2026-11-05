@@ -36,6 +36,19 @@ ros:
   repos:
     - your_repo
 
+  # 环境变量前缀。第 4 项按它 `env | grep '^PREFIX'` 过滤。
+  # 产品没有环境变量时留空（第 4 项会判 SKIP，不会报错）。
+  # 不写也行：会从 env_overrides 的键推导。
+  # env_prefix: YOUR
+
+  # env-hooks 文件（相对工作空间），只用于报告里的修复指引。可留空。
+  # env_hook_file: src/your_pkg/env-hooks/99.your.sh.em
+
+  # 报告里额外展示父节点的 frame（可选）。留空则不显示这一段。
+  # display_frames:
+  #   - your_ns/base_link
+  #   - your_ns/laser
+
   # 会话内覆盖的环境变量（不改车辆文件）。
   # 用于修正 env-hooks 的错误默认值，或补齐缺失变量。
   # 变量名按产品实际情况写；没有就留空映射 {}。
@@ -82,3 +95,13 @@ checks:
     - {number: 5,  title: 设备节点,     module: devices,  phase: static}
     - {number: 17, title: 系统健康,     module: health,   phase: static}
     # 按产品实际能力增删。不需要的模块直接不列。
+
+# -----------------------------------------------------------------------------
+# 环境变量分组说明（可选，多行）
+#
+# 会原样出现在报告第 4 项的 detail 里，用来回答「为什么这么多变量」。
+# 只在这个产品确实有一堆开关式变量时才需要写。
+# -----------------------------------------------------------------------------
+# env_note: |
+#   YOUR_* 是 xxx 的功能开关：
+#     · 底盘通信：YOUR_BASE_PORT ...
