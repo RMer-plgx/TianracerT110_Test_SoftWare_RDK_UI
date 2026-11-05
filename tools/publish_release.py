@@ -23,8 +23,8 @@ DEFAULTS = {
     "ui": {
         "repo": "tianbot/tianbot_prodtest_ui",
         "exe": ROOT / "dist" / "TianracerT110_Test_SoftWare_RDK_UI.exe",
-        "tag": "v2.1.1",
-        "name": "v2.1.1 — 修实车启动失败，建立版本体系",
+        "tag": "v2.1.2",
+        "name": "v2.1.2 — 修有线模式 NameError，连接方式改为胶囊滑动开关",
         "body": """## 本版重点
 
 ### 修复实车发现的三个问题
@@ -59,8 +59,8 @@ DEFAULTS = {
         # CLI 的 exe 在另一个仓库目录里
         "exe": ROOT.parent / "TianracerT110_Test_SoftWare_RDK" / "dist" \
                / "TianracerT110_Test_SoftWare_RDK.exe",
-        "tag": "v2.1.1",
-        "name": "v2.1.1 — 修实车启动失败，建立版本体系",
+        "tag": "v2.1.2",
+        "name": "v2.1.2 — 修有线模式 NameError，连接方式改为胶囊滑动开关",
         "body": """## 主要变化
 
 - **多产品架构**：检测项、ROS 话题、阈值全部移入 `products/<产品id>/`，
