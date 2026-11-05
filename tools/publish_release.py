@@ -23,20 +23,29 @@ DEFAULTS = {
     "ui": {
         "repo": "tianbot/tianbot_prodtest_ui",
         "exe": ROOT / "dist" / "TianracerT110_Test_SoftWare_RDK_UI.exe",
-        "tag": "v1.0.0",
-        "name": "v1.0.0 — 多产品架构首版",
-        "body": """## 主要变化
+        "tag": "v2.1.1",
+        "name": "v2.1.1 — 修实车启动失败，建立版本体系",
+        "body": """## 本版重点
 
-- **多产品架构**：检测项、ROS 话题、阈值全部移入 `products/<产品id>/`，
-  加新产品只需复制模板改配置，不改代码
-- **有线/无线模式**：USB-C 直连时自动让车连 WiFi、读 IP、提示拔线
-- **报告内直接下载 PDF**：点按钮直接得到 .pdf，不跳打印界面
-- **落地转向互校**：左右各转一圈，比对里程计与 IMU 的航向
-- **人工确认**：告警项可在报告里逐条勾选接受，状态带入 PDF
+### 修复实车发现的三个问题
 
-## 检测项
+1. **bringup 完全起不来**
+   `_run_runtime_phase` 里 `start_launch()` 残留一次机械替换的错误调用
+   （多传 3 个参数），异常被内部 `except` 吞掉，表现为「roslaunch
+   根本没执行、日志文件都不生成」。已加静态签名校验测试。
 
-默认产品 `tianracer_t110_rdk` 共 19 项。
+2. **雷达与底盘抢串口**
+   `TIANRACER_LIDAR_PORT=/dev/tianbot_lidar` 指向 ttyUSB0，与底盘冲突，
+   报 `Device /dev/ttyUSB0 open failed` 并反复重试。移除该覆盖后雷达走网口。
+
+3. **版本体系**
+   之前 7 轮改造全挂在 v1.0 下，看不出演进。现已补齐 13 个历史 tag、
+   CHANGELOG、RELEASE.md，报告里带 `tool_version`。
+
+## 实车验证
+
+修复后跑完整 19 项：17 项完成（12 PASS / 5 WARN），
+2 项失败均为车端配置问题（摄像头软链缺失、串口占用），1 项跳过。
 
 ## 已知限制
 
@@ -50,8 +59,8 @@ DEFAULTS = {
         # CLI 的 exe 在另一个仓库目录里
         "exe": ROOT.parent / "TianracerT110_Test_SoftWare_RDK" / "dist" \
                / "TianracerT110_Test_SoftWare_RDK.exe",
-        "tag": "v1.0.0",
-        "name": "v1.0.0 — 多产品架构首版",
+        "tag": "v2.1.1",
+        "name": "v2.1.1 — 修实车启动失败，建立版本体系",
         "body": """## 主要变化
 
 - **多产品架构**：检测项、ROS 话题、阈值全部移入 `products/<产品id>/`，
