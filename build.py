@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent
 APP_NAME = "TianracerT110_Test_SoftWare_RDK"
 
 # 需要一起打包的只读资源
-DATA_DIRS = ["config", "report", "probes"]
+DATA_DIRS = ["products", "report", "probes"]
 
 # core/runner.py 用 __import__(f"checks.{name}") 动态导入，
 # PyInstaller 的静态分析看不到它们。不显式列出，打包后每个检测项都会
