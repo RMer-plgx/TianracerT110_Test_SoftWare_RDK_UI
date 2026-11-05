@@ -183,3 +183,72 @@ class TestSpinSafetyLimitsConsistency:
             f"baseline 允许 {safety['spin_max_seconds']} s，"
             f"但探针硬上限是 {hard_seconds}"
         )
+
+class TestGroundResolutionPlacement:
+    """回填 PENDING 必须在 finally 里。
+
+    若运动阶段抛异常或 Ctrl-C，这些项不能停在
+    「航向精度待落地互校」—— 那读起来像「还差一步就能过」，
+    实际是根本没验证。结论不受影响（已 aborted_reason），
+    但报告措辞必须准确。
+    """
+
+    def test_resolve_is_in_finally_not_try(self):
+        import ast
+        from pathlib import Path as _P
+
+        src = (_P(__file__).resolve().parent.parent
+               / "core" / "runner.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+
+        # 直接在整个文件里找 _run_inner 的函数定义节点
+        fn = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_run_inner":
+                fn = node
+                break
+        assert fn is not None, "没找到 _run_inner"
+
+        # 只看 _run_inner 自己的那个最外层 try —— 它才是决定
+        # 「异常路径走不走得到」的那一层。内层 try/except 只是
+        # 局部兜底（包住本次调用），不影响结论。
+        outer_try = None
+        for node in fn.body:
+            if isinstance(node, ast.Try) and node.finalbody:
+                outer_try = node
+                break
+        assert outer_try is not None, "_run_inner 里没有带 finally 的 try"
+
+        def _contains(nodes):
+            for sub in ast.walk(ast.Module(body=nodes, type_ignores=[])):
+                if (isinstance(sub, ast.Attribute)
+                        and sub.attr == "_resolve_ground_dependents"):
+                    return True
+            return False
+
+        in_finally = _contains(outer_try.finalbody)
+        in_try = _contains(outer_try.body)
+
+        assert in_finally, "回填逻辑不在 finally 里，异常路径不会执行"
+        assert not in_try, "回填逻辑不该在 try 主体里（正常路径已移除）"
+
+
+class TestSpinUnreachedIsSkip:
+    """没转够一圈记 SKIP（未验证），不记 WARN（有偏差）。
+
+    两者在报告里的含义完全不同：WARN 读作「测了但有偏差」，
+    SKIP 才是「没测到」。转不够圈属于后者。
+    """
+
+    def test_unreached_without_anomaly_is_not_skip_from_warn(self):
+        import inspect
+        from checks import motion
+
+        src = inspect.getsource(motion._run_spin)
+        # 定位 not reached 分支
+        idx = src.find('if not data.get("reached")')
+        assert idx >= 0, "没找到 reached 分支"
+        branch = src[idx:idx + 600]
+        assert "Status.SKIP" in branch, "该分支应记 SKIP"
+        assert "Status.WARN" not in branch, "该分支不该记 WARN"
+

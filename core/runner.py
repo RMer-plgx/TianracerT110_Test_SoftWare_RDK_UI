@@ -352,8 +352,6 @@ class Runner:
             if self._should_abort():
                 return
             self._run_motion_phase(ctx)
-            # 落地段结束后，回填「架空段测了一半」的项（IMU / 里程计）
-            self._resolve_ground_dependents(ctx)
         except KeyboardInterrupt:
             self.report.aborted_reason = "用户中断（Ctrl-C）"
             ctx.say("\n⚠ 收到中断信号，正在清理…")
@@ -372,6 +370,16 @@ class Runner:
                     ros_remote.stop_launch(self._remote, profile)
                 except Exception as exc:
                     ctx.say(f"⚠ 停止 roslaunch 时出错（可能需要手动清理）：{exc}")
+
+            # 回填「架空段测了一半」的项（IMU / 里程计）。
+            # 放在 finally 里：若运动阶段抛异常或 Ctrl-C，这些项不能停在
+            # 「航向精度待落地互校」—— 那样读起来像「还差一步就能过」，
+            # 实际是根本没验证。结论不受影响（已 aborted_reason），
+            # 但报告措辞必须准确。
+            try:
+                self._resolve_ground_dependents(ctx)
+            except Exception:
+                pass
 
             # 收尾清 tap 文件。必须放在 close() **之前**——
             # _finalize() 由 run() 的 finally 在本函数返回后才调用，
