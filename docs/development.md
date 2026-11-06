@@ -17,6 +17,7 @@
 | UI 或连接流程 | 对应 UI／连接测试；无显示环境设 `QT_QPA_PLATFORM=offscreen` |
 | CLI 入口 | `python -m pytest tests/test_cli_entry.py -q`，以及 `python run.py --help` |
 | 资源、动态模块、打包逻辑 | `python app.py --self-check` 和 `python -m pytest tests/test_harness_contract.py tests/test_build_entrypoints.py -q`；产物交付前还须在目标系统检查实际产物 |
+| 发布清单或发布说明 | `python -m pytest tests/test_prepare_release.py -q`；按[发布流程](../RELEASE.md)核对版本、源码、附件和实际发布状态 |
 
 完整回归使用 `python -m pytest tests -q`。仅安装 CLI 依赖时，使用 `python -m pytest tests -q --ignore=tests/test_ui.py`。规则检查器只校验仓库内文档链接、标题和工具桥接；产品清单检查覆盖已发现的产品配置与入口打包清单，不能证明所有运行分支或真实产物可用。
 

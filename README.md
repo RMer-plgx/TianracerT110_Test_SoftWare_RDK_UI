@@ -28,7 +28,7 @@ python app.py
 python run.py
 ```
 
-或直接运行打包好的 exe（见 Release 页面）。
+已发布的历史 Windows GUI 包见 [Release 页面](https://github.com/tianbot/tb-verify/releases)。当前合并后的 GUI／CLI 版本尚未发布；发布及校验流程见 [RELEASE.md](RELEASE.md)。
 
 ## 连接方式（有线 / 无线）
 
