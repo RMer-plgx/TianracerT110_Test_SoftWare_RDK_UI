@@ -11,6 +11,7 @@
 > 检测项数由产品决定 —— 当前默认产品 `tianracer_t110_rdk` 是 19 项，
 > 换成别的产品会自动跟着变。
 命令行用法见 [docs/CLI.md](docs/CLI.md)。
+开发约束和验证入口见 [AGENTS.md](AGENTS.md) 与[开发指南](docs/development.md)。
 
 ![界面](docs/screenshot_dark.png)
 
