@@ -11,10 +11,12 @@
 
 import base64
 import struct
+from types import SimpleNamespace
 
 import pytest
 
 from checks import protocol as check
+from core.profile import TapConfig
 from core.protocol import build_frame
 from core.verdict import Status
 
@@ -61,9 +63,13 @@ class _TapRemote:
             return _Resp("")
         name = self._target(cmd)
         if name is None:
-            return _Resp("no")
+            return _Resp("missing")
+        # _fetch 现在用一条合并命令同时判断存在与空
+        if "-e " in cmd and "nonempty" in cmd:
+            if name in self.files:
+                return _Resp("nonempty" if self.files[name] else "empty")
+            return _Resp("empty" if name in self.present_empty else "missing")
         if cmd.startswith("test -s"):
-            # -s 是「存在且非空」；空文件应该走 -e 分支变成 empty
             return _Resp("yes" if self.files.get(name) else "no")
         if cmd.startswith("test -e"):
             return _Resp("yes")
@@ -75,10 +81,20 @@ class _TapRemote:
 
 
 class _Ctx:
-    tap_dir = "/tmp/tap"
+    """第 20 项的上下文替身。
 
-    def __init__(self, files, **kwargs):
+    默认 tap.enabled=True —— 大多数用例测的是「有数据时怎么判」。
+    专门验开关行为的用例自己传 enabled=False。
+    """
+
+    def __init__(self, files, enabled=True, log_dir="/tmp/tap", **kwargs):
         self.remote = _TapRemote(files, **kwargs)
+        self.tap_dir = log_dir
+        self.profile = SimpleNamespace(
+            ros=SimpleNamespace(
+                tap=TapConfig(enabled=enabled, log_dir=log_dir)
+            )
+        )
 
 
 def _odom(value=0.0):
@@ -194,6 +210,58 @@ def test_mixed_errors_under_limit_still_pass():
 
     assert result.status is Status.PASS
     assert _measure(result, "bcc 错误").value == "1"
+
+
+# ---------------------------------------------------------------------------
+# M1：旧数据不能被当成本次结果
+# ---------------------------------------------------------------------------
+
+def test_stale_tap_dir_is_not_reported_as_pass():
+    """开关关闭时，即使 /tmp/tap 里躺着健康的旧数据，也必须判 SKIP。
+
+    这是 Round 10 报的「报告说谎」缺陷：tap_probe 只在采集前清目录，
+    残留数据会让第 20 项在每次正常检测里都报「链路正常」。
+    只看文件在不在决定判决是错的。
+    """
+    healthy = _odom() * 10 + _voltage(11.65) * 2
+    result = _run({"from_mcu.raw": healthy, "to_mcu.raw": b"\x00" * 7},
+                  enabled=False)
+
+    assert result.status is Status.SKIP
+    assert "未启用" in result.summary
+    # 关键：不能把旧数据写进报告
+    assert result.measurements == []
+    assert "链路正常" not in result.summary
+
+
+def test_disabled_switch_does_not_even_read_the_files():
+    """开关关闭时不应去车上看日志 —— 连一次取数都不发。
+
+    除了正确性，这也是性能：runtime 阶段末尾不必多跑两条命令。
+    """
+    ctx = _Ctx({"from_mcu.raw": _odom()}, enabled=False)
+    check.run(ctx)
+
+    assert not any("-e " in c for c in ctx.remote.commands), ctx.remote.commands
+
+
+def test_enabled_but_no_data_is_skip_not_pass():
+    """开关开了但车上没数据：SKIP（未验证），不能是 PASS。"""
+    result = _run({})
+
+    assert result.status is Status.SKIP
+    assert "没有数据" in result.summary
+
+
+def test_log_dir_comes_from_profile_not_hardcoded():
+    """日志目录要从 profile 取，不能写死 /tmp/tap。"""
+    ctx = _Ctx({"from_mcu.raw": _odom()}, log_dir="/var/tmp/custom_tap")
+    check.run(ctx)
+
+    probes = [c for c in ctx.remote.commands if "-e " in c and "nonempty" in c]
+    assert probes, "没发出取数探测"
+    assert all("/var/tmp/custom_tap" in c for c in probes), probes
+    assert not any("/tmp/tap" in c for c in probes), probes
 
 
 # ---------------------------------------------------------------------------

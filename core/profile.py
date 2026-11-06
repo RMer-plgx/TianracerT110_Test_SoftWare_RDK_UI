@@ -40,6 +40,32 @@ class ProfileError(Exception):
 
 
 @dataclass
+class TapConfig:
+    """串口协议采集（第 20 项）的配置。
+
+    可选段。缺省 ``enabled=False``。
+
+    这里刻意用一个**显式开关**，而不是「看车上日志文件在不在」：
+    第 20 项判的是「本次采集的链路质量」，而日志文件可能是上一次
+    采集的残留。没有开关就无法区分两者，会把旧数据当本次结果判 PASS
+    —— 那是伪验证，比 SKIP 更危险。
+
+    缺字段不报错，与「阈值不兜底」的原则不冲突：阈值兜底会静默
+    改变判定标准；而这里缺了只会让本项判 SKIP，是安全方向。
+    """
+
+    enabled: bool = False
+    port_env: str = ""
+    baudrate_env: str = ""
+    log_dir: str = "/tmp/tap"
+    max_log_mb: int = 32
+
+    def log_path(self, name: str) -> str:
+        """某个方向的日志绝对路径。"""
+        return f"{self.log_dir.rstrip('/')}/{name}"
+
+
+@dataclass
 class RosConfig:
     """产品的 ROS 侧定义。"""
 
@@ -69,6 +95,8 @@ class RosConfig:
     # 可在 profile.yaml 的 ros.env_prefix 显式声明；
     # 未声明时由 env_overrides 的键推导公共前缀。
     env_prefix: str = ""
+    # 串口协议采集（第 20 项）。可选，默认关闭。
+    tap: TapConfig = field(default_factory=TapConfig)
 
     def topic(self, key: str) -> str:
         """取话题名。缺了就报错，不用默认值糊过去。"""
@@ -227,9 +255,49 @@ def _resolve_env_prefix(ros_data: Dict[str, Any],
     return common
 
 
+def _build_tap(raw: Any, where: str) -> TapConfig:
+    """解析 ros.tap 段。缺省整个段等于未启用。
+
+    只做类型校验，不做“猜”：写错了就报错，不静默当成关闭。
+    静默兜底在这里特别危险 —— 用户以为开了采集，第 20 项却因配置
+    写错而判 SKIP，报告上看不出区别。
+    """
+    if raw is None:
+        return TapConfig()
+    if not isinstance(raw, dict):
+        raise ProfileError(f"{where} 的 tap 应为映射")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ProfileError(
+            f"{where} 的 tap.enabled 应为 true/false，实际是 {enabled!r}"
+        )
+
+    max_log_mb = raw.get("max_log_mb", 32)
+    try:
+        max_log_mb = int(max_log_mb)
+    except (TypeError, ValueError):
+        raise ProfileError(
+            f"{where} 的 tap.max_log_mb 应为整数，实际是 {max_log_mb!r}"
+        ) from None
+
+    log_dir = str(raw.get("log_dir") or "/tmp/tap")
+    if not log_dir.startswith("/"):
+        raise ProfileError(
+            f"{where} 的 tap.log_dir 应为绝对路径，实际是 {log_dir!r}"
+        )
+
+    return TapConfig(
+        enabled=enabled,
+        port_env=str(raw.get("port_env") or ""),
+        baudrate_env=str(raw.get("baudrate_env") or ""),
+        log_dir=log_dir,
+        max_log_mb=max_log_mb,
+    )
+
+
 # ---------------------------------------------------------------------------
-# baseline 必需键（声明式校验）
-# ---------------------------------------------------------------------------
+# baseline 必需键（声明式校验）# ---------------------------------------------------------------------------
 # 为什么要有这张表
 # ----------------
 # checks/ 里到处是 `cfg.get("min", 45.0)` 这种写法。默认值本来是"兜底"，
@@ -514,6 +582,7 @@ def load(profile_id: Optional[str] = None) -> Profile:
         env_prefix=_resolve_env_prefix(ros_data, overrides),
         env_hook_file=str(ros_data.get("env_hook_file", "")),
         display_frames=[str(f) for f in (ros_data.get("display_frames") or [])],
+        tap=_build_tap(ros_data.get("tap"), ros_where),
     )
 
     # ---- 检测项 ----

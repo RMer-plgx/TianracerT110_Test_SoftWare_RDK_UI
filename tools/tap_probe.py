@@ -46,7 +46,6 @@ TAP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "..", "probes", "serial_tap.py")
 REMOTE_TAP = "/tmp/serial_tap.py"
 TAP_OUT = "/tmp/tap.out"
-TAP_DIR = "/tmp/tap"
 
 # TAP_STATS 每 5 秒一条，2 秒轮询。连续这么多次（即 10 秒）计数不动
 # 就判定转发停摆 —— 宁可误报也不敢让卡死的桥接继续挂着。
@@ -56,8 +55,11 @@ STALL_LIMIT = 5
 def _last_stats_progress(out: str):
     """从 tap 输出里取最后一行的转发计数。
 
-    返回 (to_mcu, from_mcu)；还没出现 TAP_STATS 时返回 None。
-    两项都不再增长就说明转发循环停摆了。
+    返回 (to_mcu, from_mcu)；还没出现可解析的 TAP_STATS 时返回 None。
+
+    解析失败的那一行要**跳过继续往前找**，不能直接放弃：输出文件可能
+    恰好读到半行（写入中），如果 return None，上层只能 continue，
+    stalled 既不增也不清 —— 停滞检测就永久失效了。
     """
     for line in reversed(out.splitlines()):
         if not line.startswith("TAP_STATS "):
@@ -65,7 +67,9 @@ def _last_stats_progress(out: str):
         try:
             stats = json.loads(line.split(" ", 1)[1])
         except (ValueError, IndexError):
-            return None
+            continue
+        if not isinstance(stats, dict):
+            continue
         return (stats.get("to_mcu", 0), stats.get("from_mcu", 0))
     return None
 
@@ -129,6 +133,9 @@ def main() -> int:
     args = ap.parse_args()
 
     profile = load_profile(args.profile)
+    # 日志目录从 profile 取，与 checks/protocol.py 用同一个来源。
+    # 两边各写一份硬编码迟早会分叉。
+    tap_dir = profile.ros.tap.log_dir
     overrides = getattr(profile.ros, "env_overrides", {}) or {}
 
     # 串口与波特率未显式指定时，从同一个 env_overrides 取，
@@ -157,14 +164,14 @@ def main() -> int:
         # --- 清场 ---
         stop_launch(remote, profile)
         kill_tap(remote)
-        remote.run(f"rm -rf {TAP_DIR} {TAP_OUT}; mkdir -p {TAP_DIR}", record=False)
+        remote.run(f"rm -rf {tap_dir} {TAP_OUT}; mkdir -p {tap_dir}", record=False)
 
         # --- 上传并启动 tap ---
         remote.put_script(tap_source, REMOTE_TAP)
         remote.run(
             f"chmod +x {REMOTE_TAP}; "
             f"setsid nohup python3 {REMOTE_TAP} --port {args.port} "
-            f"--baud {args.baud} --out {TAP_DIR} "
+            f"--baud {args.baud} --out {tap_dir} "
             f"> {TAP_OUT} 2>&1 < /dev/null & echo started",
             record=False,
         )
@@ -254,7 +261,7 @@ def main() -> int:
     try:
         def fetch(name: str) -> bytes:
             raw = remote.run(
-                f"head -c 8000000 {TAP_DIR}/{name} 2>/dev/null | base64 -w0",
+                f"head -c 8000000 {tap_dir}/{name} 2>/dev/null | base64 -w0",
                 timeout=120, record=False).stdout
             text = "".join((raw or "").split())
             return base64.b64decode(text) if text else b""
@@ -262,6 +269,13 @@ def main() -> int:
         down = fetch("from_mcu.raw")
         up = fetch("to_mcu.raw")
     finally:
+        # 取回后清掉车上的日志目录。
+        # 不留给下一次：第 20 项读的就是这个目录，残留数据会被当成
+        # 下一次检测的结果（Round 10 审查）。必须放在 close() 之前。
+        try:
+            remote.run(f"rm -rf {tap_dir}", record=False)
+        except Exception:
+            pass
         remote.close()
 
     log("[6/6] 解析")

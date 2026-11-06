@@ -34,6 +34,7 @@ from __future__ import annotations
 import base64
 
 from core.protocol import FrameParser, ParseStats, pack_type_name
+from core.profile import TapConfig
 from core.verdict import CheckResult, Status
 
 # 每方向最多回传这么多字节用于统计。2 MB 约 18 万帧，
@@ -52,27 +53,30 @@ def _fetch(ctx, path: str):
     原始二进制会被解码器改坏（0x0D/0x0A 翻译、编码替换）。
 
     返回 `(data, state)`，state 取值：
-      - ``missing``   文件不存在且取不回 —— 真正的「未启用采集」
+      - ``missing``   文件不存在 —— 真正的「未启用采集」
       - ``empty``     文件存在但长度为 0
       - ``ok``        取到了数据
-      - ``error``     文件存在但取回失败（SSH 超时 / base64 失败）
+      - ``error``     取回失败（SSH 超时 / base64 失败）
 
     必须区分这四种：取不回来当成「未启用」会把采集故障静默成 SKIP，
     而 SKIP 是不影响交付判定的 —— 等于把一次失败藏起来。
+
+    存在性判断合成一条命令，省一次 SSH 往返（本项在 runtime 阶段末尾）。
     """
-    exists = ctx.remote.run(
-        f"test -s {path} && echo yes || echo no", timeout=20, record=False
+    probe = ctx.remote.run(
+        f"if [ -e {path} ]; then "
+        f"if [ -s {path} ]; then echo nonempty; else echo empty; fi; "
+        f"else echo missing; fi",
+        timeout=20, record=False,
     ).stdout.strip()
-    if exists not in ("yes", "no"):
+    if probe == "missing":
+        return b"", "missing"
+    if probe == "empty":
+        return b"", "empty"
+    if probe != "nonempty":
         # 命令本身没跑成（SSH 不可达 / 超时）。这是传输层故障，
         # 不是「没启用采集」，不能静默成 SKIP。
         return b"", "error"
-    if exists == "no":
-        # 再看一眼是不是存在但为空，两者的处理不同
-        present = ctx.remote.run(
-            f"test -e {path} && echo yes || echo no", timeout=20, record=False
-        ).stdout.strip()
-        return b"", ("empty" if present == "yes" else "missing")
 
     cmd = f"head -c {MAX_FETCH_BYTES} {path} 2>/dev/null | base64 -w0"
     raw = ctx.remote.run(cmd, timeout=60, record=False).stdout
@@ -83,6 +87,18 @@ def _fetch(ctx, path: str):
         return base64.b64decode(text), "ok"
     except Exception:
         return b"", "error"
+
+
+def _tap_config(ctx) -> TapConfig:
+    """取本产品的 tap 配置。拿不到就当成未启用。
+
+    不抛异常：第 20 项是可选项，不能因为配置缺失把整个检测拖垮。
+    但也不能猜 —— 拿到 None 一律视为未启用，宁可 SKIP 也不能伪 PASS。
+    """
+    profile = getattr(ctx, "profile", None)
+    ros = getattr(profile, "ros", None) if profile is not None else None
+    tap = getattr(ros, "tap", None) if ros is not None else None
+    return tap if isinstance(tap, TapConfig) else TapConfig()
 
 
 def _type_breakdown(stats: ParseStats) -> str:
@@ -101,9 +117,30 @@ def _type_breakdown(stats: ParseStats) -> str:
 def run(ctx) -> CheckResult:
     result = CheckResult(number=20, title="通讯链路（协议层）", status=Status.PASS)
 
-    tap_dir = getattr(ctx, "tap_dir", None) or "/tmp/tap"
-    to_mcu, up_state = _fetch(ctx, f"{tap_dir}/to_mcu.raw")
-    from_mcu, down_state = _fetch(ctx, f"{tap_dir}/from_mcu.raw")
+    # ---- 先看开关 ----
+    # 第 20 项读的是车上的原始日志文件，而文件**存在不代表本次采过**：
+    # tap_probe 只在采集开始前清目录，如果清理没做到位（手动跑过、
+    # 中途异常退出），上一次的数据会一直留在那里。
+    # 没有开关就无法区分「本次采集」与「上次残留」，会把旧数据当本次
+    # 结果判 PASS —— 那是伪验证，比 SKIP 更危险。
+    tap_cfg = _tap_config(ctx)
+    if not tap_cfg.enabled:
+        result.status = Status.SKIP
+        result.summary = "本产品未启用底层采集，本项跳过"
+        result.detail = (
+            "未启用底层采集（本项为可选增强）。\n"
+            "开关：profile.yaml 的 `ros.tap.enabled`，当前为 false。\n\n"
+            "开启方式：设 `ros.tap.enabled: true` 并启用串口桥接"
+            "（probes/serial_tap.py）。\n\n"
+            "⚠ 串口桥接是控制链路单点故障：启用前须确认下位机具备\n"
+            "通信超时保护，且采集期间车辆必须架空。\n\n"
+            "未启用时其它检测项照常工作，判定不受影响。"
+        )
+        return result
+
+    tap_dir = tap_cfg.log_dir
+    to_mcu, up_state = _fetch(ctx, tap_cfg.log_path("to_mcu.raw"))
+    from_mcu, down_state = _fetch(ctx, tap_cfg.log_path("from_mcu.raw"))
 
     # 传输故障不能当成「未启用」—— 那会把一次采集失败藏成 SKIP。
     if "error" in (up_state, down_state):
@@ -118,13 +155,11 @@ def run(ctx) -> CheckResult:
 
     if not to_mcu and not from_mcu:
         result.status = Status.SKIP
-        result.summary = "未启用底层采集，本项跳过"
+        result.summary = "已启用采集但车上没有数据，本项跳过"
         result.detail = (
-            "未启用底层采集（本项为可选增强）。\n"
-            "开启方式：检测时启用串口桥接（probes/serial_tap.py）。\n\n"
-            "⚠ 串口桥接是控制链路单点故障：启用前须确认下位机具备\n"
-            "通信超时保护，且采集期间车辆必须架空。\n\n"
-            "未启用时其它检测项照常工作，判定不受影响。"
+            f"开关已开（ros.tap.enabled=true），但 {tap_dir} 下没有可用日志。\n"
+            "可能原因：采集未启动、启动后立即失败，或本次未跑桥接。\n"
+            "未取得数据不能计为通过，需要重新采集后再判定。"
         )
         return result
 

@@ -347,6 +347,16 @@ class Runner:
             # （Round 3 审查发现）。
             ctx.remote.run(f"rm -f {ros_remote.VOLTAGE_TAP_PATH}", record=False)
 
+            # 同理清掉串口桥接的日志目录（第 20 项）。
+            # 不清的话，只要现场手工跑过一次 tap_probe，之后每次检测
+            # 第 20 项都会把那份旧数据当成本次结果判 PASS
+            # —— 报告会写「链路正常」并附上一排陈旧电压值。
+            # 这是 Round 10 审查发现的伪验证，比单纯 SKIP 更危险。
+            # 无条件清（不看开关）：残留本身就是垃圾，清掉最安全。
+            tap_cfg = getattr(getattr(profile, "ros", None), "tap", None)
+            if tap_cfg is not None:
+                ctx.remote.run(f"rm -rf {tap_cfg.log_dir}", record=False)
+
             self._run_static_phase(ctx)
             if self._should_abort():
                 return
