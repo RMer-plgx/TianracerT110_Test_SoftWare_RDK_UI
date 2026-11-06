@@ -270,3 +270,21 @@ def test_stats_survives_truncated_stream():
     # 完整帧解析出来，截断的半帧留在缓冲里不报错
     assert len(frames) == 1
     assert stats.frames == 1
+
+
+def test_buffer_does_not_grow_without_bound():
+    """串口半途断线时，一块「长度合法但永远凑不齐」的数据不能无限涨。
+
+    只看「缓冲有界」——不要断言「清空后立刻能解析新帧」：残留的伪帧头
+    会先声明一个长长度把后续字节吞进去，要凑够才会被判坏帧。
+    """
+    from core.protocol import BUF_MAX
+
+    stats = ParseStats()
+    parser = FrameParser(stats)
+    # 反复喂一个声明 len=4095、但永远只有个头的帧
+    head = bytes((0x55, 0xAA, 0xFF, 0x0F, 0x00, 0x80))
+    for _ in range(BUF_MAX):
+        parser.feed(head)
+        assert len(parser._buf) <= BUF_MAX, "缓冲没有被看仓清掉"
+    assert stats.dropped_bytes > 0

@@ -45,35 +45,85 @@ MAX_FETCH_BYTES = 2 * 1024 * 1024
 BCC_ERROR_LIMIT = 0.01
 
 
-def _fetch(ctx, path: str) -> bytes:
+def _fetch(ctx, path: str):
     """把车上的二进制日志取回本地。
 
     走 base64 而不是直接 cat —— exec_command 的 stdout 是文本管道，
     原始二进制会被解码器改坏（0x0D/0x0A 翻译、编码替换）。
+
+    返回 `(data, state)`，state 取值：
+      - ``missing``   文件不存在且取不回 —— 真正的「未启用采集」
+      - ``empty``     文件存在但长度为 0
+      - ``ok``        取到了数据
+      - ``error``     文件存在但取回失败（SSH 超时 / base64 失败）
+
+    必须区分这四种：取不回来当成「未启用」会把采集故障静默成 SKIP，
+    而 SKIP 是不影响交付判定的 —— 等于把一次失败藏起来。
     """
+    exists = ctx.remote.run(
+        f"test -s {path} && echo yes || echo no", timeout=20, record=False
+    ).stdout.strip()
+    if exists not in ("yes", "no"):
+        # 命令本身没跑成（SSH 不可达 / 超时）。这是传输层故障，
+        # 不是「没启用采集」，不能静默成 SKIP。
+        return b"", "error"
+    if exists == "no":
+        # 再看一眼是不是存在但为空，两者的处理不同
+        present = ctx.remote.run(
+            f"test -e {path} && echo yes || echo no", timeout=20, record=False
+        ).stdout.strip()
+        return b"", ("empty" if present == "yes" else "missing")
+
     cmd = f"head -c {MAX_FETCH_BYTES} {path} 2>/dev/null | base64 -w0"
     raw = ctx.remote.run(cmd, timeout=60, record=False).stdout
     text = "".join((raw or "").split())
     if not text:
-        return b""
+        return b"", "error"
     try:
-        return base64.b64decode(text)
+        return base64.b64decode(text), "ok"
     except Exception:
-        return b""
+        return b"", "error"
+
+
+def _type_breakdown(stats: ParseStats) -> str:
+    """把类型计数拼成一行短文本。
+
+    不要直接把 dict 塞进 note —— 报告表格里会变成一整行大括号，
+    而 note 是要在窄列里显示的。
+    """
+    if not stats.by_type:
+        return ""
+    items = sorted(stats.by_type.items(), key=lambda kv: -kv[1])
+    text = "、".join(f"{name}×{count}" for name, count in items)
+    return text if len(text) <= 80 else text[:77] + "…"
 
 
 def run(ctx) -> CheckResult:
     result = CheckResult(number=20, title="通讯链路（协议层）", status=Status.PASS)
 
     tap_dir = getattr(ctx, "tap_dir", None) or "/tmp/tap"
-    to_mcu = _fetch(ctx, f"{tap_dir}/to_mcu.raw")
-    from_mcu = _fetch(ctx, f"{tap_dir}/from_mcu.raw")
+    to_mcu, up_state = _fetch(ctx, f"{tap_dir}/to_mcu.raw")
+    from_mcu, down_state = _fetch(ctx, f"{tap_dir}/from_mcu.raw")
+
+    # 传输故障不能当成「未启用」—— 那会把一次采集失败藏成 SKIP。
+    if "error" in (up_state, down_state):
+        result.status = Status.FAIL
+        result.summary = "已采集但取回失败，无法判定链路"
+        result.detail = (
+            f"日志状态：上行 {up_state}、下行 {down_state}。\n"
+            "文件在车上存在，但取回本地失败（SSH 超时或传输解压出错）。\n"
+            "这是传输层问题，不代表协议链路异常，需重新采集。"
+        )
+        return result
 
     if not to_mcu and not from_mcu:
         result.status = Status.SKIP
         result.summary = "未启用底层采集，本项跳过"
         result.detail = (
-            "开启方式：检测时启用串口桥接（probes/serial_tap.py）。\n"
+            "未启用底层采集（本项为可选增强）。\n"
+            "开启方式：检测时启用串口桥接（probes/serial_tap.py）。\n\n"
+            "⚠ 串口桥接是控制链路单点故障：启用前须确认下位机具备\n"
+            "通信超时保护，且采集期间车辆必须架空。\n\n"
             "未启用时其它检测项照常工作，判定不受影响。"
         )
         return result
@@ -100,13 +150,22 @@ def run(ctx) -> CheckResult:
     bad = down_stats.bcc_errors
     ratio = bad / total if total else 0.0
 
-    result.add("下行帧数", str(total), note=f"{down_stats.by_type}")
+    result.add("下行帧数", str(total), note=_type_breakdown(down_stats))
     result.add("bcc 错误", f"{bad}", note=f"{ratio:.2%}")
 
     # ---- 上行（我们发给下位机的）用来看「有没有请求」 ----
     up_stats = ParseStats()
     up_parser = FrameParser(up_stats)
     up_parser.feed(to_mcu)
+
+    # 上行空白但下行有数据：底盘节点可能根本没连上 pty，
+    # 也可能用的是别的设备。其它项会报错，但单看第 20 项会误导。
+    if not to_mcu:
+        result.add("上行告警", "上位机未发出任何帧",
+                   note="底盘节点可能未连到 pty，或设备路径不对")
+    elif up_stats.frames == 0:
+        result.add("上行告警", "上位机发出的字节无一帧可解析",
+                   note="链路可能被旁路干扰，或波特率不一致")
 
     # ---- 电压帧专项 ----
     # 2026-11-06 实车确认：下位机会主动低频上报 Voltage_RESPONSE，
@@ -142,4 +201,6 @@ def run(ctx) -> CheckResult:
              if not k.startswith("UNKNOWN_")}
     result.summary = (f"链路正常，下行 {total} 帧 / {len(known)} 种类型"
                       f"，bcc 错误 {bad}")
+    if not to_mcu or up_stats.frames == 0:
+        result.summary += "；上行无可解析帧"
     return result

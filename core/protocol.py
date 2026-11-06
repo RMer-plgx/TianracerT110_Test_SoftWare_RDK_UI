@@ -45,9 +45,16 @@ LEN_TO_TOTAL = 5
 # len 最小值：pack_type(2) + 至少 0 字节 payload
 LEN_MIN = 2
 # len 上限。防止一个错乱的长度字段让我们去分配 GB 级内存。
-# 正常最大帧是 odom_v2（20+24=44 字节 payload → len=46），
+# 当前固件实测见到的最大帧是 47 字节（ODOM/IMU，len=42）；
+# 按 _FLOAT_COUNTS 表定义，ODOM_V2_RESPONSE 是 payload 48 → len=50 → 总长 55，
 # 给足余量到 4096 足够，超出的直接判为坏帧。
 LEN_MAX = 4096
+
+# 缓冲区上限。串口半途断线时，一块「声明长度合法但永远凑不齐」的数据
+# 会一直留在 _buf 里。正常噪声会被后面的帧头逼着重同步而消费掉，
+# 但断线这种「再也不来新数据」的情形需要兵仓。
+# 取 4 倍最大帧长：再大就不可能只是一帧在等尾巴。
+BUF_MAX = 4 * (LEN_TO_TOTAL + LEN_MAX)
 
 # 包类型 → 名称。值来自 protocol.h 的枚举顺序（0x4000/0x8000/0xC000 显式给定）
 PACK_TYPES: Dict[int, str] = {
@@ -206,6 +213,11 @@ class FrameParser:
             if frame is None:
                 break
             out.append(frame)
+        # 兵仓：断线后半帧会永远悬着，超出就整块丢掉。
+        # 只在异常情况下触发，正常解析永远碰不到。
+        if len(self._buf) > BUF_MAX:
+            self.stats.dropped_bytes += len(self._buf)
+            self._buf.clear()
         return out
 
     def _next(self) -> Optional[Frame]:

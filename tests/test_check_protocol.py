@@ -31,21 +31,44 @@ class _Resp:
 
 
 class _TapRemote:
-    """把 tap 日志文件当作 base64 回给 _fetch 的假远端。"""
+    """把 tap 日志文件当作 base64 回给 _fetch 的假远端。
+
+    `_fetch` 先发 `test -s <path>` 判断文件在不在，再取内容，
+    所以夹具要同时模拟这两步，否则会被当成「传输失败」。
+    """
 
     host = "127.0.0.1"
     user = "test"
 
-    def __init__(self, files):
+    def __init__(self, files, unreachable=False, present_empty=()):
         self.files = files
+        self.unreachable = unreachable      # 模拟 SSH 不可达
+        self.present_empty = set(present_empty)  # 模拟存在但为空
         self.commands = []
+
+    def _target(self, cmd):
+        for name in self.files:
+            if name in cmd:
+                return name
+        for name in self.present_empty:
+            if name in cmd:
+                return name
+        return None
 
     def run(self, cmd, timeout=30, record=True):
         self.commands.append(cmd)
-        for name, data in self.files.items():
-            if name in cmd:
-                return _Resp(base64.b64encode(data).decode())
-        return _Resp("")
+        if self.unreachable:
+            return _Resp("")
+        name = self._target(cmd)
+        if name is None:
+            return _Resp("no")
+        if cmd.startswith("test -s"):
+            # -s 是「存在且非空」；空文件应该走 -e 分支变成 empty
+            return _Resp("yes" if self.files.get(name) else "no")
+        if cmd.startswith("test -e"):
+            return _Resp("yes")
+        data = self.files.get(name, b"")
+        return _Resp(base64.b64encode(data).decode())
 
     def close(self):
         pass
@@ -54,8 +77,8 @@ class _TapRemote:
 class _Ctx:
     tap_dir = "/tmp/tap"
 
-    def __init__(self, files):
-        self.remote = _TapRemote(files)
+    def __init__(self, files, **kwargs):
+        self.remote = _TapRemote(files, **kwargs)
 
 
 def _odom(value=0.0):
@@ -70,8 +93,8 @@ def _voltage(value: float):
     return build_frame(VOLTAGE, struct.pack("<f", value))
 
 
-def _run(files):
-    return check.run(_Ctx(files))
+def _run(files, **kwargs):
+    return check.run(_Ctx(files, **kwargs))
 
 
 def _names(result):
@@ -171,3 +194,58 @@ def test_mixed_errors_under_limit_still_pass():
 
     assert result.status is Status.PASS
     assert _measure(result, "bcc 错误").value == "1"
+
+
+# ---------------------------------------------------------------------------
+# 传输层故障不能被当成「未启用采集」
+# ---------------------------------------------------------------------------
+
+def test_unreachable_ssh_is_fail_not_skip():
+    """SSH 连不上时不能判 SKIP —— 那会把一次故障藏起来。"""
+    result = _run({"from_mcu.raw": _odom()}, unreachable=True)
+
+    assert result.status is Status.FAIL
+    assert "取回失败" in result.summary
+
+
+def test_present_but_empty_logs_are_skip():
+    """文件在、但两个方向都是 0 字节 —— 真正的「没采到数据」。"""
+    result = _run({}, present_empty=("from_mcu.raw", "to_mcu.raw"))
+
+    assert result.status is Status.SKIP
+
+
+# ---------------------------------------------------------------------------
+# 上行空白要报出来
+# ---------------------------------------------------------------------------
+
+def test_downlink_only_flags_missing_uplink():
+    """下行有帧、上行完全空白：链路活着，但底盘节点可能没接到 pty。"""
+    result = _run({"from_mcu.raw": _odom() + _imu()})
+
+    assert result.status is Status.PASS
+    assert "上行告警" in _names(result)
+    assert "上行无可解析帧" in result.summary
+
+
+def test_both_directions_healthy_has_no_uplink_warning():
+    result = _run({"from_mcu.raw": _odom() + _imu(),
+                   "to_mcu.raw": _odom()})
+
+    assert result.status is Status.PASS
+    assert "上行告警" not in _names(result)
+    assert "上行无可解析帧" not in result.summary
+
+
+# ---------------------------------------------------------------------------
+# 报告可读性
+# ---------------------------------------------------------------------------
+
+def test_type_breakdown_is_compact_not_raw_dict():
+    """类型分布要拼成短文本，不能把整个 dict 塑进 note。"""
+    result = _run({"from_mcu.raw": _odom() + _imu() + _voltage(11.7)})
+    note = _measure(result, "下行帧数").note
+
+    assert "{" not in note and "'" not in note
+    assert "ODOM_RESPONSE×" in note
+    assert len(note) <= 80
