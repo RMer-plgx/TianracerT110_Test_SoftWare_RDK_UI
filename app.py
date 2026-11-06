@@ -37,7 +37,7 @@ def self_check() -> int:
 
     检查四项：
       1. 资源文件是否打进包（config / report / probes / assets）
-      2. 19 个 checks 模块能否导入（动态导入，PyInstaller 容易漏）
+      2. 全部 checks 模块能否导入（动态导入，PyInstaller 容易漏）
       3. 判定与报告模板能否正常工作
       4. 报告目录能否确定（不要求可写，只检查路径解析）
     """

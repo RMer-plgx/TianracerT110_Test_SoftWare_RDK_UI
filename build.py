@@ -142,7 +142,7 @@ def main() -> int:
     size_mb = exe.stat().st_size / (1024 * 1024)
     print("\n[4/4] 打包产物自检…")
     # GUI 程序不能用 --help 做皮试，必须靠 --self-check：
-    # 检查资源、19 个 checks 模块、报告模板能否真正工作。
+    # 检查资源、全部 checks 模块、报告模板能否真正工作。
     smoke = subprocess.run(
         [str(exe), "--self-check"], cwd=ROOT,
         capture_output=True, text=True, timeout=180,
@@ -155,7 +155,7 @@ def main() -> int:
         print("  打包产物可能不可用，请手动双击验证。")
         return 1
     else:
-        print("  ✅ 自检通过（资源 + 19 个 checks + 报告模板均正常）")
+        print(f"  ✅ 自检通过（资源 + {len(CHECK_MODULES)} 个 checks + 报告模板均正常）")
 
     print("\n" + "=" * 60)
     print(f"  ✅ 打包完成：{exe}")
