@@ -2,7 +2,14 @@
 
 车辆出厂检测工具。通过图形界面连接车载上位机，按产品配置检查网络、系统、传感器和运动控制，并生成检测报告。
 
-当前默认产品是 Tianracer T110 RDK，包含 19 项检测。检测清单和产品目标见[产品说明](docs/product.md)。
+当前默认产品是 Tianracer T110 RDK，包含 20 项检测。检测清单和产品目标见[产品说明](docs/product.md)。
+
+> 第 20 项「通讯链路（协议层）」**默认关闭**（`ros.tap.enabled: false`），
+> 未启用时判 SKIP，不参与交付判定。它靠串口桥接（`probes/serial_tap.py`）
+> 旁路底盘串口；桥接是控制链路单点故障，
+> **启用前须确认下位机具备通信超时保护，且采集期间车辆必须架空**。
+> 细节见 [ADR-0004](docs/adr/0004-protocol-observation.md)；
+> 手工采集验证用 `python tools/tap_probe.py --host <车IP> --seconds 120`。
 
 后续方向已确定为 **MyGo 桌面壳 + 独立检测运行时 + 产品插件**，支持不同协议和流程的机器人，架构及 UI/UX 参考 `mygo-music`。见[完整技术方案](docs/design/mygo-plugin-platform.md)与 [ADR-0006](docs/adr/0006-mygo-plugin-platform.md)。目前只完成方案文档，新平台尚未实现；下文仍描述当前 Python 程序。
 
