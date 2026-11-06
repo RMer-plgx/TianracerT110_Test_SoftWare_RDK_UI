@@ -74,10 +74,13 @@ class TestProgressNotForcedToFull:
         report.aborted_reason = "用户中断"
 
         window._on_finished(report, "")
+        # 总数从 profile 取，不写死 —— 检测项增删时这个测试
+        # 不该因为数字变了而失败（它验的是「不拉满」，不是总数）。
+        total = window.profile.total_checks
         assert window.progress.value() == 2, (
-            f"只跑了 2 项却显示 {window.progress.value()}/19"
+            f"只跑了 2 项却显示 {window.progress.value()}/{total}"
         )
-        assert window.counter_label.text() == "2 / 19"
+        assert window.counter_label.text() == f"2 / {total}"
 
 
 class TestCheckDoneUpdatesCard:

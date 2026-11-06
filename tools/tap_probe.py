@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""协议层采集工具 —— 手动跑一次「看下位机到底在发什么」。
+
+用途
+----
+不接 GUI，纯命令行验证：把 serial_tap.py 送到车上，用 pty 接管底盘串口，
+采一段原始字节，取回本地解析，打印下位机真实在发什么。
+
+这是接进 GUI 流程**之前**的验证步骤。先确认「pty 桥接不影响底盘正常工作、
+帧长公式与固件一致、能解出电压」，再谈集成。
+
+用法
+----
+    python tools/tap_probe.py --host 192.168.128.10 --seconds 20
+
+安全
+----
+- 全程 try/finally：无论怎么退出，都停 bringup、停 tap
+- tap 进程死亡会被检出，并立即停 bringup
+- 只读不写：本工具不发送任何运动指令
+
+退出码：0 正常，1 参数/连接错误，2 车辆侧失败，3 解析失败
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.protocol import FrameParser, ParseStats          # noqa: E402
+from core.profile import load as load_profile              # noqa: E402
+from core.remote import source_only                        # noqa: E402
+from core.ssh import Remote, SSHError                      # noqa: E402
+
+TAP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "..", "probes", "serial_tap.py")
+REMOTE_TAP = "/tmp/serial_tap.py"
+TAP_OUT = "/tmp/tap.out"
+TAP_DIR = "/tmp/tap"
+
+
+def env_exports(profile, overrides: dict) -> str:
+    """把 profile 的 env_overrides 拼成 export 语句，再用 overrides 覆盖。
+
+    工作空间、启动包、环境变量全部从 profile 取 —— 这个工具没有任何
+    产品专属字符串，换产品只改 profile。
+    """
+    merged = dict(getattr(profile.ros, "env_overrides", {}) or {})
+    merged.update(overrides)
+    parts = [f"export {key}={value}" for key, value in merged.items()]
+    return "; ".join(parts) + "; " if parts else ""
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def parse_ready(out: str) -> str:
+    """从 tap 的 stdout 里取 pty 路径。"""
+    for line in out.splitlines():
+        if line.startswith("TAP_READY "):
+            return line.split(" ", 1)[1].strip()
+    return ""
+
+
+def kill_tap(remote: Remote) -> None:
+    remote.run("pkill -TERM -f serial_tap.py 2>/dev/null; sleep 1; "
+               "pkill -9 -f serial_tap.py 2>/dev/null; true", record=False)
+
+
+def stop_launch(remote: Remote, profile) -> None:
+    package = profile.ros.launch_package
+    remote.run(f"pkill -INT -f 'roslaunch {package}' 2>/dev/null; "
+               f"sleep 3; pkill -9 -f 'roslaunch {package}' 2>/dev/null; "
+               "pkill -9 -f rosmaster 2>/dev/null; true", record=False)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="协议层采集与解析")
+    ap.add_argument("--host", default="192.168.128.10")
+    ap.add_argument("--user", default="sunrise")
+    ap.add_argument("--password", default="sunrise")
+    ap.add_argument("--seconds", type=float, default=20.0,
+                    help="采集时长。至少要覆盖几个心跳周期。")
+    ap.add_argument("--profile", default=None,
+                    help="产品 id，缺省用默认产品")
+    ap.add_argument("--port", default=None,
+                    help="真实串口，缺省从 profile 的 *_BASE_PORT 取")
+    ap.add_argument("--baud", type=int, default=None,
+                    help="波特率，缺省从 profile 的 *_BASE_BAUDRATE 取")
+    ap.add_argument("--keep-raw", action="store_true",
+                    help="把原始日志存到本地，便于事后复查")
+    args = ap.parse_args()
+
+    profile = load_profile(args.profile)
+    overrides = getattr(profile.ros, "env_overrides", {}) or {}
+
+    # 串口与波特率未显式指定时，从同一个 env_overrides 取，
+    # 避免工具里再写一份设备名 / 波特率。
+    if args.port is None:
+        port_var = next((k for k in overrides if k.endswith("_BASE_PORT")), "")
+        args.port = overrides.get(port_var, "/dev/ttyUSB0")
+    if args.baud is None:
+        baud_var = next((k for k in overrides if k.endswith("_BASE_BAUDRATE")), "")
+        args.baud = int(overrides.get(baud_var, 115200))
+
+    with open(TAP_SCRIPT, "r", encoding="utf-8") as fh:
+        tap_source = fh.read()
+
+    remote = Remote(args.host, args.user, args.password)
+    pty_path = ""
+    try:
+        remote.connect()
+        log(f"[1/6] 已连接 {args.host}")
+
+        # --- 清场 ---
+        stop_launch(remote, profile)
+        kill_tap(remote)
+        remote.run(f"rm -rf {TAP_DIR} {TAP_OUT}; mkdir -p {TAP_DIR}", record=False)
+
+        # --- 上传并启动 tap ---
+        remote.put_script(tap_source, REMOTE_TAP)
+        remote.run(
+            f"chmod +x {REMOTE_TAP}; "
+            f"setsid nohup python3 {REMOTE_TAP} --port {args.port} "
+            f"--baud {args.baud} --out {TAP_DIR} "
+            f"> {TAP_OUT} 2>&1 < /dev/null & echo started",
+            record=False,
+        )
+        log("[2/6] 桥接已启动，等待 pty 就绪…")
+
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            out = remote.read_file(TAP_OUT)
+            pty_path = parse_ready(out)
+            if pty_path:
+                break
+            if "TAP_ERROR" in out:
+                log("[!] 桥接报错：")
+                log(out)
+                return 2
+            time.sleep(0.5)
+
+        if not pty_path:
+            log("[!] 15 秒内没等到 TAP_READY")
+            log(remote.read_file(TAP_OUT))
+            return 2
+        log(f"[3/6] pty 就绪：{pty_path}")
+
+        # --- 用 pty 启 bringup ---
+        # source 前缀与启动包名都来自 profile，工具里不写死产品信息
+        launch = (
+            source_only(profile)
+            + env_exports(profile, {
+                # 唯一的关键差异：把底盘串口指向 pty，让帧流经过桥接
+                next((k for k in overrides if k.endswith("_BASE_PORT")),
+                     "BASE_PORT"): pty_path,
+            })
+            + f"cd ~; setsid nohup roslaunch "
+            + f"{profile.ros.launch_package} {profile.ros.launch_file} "
+            + "> /tmp/tap_launch.log 2>&1 < /dev/null & echo launched"
+        )
+        remote.run(launch, record=False)
+        log(f"[4/6] bringup 已用 {pty_path} 启动，采集 {args.seconds:.0f} 秒…")
+
+        # --- 采集期间监控 tap 存活 ---
+        end = time.time() + args.seconds
+        while time.time() < end:
+            time.sleep(2)
+            alive = remote.run("pgrep -f serial_tap.py > /dev/null; echo $?",
+                               record=False).stdout.strip()
+            if alive != "0":
+                log("[!] 桥接进程已死亡，立即停止 bringup（安全兜底）")
+                stop_launch(remote, profile)
+                log(remote.read_file(TAP_OUT))
+                return 2
+        log("[5/6] 采集完成")
+
+    except SSHError as exc:
+        log(f"[!] SSH 错误：{exc}")
+        return 1
+    finally:
+        # 无论成败，先把车停下
+        try:
+            stop_launch(remote, profile)
+            kill_tap(remote)
+        except Exception:
+            pass
+
+    # --- 取回并解析 ---
+    try:
+        def fetch(name: str) -> bytes:
+            raw = remote.run(
+                f"head -c 8000000 {TAP_DIR}/{name} 2>/dev/null | base64 -w0",
+                timeout=120, record=False).stdout
+            text = "".join((raw or "").split())
+            return base64.b64decode(text) if text else b""
+
+        down = fetch("from_mcu.raw")
+        up = fetch("to_mcu.raw")
+    finally:
+        remote.close()
+
+    log("[6/6] 解析")
+    log(f"  下行（下位机→上位机）{len(down)} 字节")
+    log(f"  上行（上位机→下位机）{len(up)} 字节")
+
+    if args.keep_raw:
+        for name, data in (("from_mcu.raw", down), ("to_mcu.raw", up)):
+            path = os.path.join(os.getcwd(), name)
+            with open(path, "wb") as fh:
+                fh.write(data)
+            log(f"  已保存 {path}")
+
+    down_stats, down_frames = analyze(down)
+    up_stats, _ = analyze(up)
+
+    if not down_frames:
+        log("\n结论：下行没有任何可解析帧。")
+        log(f"  丢弃字节 {down_stats.dropped_bytes}，长度错误 {down_stats.length_errors}")
+        log("  最可能：波特率不对，或帧长公式与固件不一致。")
+        return 3
+
+    log(f"\n下行帧总数 {down_stats.frames}，bcc 错 {down_stats.bcc_errors}")
+    log("  类型分布：")
+    for name, count in sorted(down_stats.by_type.items()):
+        log(f"    {name:<22} {count}")
+
+    if up_stats.by_type:
+        log("  上行类型分布：")
+        for name, count in sorted(up_stats.by_type.items()):
+            log(f"    {name:<22} {count}")
+
+    # 电压专项判断
+    if "Voltage_RESPONSE" in down_stats.by_type:
+        volts = []
+        for frame in down_frames:
+            value = frame.voltage()
+            if value is not None and 0 < value < 30:
+                volts.append(value)
+        if volts:
+            log(f"\n电压：收到 {len(volts)} 个样本，"
+                f"范围 {min(volts):.2f} ~ {max(volts):.2f} V")
+    else:
+        sent = "Voltage_RESPONSE" in up_stats.by_type
+        log("\n电压：下位机全程未回传电压帧。")
+        log(f"  上位机是否发过查询：{'是' if sent else '否 —— 这就是根因'}")
+
+    return 0
+
+
+def analyze(data: bytes):
+    stats = ParseStats()
+    parser = FrameParser(stats)
+    frames = parser.feed(data)
+    return stats, frames
+
+
+if __name__ == "__main__":
+    sys.exit(main())

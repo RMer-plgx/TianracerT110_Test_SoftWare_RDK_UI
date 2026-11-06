@@ -51,11 +51,15 @@ class TestRegistryUnchanged:
         (13, "TF 树",             "tf",       False, "runtime"),
         (14, "电池电压",          "voltage",  False, "runtime"),
         (15, "激光建图链路",      "mapping",  False, "runtime"),
+        # 20 是 2026-11-06 新增的协议层检测项。它是 runtime，
+        # 所以排在 motion 之前 —— 报告编号乱跳是故意的，
+        # 编号沿用历史不重排，执行顺序由 phase 决定。
+        (20, "通讯链路（协议层）", "protocol", False, "runtime"),
         (18, "运动控制",          "motion",   False, "motion"),
     ]
 
-    def test_count_is_19(self, prof):
-        assert prof.total_checks == 19
+    def test_count_is_20(self, prof):
+        assert prof.total_checks == 20
 
     def test_items_identical_and_ordered(self, prof):
         actual = [(n, t, m, f, ph) for (n, t, m, _fn, f, ph) in prof.registry()]

@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # 新产品模板
 #
 # 用法：把整个 _template 目录复制成 products/<你的产品id>/，然后改下面的值。
@@ -30,6 +30,16 @@ ros:
     file: your_gmapping.launch
 
   maps_dir: src/your_pkg/maps   # 地图目录（相对 workspace）
+
+  # 底层采集（可选）。启用后能拿到协议层诊断；不启用时第 20 项判 SKIP。
+  # 串口与波特率从 env_overrides 的 *_BASE_PORT / *_BASE_BAUDRATE 取，
+  # 不要在这里重复写一份。
+  tap:
+    enabled: false
+    port_env: YOUR_BASE_PORT
+    baudrate_env: YOUR_BASE_BAUDRATE
+    log_dir: /tmp/tap
+    max_log_mb: 32
 
   # 参与「源码一致性」检查的仓库（相对 <workspace>/src）
   # 留空则该检测项判 SKIP 并说明原因
@@ -94,6 +104,8 @@ checks:
     - {number: 2,  title: 系统身份,     module: identity, phase: static}
     - {number: 5,  title: 设备节点,     module: devices,  phase: static}
     - {number: 17, title: 系统健康,     module: health,   phase: static}
+    # 协议层（可选）：需启用 ros.tap 才有数据，否则自动判 SKIP。
+    - {number: 20, title: 通讯链路（协议层）, module: protocol, phase: runtime}
     # 按产品实际能力增删。不需要的模块直接不列。
 
 # -----------------------------------------------------------------------------

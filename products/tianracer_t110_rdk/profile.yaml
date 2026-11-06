@@ -80,6 +80,25 @@ ros:
   # 地图文件目录（相对工作空间）
   maps_dir: src/tianracer/tianracer_slam/maps
 
+  # ---------------------------------------------------------------------------
+  # 底层采集（协议层，可选）
+  #
+  # 启用后 probes/serial_tap.py 会在底盘节点与真实串口之间做 pty 桥接，
+  # 把原始协议帧落到 log_dir，第 20 项据此给出「没请求 / 没响应 / 解析错」
+  # 这类 ROS 层看不到的诊断。
+  #
+  # 不启用时：第 20 项判 SKIP，其余检测项行为与不带此功能时完全一致。
+  #
+  # 串口与波特率**不在这里写死** —— 复用 env_overrides 里的 BASE_PORT /
+  # BASE_BAUDRATE，避免同一事实在两处维护、改一处忘另一处。
+  # ---------------------------------------------------------------------------
+  tap:
+    enabled: false
+    port_env: TIANRACER_BASE_PORT
+    baudrate_env: TIANRACER_BASE_BAUDRATE
+    log_dir: /tmp/tap
+    max_log_mb: 32
+
   # 参与「源码一致性」检查的仓库（相对 <workspace>/src）
   repos:
     - tianracer
@@ -135,6 +154,7 @@ checks:
     - {number: 13, title: TF 树,            module: tf,       phase: runtime}
     - {number: 14, title: 电池电压,         module: voltage,  phase: runtime}
     - {number: 15, title: 激光建图链路,     module: mapping,  phase: runtime}
+    - {number: 20, title: 通讯链路（协议层）, module: protocol, phase: runtime}
 
     # --- motion：会让车动，必须人工确认 ---
     - {number: 18, title: 运动控制,         module: motion,   phase: motion}
