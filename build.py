@@ -25,7 +25,7 @@ DATA_DIRS = ["products", "report", "probes", "assets"]
 CHECK_MODULES = [
     "network", "identity", "rustdesk", "envvars", "devices", "hardware",
     "source", "lannet", "teb", "health", "traces", "imu", "lidar",
-    "camera", "odom", "tf", "voltage", "mapping", "motion",
+    "camera", "odom", "tf", "voltage", "mapping", "protocol", "motion",
 ]
 
 HIDDEN_IMPORTS = [
