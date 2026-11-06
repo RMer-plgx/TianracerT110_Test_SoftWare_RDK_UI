@@ -12,9 +12,12 @@
     c) 发了也收到了但解析错   → 软件问题
     d) 上位机从没请求过       → 协议使用问题
 
-电压项就是 d) 的典型：`buildCmd` 全工程只有 5 个调用点，没有一处
-发起 `PACK_TYPE_Voltage_RESPONSE` 查询。话题 advertise 了但永不发布。
-只有看协议层才能发现这一点。
+电压项长期属于 d) 的误判：源码里 `buildCmd` 只有 5 个调用点，没有一处
+发起 `PACK_TYPE_Voltage_RESPONSE` 查询，于是推断「话题 advertise 了但
+永不发布」。2026-11-06 实车采集推翻了后半句：下行 20 秒收到 3 帧
+`Voltage_RESPONSE`（11.68~11.71 V），上行却没有任何电压查询 ——
+说明下位机会**主动低频上报**，只是间隔极不规律。ROS 层短窗口订阅
+抓不到，属于「发得太稀」，不是「从不发」。这类区分只有协议层能给出。
 
 数据来源
 --------
@@ -105,20 +108,22 @@ def run(ctx) -> CheckResult:
     up_parser = FrameParser(up_stats)
     up_parser.feed(to_mcu)
 
-    # 电压请求缺失的诊断 —— 这是本项目最实用的一条协议层结论
-    if "Voltage_RESPONSE" not in down_stats.by_type:
-        if "Voltage_RESPONSE" not in up_stats.by_type:
-            result.add(
-                "电压诊断",
-                "上位机侧从未发出电压查询帧",
-                note="下位机按请求-响应模式工作，不发请求就不会有回传",
-            )
-        else:
-            result.add(
-                "电压诊断",
-                "已发查询但下位机无响应",
-                note="问题在下位机固件，不在上位机",
-            )
+    # ---- 电压帧专项 ----
+    # 2026-11-06 实车确认：下位机会主动低频上报 Voltage_RESPONSE，
+    # 上行并没有对应的查询帧。所以「上行没有查询」不能推出
+    # 「不会有回传」—— 短窗口内没收到，只能说明采得太短。
+    volt_frames = [f for f in down_frames if f.name == "Voltage_RESPONSE"]
+    volts = [v for v in (f.voltage() for f in volt_frames)
+             if v is not None and 0 < v < 30]
+    if volts:
+        result.add("电压回传", f"{min(volts):.2f}~{max(volts):.2f}", "V",
+                   note=f"{len(volts)} 帧，下位机主动上报、间隔不规律")
+    elif "Voltage_RESPONSE" in up_stats.by_type:
+        result.add("电压诊断", "已发查询但本窗口内无回传",
+                   note="加长采集窗口，或检查下位机固件")
+    else:
+        result.add("电压诊断", "本窗口内未捕到电压帧",
+                   note="实测下位机会主动低频上报；窗口太短会漏采，不等于不回传")
 
     if ratio > BCC_ERROR_LIMIT:
         result.status = Status.FAIL
