@@ -201,7 +201,7 @@ class Runner:
                  answers: Optional[Dict[str, str]] = None,
                  mode: str = "auto", motion: str = "none",
                  profile_id: Optional[str] = None,
-                 tool_name: str = "tianbot_prodtest",
+                 tool_name: str = "prodtest",
                  pause_for_ground=None,
                  on_output=None, on_check_start=None, on_check_done=None):
         """

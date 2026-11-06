@@ -1,6 +1,6 @@
-# tianbot_prodtest_ui — 产品出厂自动检测（图形界面版）
+# prodtest — 产品出厂自动检测
 
-按产品配置档执行自动检测，输出 Markdown / HTML 报告。
+图形界面和命令行共用产品配置、检测逻辑与报告模板，输出 Markdown / HTML 报告。
 
 > 原名 `TianracerT110_Test_SoftWare_RDK_UI`。2026-11-03 起改为多产品架构：
 > 一套代码服务多个产品，产品差异全部放在 `products/<产品id>/` 里，
@@ -10,7 +10,7 @@
 
 > 检测项数由产品决定 —— 当前默认产品 `tianracer_t110_rdk` 是 19 项，
 > 换成别的产品会自动跟着变。
-**与命令行版完全独立**，互不影响。
+命令行用法见 [docs/CLI.md](docs/CLI.md)。
 
 ![界面](docs/screenshot_dark.png)
 
@@ -22,6 +22,9 @@ pip install -r requirements.txt
 
 # 2. 启动
 python app.py
+
+# 或运行命令行版（只需安装 requirements-cli.txt 中的依赖）
+python run.py
 ```
 
 或直接运行打包好的 exe（见 Release 页面）。
@@ -301,7 +304,10 @@ IMU 与里程计在配置里都是**致命项**，所以它们停在待验证状
 ## 目录结构
 
 ```
-app.py              入口
+app.py              图形界面入口
+run.py              命令行入口
+build.py            图形界面打包
+build_cli.py        命令行打包
 ui/                 界面：主窗口、卡片、主题
 core/               SSH、ROS 生命周期、主流程、判定
 checks/             检测项模块（按产品配置挑用）
@@ -313,7 +319,7 @@ products/           产品配置档（每个产品一个目录，见下）
     profile.yaml    产品定义：ROS 话题、工作空间、检测项清单
     baseline.yaml   判定阈值
 assets/app.ico      exe 图标
-tests/              143 个测试
+tests/              自动化测试
 tools/              图标生成与检查脚本
 ```
 
@@ -349,19 +355,18 @@ cp -r products/_template products/你的产品id
 ```bash
 pip install pyinstaller
 python build.py
+python build_cli.py
 ```
 
-产物在 `dist/TianracerT110_Test_SoftWare_RDK_UI.exe`，约 56 MB。
+Windows 产物分别为 `dist/ProdTest_UI.exe` 和 `dist/ProdTest_CLI.exe`。
 
-打包完会自动跑 `--self-check`：检查资源文件、19 个 checks 模块、
-报告模板能否真正工作。不通过会提示产物可能不可用。
+界面版打包后运行 `--self-check` 检查资源和报告模板；命令行版运行 `--help` 冒烟检查。
 
 > PyInstaller 产物偶尔被杀软误报，需加信任。
 
 ## 与命令行版的关系
 
-这是一份**独立副本**，`core/`、`checks/`、`probes/`、`report/`、`products/`
-从命令行版复制而来（逐个文件校验过一致），之后各自演进。
+两个入口共用 `core/`、`checks/`、`probes/`、`report/` 和 `products/`。
 
 | | 命令行版 | 图形界面版 |
 |---|---|---|
@@ -369,11 +374,11 @@ python build.py
 | 适用 | 脚本化、远程、批量 | 现场操作、演示 |
 | 依赖 | paramiko, jinja2, pyyaml | 上述 + PyQt5 |
 
-**修 bug 需要两边都改**——这是选择独立副本换取"互不影响"的代价。
+修改共享逻辑时应验证两个入口；两个版本仍分别打包。
 
 ## 已知限制
 
 - 只支持单台车
 - 建图质量、导航到点、遥控手感需人工验证
-- 仅提供 Windows 版
+- Windows 可分别打包界面版和命令行版；其他平台的打包产物未在此项目中验证
 - 停止按钮会让车立刻停，但当前检测项会标记为「用户中断」而非完成

@@ -122,7 +122,7 @@ class Report:
     product_revision: str = ""
     # 生成这份报告的工具名（CLI 版 / UI 版不同）。
     # md 与 html 两个模板必须用同一个值，否则同一份报告会出现两个工具名。
-    tool_name: str = "tianbot_prodtest"
+    tool_name: str = "prodtest"
     # 生成这份报告的软件版本。拿到报告能反查是哪一版生成的，
     # 这在多产品、多现场时尤其重要 —— 否则无法判断某个已知缺陷
     # 是否已被这一版修掉。

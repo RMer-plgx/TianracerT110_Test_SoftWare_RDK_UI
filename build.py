@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PyInstaller 打包脚本（图形界面版）。
 
-产物：dist/TianracerT110_Test_SoftWare_RDK_UI.exe
+产物：dist/ProdTest_UI.exe
 
 注意：
 - UI 版比命令行版多一个 PyQt5 依赖，体积会明显更大（约 58 MB）
@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-APP_NAME = "TianracerT110_Test_SoftWare_RDK_UI"
+APP_NAME = "ProdTest_UI"
 
 DATA_DIRS = ["products", "report", "probes", "assets"]
 
@@ -97,10 +97,9 @@ def main() -> int:
     print("✅ 测试通过")
 
     print("\n[2/4] 清理旧的构建产物…")
-    for name in ("build", "dist"):
-        target = ROOT / name
-        if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
+    target = ROOT / "build" / "ui"
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
     spec_file = ROOT / f"{APP_NAME}.spec"
     if spec_file.exists():
         spec_file.unlink()
@@ -114,6 +113,7 @@ def main() -> int:
         "--clean",
         "--windowed",              # GUI 程序，不显示控制台
         "--name", APP_NAME,
+        "--workpath", str(ROOT / "build" / "ui"),
     ]
 
     icon_path = ROOT / "assets" / "app.ico"
@@ -154,6 +154,7 @@ def main() -> int:
         for line in (smoke.stdout or "").splitlines()[-15:]:
             print(f"    {line}")
         print("  打包产物可能不可用，请手动双击验证。")
+        return 1
     else:
         print("  ✅ 自检通过（资源 + 19 个 checks + 报告模板均正常）")
 
