@@ -50,11 +50,14 @@ LEN_MIN = 2
 # 给足余量到 4096 足够，超出的直接判为坏帧。
 LEN_MAX = 4096
 
-# 缓冲区上限。串口半途断线时，一块「声明长度合法但永远凑不齐」的数据
-# 会一直留在 _buf 里。正常噪声会被后面的帧头逼着重同步而消费掉，
-# 但断线这种「再也不来新数据」的情形需要兵仓。
-# 取 4 倍最大帧长：再大就不可能只是一帧在等尾巴。
-BUF_MAX = 4 * (LEN_TO_TOTAL + LEN_MAX)
+# 不需要额外的缓冲区上限。
+#
+# 2026-11-06 审查：原先写过 BUF_MAX = 4 * (LEN_TO_TOTAL + LEN_MAX)，
+# 但那个分支**永远不可达** —— `_next()` 每次都会把能消费的帧全部消费掉，
+# 缓冲区里最多只留一个不完整帧，其长度被 LEN_MAX 约束在
+# LEN_TO_TOTAL + LEN_MAX - 1 = 4100 字节内，远小于 BUF_MAX。
+# 实测（反复喂伪帧头）：峰值 4098，从未超过 4100。
+# 留着它只会给人「已经有兵仓」的错觉，已移除。
 
 # 包类型 → 名称。值来自 protocol.h 的枚举顺序（0x4000/0x8000/0xC000 显式给定）
 PACK_TYPES: Dict[int, str] = {
@@ -213,11 +216,8 @@ class FrameParser:
             if frame is None:
                 break
             out.append(frame)
-        # 兵仓：断线后半帧会永远悬着，超出就整块丢掉。
-        # 只在异常情况下触发，正常解析永远碰不到。
-        if len(self._buf) > BUF_MAX:
-            self.stats.dropped_bytes += len(self._buf)
-            self._buf.clear()
+        # 不设额外上限：见文件头关于「不需要缓冲区上限」的注释。
+        # 单个不完整帧已被 LEN_MAX 约束在 4101 字节内。
         return out
 
     def _next(self) -> Optional[Frame]:

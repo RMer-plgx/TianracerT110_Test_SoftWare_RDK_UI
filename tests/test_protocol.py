@@ -272,19 +272,35 @@ def test_stats_survives_truncated_stream():
     assert stats.frames == 1
 
 
-def test_buffer_does_not_grow_without_bound():
-    """串口半途断线时，一块「长度合法但永远凑不齐」的数据不能无限涨。
+def test_buffer_is_bounded_by_single_frame():
+    """缓冲区天然有界：最多留一个不完整帧，长度受 LEN_MAX 约束。
 
-    只看「缓冲有界」——不要断言「清空后立刻能解析新帧」：残留的伪帧头
-    会先声明一个长长度把后续字节吞进去，要凑够才会被判坏帧。
+    2026-11-06 审查：这里原本有一条显式的 BUF_MAX 兵仓，
+    但实测永远不会触发（`_next()` 会把能消费的帧全部消费掉）。
+    兵仓已删，改成验证这个真实上界。
     """
-    from core.protocol import BUF_MAX
+    from core.protocol import LEN_MAX, LEN_TO_TOTAL
 
+    max_single = LEN_TO_TOTAL + LEN_MAX - 1      # = 4100
     stats = ParseStats()
     parser = FrameParser(stats)
-    # 反复喂一个声明 len=4095、但永远只有个头的帧
-    head = bytes((0x55, 0xAA, 0xFF, 0x0F, 0x00, 0x80))
-    for _ in range(BUF_MAX):
+    head = bytes((0x55, 0xAA, 0xFF, 0x0F, 0x00, 0x80))   # 声明 len=4095
+    peak = 0
+    for _ in range(4000):
         parser.feed(head)
-        assert len(parser._buf) <= BUF_MAX, "缓冲没有被看仓清掉"
-    assert stats.dropped_bytes > 0
+        peak = max(peak, len(parser._buf))
+        assert len(parser._buf) <= max_single, (
+            f"缓冲 {len(parser._buf)} 超过单帧最大 {max_single}"
+        )
+    # 确认真的能涨到接近上界，而不是测试本身没跑到
+    assert peak > max_single // 2, f"峰值只到 {peak}，用例可能没覆盖到"
+
+
+def test_large_chunk_is_consumed_immediately():
+    """一次喂 200KB 垃圾：必须当场消费完，不留缓冲。"""
+    stats = ParseStats()
+    parser = FrameParser(stats)
+    parser.feed(b"z" * 200000)
+
+    assert len(parser._buf) == 0
+    assert stats.dropped_bytes == 200000
