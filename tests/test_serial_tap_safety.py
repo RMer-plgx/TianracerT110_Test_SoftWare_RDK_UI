@@ -101,9 +101,15 @@ def test_stdout_emit_is_non_blocking(text: str, tree: ast.Module):
 
 
 def test_dropped_counter_names_the_right_direction(text: str):
-    """`dropped_to_mcu` 曾统计 from_mcu 方向，排查时会看反。"""
-    assert "dropped_from_mcu" in text
+    """计数名必须准确。
+
+    历史：`dropped_to_mcu` 实际统计 from_mcu 方向；后来改成
+    `dropped_from_mcu` 仍不准确 —— 实测写 master 在无 slave 时不会
+    被丢弃（进内核缓冲），真正丢的是**积压溢出**。现名 pending_dropped。
+    """
+    assert "pending_dropped" in text
     assert "self.dropped_to_mcu" not in text
+    assert "self.dropped_from_mcu" not in text
 
 
 def test_safety_doc_does_not_promise_automatic_stop(text: str):
@@ -116,6 +122,167 @@ def test_pending_buffer_is_bounded(tree: ast.Module):
     """底盘节点不读 pty 时，积压不能无限涨。"""
     from_mcu = _method(tree, "_from_mcu")
     assert "MAX_PENDING_BYTES" in ast.unparse(from_mcu)
+
+
+# ---------------------------------------------------------------------------
+# 行为测试：不只验「代码长这样」，而验「跑起来真的这样」
+# ---------------------------------------------------------------------------
+#
+# 上面的用例都是 AST 结构断言，证明不了行为。这三个补上真正的语义：
+# 非阻塞写、积压排空、EIO 退出。
+
+def _load_tap_module():
+    """加载 serial_tap.py。
+
+    Windows 开发机没有 pty/tty，用假模块顶住，只为了能 import
+    拿到 Tap 类去测 _flush_pending —— 不去碰真实文件描述符。
+    """
+    import importlib.util
+    import sys
+    import types
+
+    if "pty" not in sys.modules:
+        stub = types.ModuleType("pty")
+        stub.openpty = lambda: (0, 1)          # pragma: no cover
+        sys.modules["pty"] = stub
+    if "tty" not in sys.modules:
+        stub = types.ModuleType("tty")
+        stub.setraw = lambda fd: None          # pragma: no cover
+        sys.modules["tty"] = stub
+
+    spec = importlib.util.spec_from_file_location(
+        "serial_tap_under_test", SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture()
+def tap():
+    module = _load_tap_module()
+    inst = module.Tap("/dev/null", 115200, "/tmp/tap_test")
+    inst.master_fd = 999                       # 假 fd，不会真被写
+    return module, inst
+
+
+def test_flush_pending_keeps_data_on_blocking(tap, monkeypatch):
+    """队列满（EAGAIN）时：数据留在 pending，不抛异常。"""
+    import errno
+
+    module, inst = tap
+    inst.pending_from_mcu = b"abc"
+
+    def blocked(fd, data):
+        raise BlockingIOError(errno.EAGAIN, "resource temporarily unavailable")
+
+    monkeypatch.setattr(module.os, "write", blocked)
+    inst._flush_pending()                      # 不能抛
+
+    assert inst.pending_from_mcu == b"abc"
+    assert inst.pending_dropped == 0
+
+
+def test_flush_pending_drains_after_writable(tap, monkeypatch):
+    """恢复可写后：积压能写完，pending 归零。"""
+    module, inst = tap
+    inst.pending_from_mcu = b"abcdef"
+
+    def writable(fd, data):
+        return len(data)
+
+    monkeypatch.setattr(module.os, "write", writable)
+    inst._flush_pending()
+
+    assert inst.pending_from_mcu == b""
+    assert inst.pending_dropped == 0
+
+
+def test_flush_pending_partial_write_keeps_going(tap, monkeypatch):
+    """部分写入：循环继续冲，直到写完为止。"""
+    module, inst = tap
+    inst.pending_from_mcu = b"abcdef"
+    calls = []
+
+    def half(fd, data):
+        calls.append(data)
+        return 2
+
+    monkeypatch.setattr(module.os, "write", half)
+    inst._flush_pending()
+
+    # 6 字节、每次 2 字节 → 至少写 3 次，最后清空
+    assert inst.pending_from_mcu == b""
+    assert len(calls) >= 3, calls
+    assert calls[0] == b"abcdef"        # 第一次拿到完整积压
+    assert calls[-1] == b"ef"           # 最后一次只剩尾巴
+
+
+def test_eio_after_slave_connected_is_fatal(tap, monkeypatch):
+    """曾连上又 EIO —— 必须抛 TapFatal(6)，不能默默继续。"""
+    import errno
+
+    module, inst = tap
+    inst.slave_connected = True
+    inst.pending_from_mcu = b"abc"
+
+    def eio(fd, data):
+        raise OSError(errno.EIO, "EIO")
+
+    monkeypatch.setattr(module.os, "write", eio)
+
+    with pytest.raises(module.TapFatal) as exc:
+        inst._flush_pending()
+
+    assert exc.value.code == 6
+    assert exc.value.reason == "slave_closed"
+    assert inst.pending_from_mcu == b""
+
+
+def test_eio_before_slave_connected_just_backs_off(tap, monkeypatch):
+    """从未连上就 EIO：不退出，只退避。"""
+    import errno
+
+    module, inst = tap
+    inst.slave_connected = False
+    inst.pending_from_mcu = b"abc"
+    before = inst.pty_retry_at
+
+    def eio(fd, data):
+        raise OSError(errno.EIO, "EIO")
+
+    monkeypatch.setattr(module.os, "write", eio)
+    inst._flush_pending()                      # 不能抛
+
+    assert inst.pty_retry_at > before
+
+
+def test_from_mcu_drops_oldest_when_backlog_exceeds_limit(tap, monkeypatch):
+    """积压超上限时丢最旧的保留最新的，并计入 pending_dropped。"""
+    import errno
+
+    module, inst = tap
+
+    class FakeSerial:
+        def __init__(self):
+            self.payload = b"NEW" * 100
+
+        def read(self, n):
+            data, self.payload = self.payload, b""
+            return data
+
+    inst.ser = FakeSerial()
+    inst.log_from_mcu = None                   # 不写日志
+    inst.pending_from_mcu = b"X" * (module.MAX_PENDING_BYTES - 10)
+
+    def blocked(fd, data):
+        raise BlockingIOError(errno.EAGAIN, "again")
+
+    monkeypatch.setattr(module.os, "write", blocked)
+    inst._from_mcu()
+
+    assert len(inst.pending_from_mcu) == module.MAX_PENDING_BYTES
+    assert inst.pending_from_mcu.endswith(b"NEW")   # 最新数据留着
+    assert inst.pending_dropped > 0                 # 旧的被丢并计数
 
 
 def test_loop_uses_poll_not_select(tree: ast.Module):

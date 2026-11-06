@@ -150,9 +150,9 @@ class Tap:
         # 转发计数：用于判断「到底有没有数据流过」
         self.count_to_mcu = 0
         self.count_from_mcu = 0
-        # from_mcu 方向因 pty 未被打开而丢弃的字节数。
-        # （旧版本叫 dropped_to_mcu，方向写反了，排查时会看错方向）
-        self.dropped_from_mcu = 0
+        # from_mcu 方向因积压超过上限而丢弃的字节数。
+        # （不是「pty 未打开就丢掉」—— 实测缓冲区会先吞下，写成功。）
+        self.pending_dropped = 0
         # 待写入 master 的积压数据。非阻塞写的出口。
         self.pending_from_mcu = b""
         # 底盘节点是否已经连过 pty。用来区分「还没启动」和「退出了」。
@@ -210,8 +210,10 @@ class Tap:
         emit("TAP_READY", pty_path)
 
         # 3. 交出自己的 slave fd。
-        # 必须关，否则 slave 永远处于「已打开」状态，master 写永远不会
-        # 返回 EIO，「底盘节点到底连没连上」这个判断就永远拿不到真实值。
+        # 必须关，否则 slave 永远处于「已打开」状态，**读**方向就永远
+        # 拿不到 EIO —— 「底盘节点到底连没连上」这个判断就失效了。
+        # （写方向不受影响：实测写 master 在无 slave 时照样成功，
+        #   数据进内核缓冲，见 _on_pty_eio 的注释。）
         # 关闭后 /dev/pts/N 路径仍然存在，底盘节点照样能 open。
         os.close(self.slave_fd)
         self.slave_fd = -1
@@ -324,9 +326,10 @@ class Tap:
                 return                      # 队列满了，等下次可写事件
             except OSError as exc:
                 if exc.errno == errno.EIO:
-                    # 底盘节点没打开 / 已关闭。数据丢掉，但要计数 ——
-                    # 「pty 打开前的帧」是排查启动顺序问题的重要线索。
-                    self.dropped_from_mcu += len(self.pending_from_mcu)
+                    # 写方向理论上不会 EIO（实测不报），保这个分支是
+                    # 为了兼容其他内核/pty 实现。真到了这里就把积压丢掉，
+                    # 并计入 pending_dropped。
+                    self.pending_dropped += len(self.pending_from_mcu)
                     self.pending_from_mcu = b""
                     self._on_pty_eio()
                     return
@@ -353,7 +356,7 @@ class Tap:
         if len(self.pending_from_mcu) > MAX_PENDING_BYTES:
             overflow = len(self.pending_from_mcu) - MAX_PENDING_BYTES
             self.pending_from_mcu = self.pending_from_mcu[overflow:]
-            self.dropped_from_mcu += overflow
+            self.pending_dropped += overflow
         self._flush_pending()
 
     def loop(self) -> int:
@@ -361,16 +364,28 @@ class Tap:
         poller = select.poll()
         poller.register(self.ser.fileno(), select.POLLIN)
         master_watched = False
+        # 只在有积压时监听 POLLOUT。pty master 几乎总是可写，
+        # 无条件注册会让 poll 立即返回、循环变成忙等。
+        out_watched = False
+        base_mask = select.POLLIN | select.POLLHUP | select.POLLERR
         while self.running:
             now = time.time()
             want_master = now >= self.pty_retry_at
             if want_master and not master_watched:
-                poller.register(self.master_fd,
-                                select.POLLIN | select.POLLHUP | select.POLLERR)
+                poller.register(self.master_fd, base_mask)
                 master_watched = True
             elif not want_master and master_watched:
                 poller.unregister(self.master_fd)
                 master_watched = False
+                out_watched = False
+
+            # 积压 → 加上可写事件，让队列一排空就继续写，
+            # 不用干等 0.2 秒的轮询周期。
+            want_out = master_watched and bool(self.pending_from_mcu)
+            if want_out != out_watched:
+                poller.modify(self.master_fd,
+                              base_mask | (select.POLLOUT if want_out else 0))
+                out_watched = want_out
 
             if want_master:
                 timeout_ms = int(SELECT_TIMEOUT * 1000)
@@ -393,6 +408,8 @@ class Tap:
                         hup = True
                     if ev & select.POLLIN:
                         self._to_mcu()
+                    if ev & select.POLLOUT:
+                        self._flush_pending()
 
             if want_master:
                 if hup:
@@ -410,7 +427,7 @@ class Tap:
                 emit("TAP_STATS", json.dumps({
                     "to_mcu": self.count_to_mcu,
                     "from_mcu": self.count_from_mcu,
-                    "dropped_before_open": self.dropped_from_mcu,
+                    "pending_dropped": self.pending_dropped,
                     "pending": len(self.pending_from_mcu),
                     "slave_connected": self.slave_connected,
                 }))
