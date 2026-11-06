@@ -104,11 +104,13 @@ def run(ctx) -> CheckResult:
             result.add("tap 状态", tap_note)
         result.status = Status.FAIL
         result.summary = (f"{timeout} 秒内未收到有效电压值。"
-                          f"可能原因：底盘未连接、话题未发布")
+                          f"可能原因：底盘未连接、话题未发布、或上报间隔太长")
         result.detail = (
-            "rosclean 后重新启动 bringup 再试一次。\n"
-            f"如果仍然读不到，用 debug_cmd_srv 查询，或检查 "
-            f"{_serial_hint(ctx)}"
+            "实车采集确认：下位机会主动低频上报电压，间隔极不规律"
+            "（20 秒架空采集只看到 3 帧）。\n"
+            f"所以 {timeout} 秒未收到不必然是故障 —— 也可能是这轮窗口没碰上。\n"
+            "排查顺序：rosclean 后重新 bringup 再试一次；"
+            f"仍然读不到就用 debug_cmd_srv 查询，或检查 {_serial_hint(ctx)}"
             + (f"\n后台抢订阅：{tap_note}" if tap_note else "")
         )
         return result
