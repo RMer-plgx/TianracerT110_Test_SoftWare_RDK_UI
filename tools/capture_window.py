@@ -76,7 +76,7 @@ def capture(hwnd, out_path):
 
 
 def main():
-    exe = Path("dist/TianracerT110_Test_SoftWare_RDK_UI.exe").resolve()
+    exe = Path("dist/tb-verify-ui.exe").resolve()
     if not exe.exists():
         print(f"找不到 {exe}")
         return 1

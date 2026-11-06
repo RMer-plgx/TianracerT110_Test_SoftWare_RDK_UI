@@ -1,4 +1,4 @@
-# prodtest — 产品出厂自动检测
+# tb-verify — 产品出厂自动检测
 
 图形界面和命令行共用产品配置、检测逻辑与报告模板，输出 Markdown / HTML 报告。
 
@@ -358,7 +358,7 @@ python build.py
 python build_cli.py
 ```
 
-Windows 产物分别为 `dist/ProdTest_UI.exe` 和 `dist/ProdTest_CLI.exe`。
+Windows 产物分别为 `dist/tb-verify-ui.exe` 和 `dist/tb-verify-cli.exe`。
 
 界面版打包后运行 `--self-check` 检查资源和报告模板；命令行版运行 `--help` 冒烟检查。
 

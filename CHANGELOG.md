@@ -11,8 +11,8 @@
 ## [2.3.0] — 2026-11-06（未发布）
 
 ### 变更
-- 将命令行入口和图形界面入口合并到 prodtest，共用检测、产品配置和报告逻辑。
-- 增加独立的 CLI 依赖与打包脚本；两个 Windows 产物分别命名为 `ProdTest_CLI.exe` 和 `ProdTest_UI.exe`。
+- 将命令行入口和图形界面入口合并到 tb-verify，共用检测、产品配置和报告逻辑。
+- 增加独立的 CLI 依赖与打包脚本；两个 Windows 产物分别命名为 `tb-verify-cli.exe` 和 `tb-verify-ui.exe`。
 
 ## [2.2.0] — 2026-11-06
 

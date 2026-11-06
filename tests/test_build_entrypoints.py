@@ -10,8 +10,8 @@ import build_cli
 
 
 @pytest.mark.parametrize("module,other_name", [
-    (build, "ProdTest_CLI"),
-    (build_cli, "ProdTest_UI"),
+    (build, "tb-verify-cli"),
+    (build_cli, "tb-verify-ui"),
 ])
 @pytest.mark.parametrize("smoke_code", [0, 1])
 def test_build_keeps_other_artifact_and_reports_smoke_failure(

@@ -128,7 +128,7 @@ class TestWorker(QThread):
                 mode=cfg["mode"],
                 motion=cfg["motion"],
                 profile_id=cfg.get("profile_id"),
-                tool_name="prodtest-ui",
+                tool_name="tb-verify-ui",
                 pause_for_ground=pause_for_ground if cfg["motion"] == "full" else None,
                 on_output=self.output.emit,
                 on_check_start=self.check_started.emit,

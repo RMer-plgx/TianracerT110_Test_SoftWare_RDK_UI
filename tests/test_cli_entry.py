@@ -45,7 +45,7 @@ def test_cli_uses_shared_runner_and_disables_motion(monkeypatch, tmp_path):
     ])
 
     assert run.main() == 0
-    assert captured["tool_name"] == "prodtest-cli"
+    assert captured["tool_name"] == "tb-verify-cli"
     assert captured["mode"] == "attach"
     assert captured["motion"] == "none"
     assert "motion_armed" not in captured["answers"]

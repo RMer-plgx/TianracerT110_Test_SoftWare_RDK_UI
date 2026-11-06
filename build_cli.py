@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PyInstaller 打包脚本。
 
-产物：dist/ProdTest_CLI.exe
+产物：dist/tb-verify-cli.exe
 
 使用：
     python build_cli.py
@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-APP_NAME = "ProdTest_CLI"
+APP_NAME = "tb-verify-cli"
 
 # 需要一起打包的只读资源
 DATA_DIRS = ["products", "report", "probes"]

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PyInstaller 打包脚本（图形界面版）。
 
-产物：dist/ProdTest_UI.exe
+产物：dist/tb-verify-ui.exe
 
 注意：
 - UI 版比命令行版多一个 PyQt5 依赖，体积会明显更大（约 58 MB）
@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-APP_NAME = "ProdTest_UI"
+APP_NAME = "tb-verify-ui"
 
 DATA_DIRS = ["products", "report", "probes", "assets"]
 

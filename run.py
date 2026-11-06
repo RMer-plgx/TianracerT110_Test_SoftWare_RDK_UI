@@ -262,7 +262,7 @@ def main() -> int:
     runner = Runner(
         host=host, user=user, password=password,
         answers=answers, mode=mode, motion=motion_level,
-        profile_id=product_id, tool_name="prodtest-cli",
+        profile_id=product_id, tool_name="tb-verify-cli",
         pause_for_ground=pause_for_ground if motion_level == "full" else None,
     )
     runner_ref[0] = runner

@@ -410,8 +410,8 @@ products/
 1. 改 core/__init__.py 的 __version__
 2. 在 CHANGELOG.md 顶部加一节
 3. pytest 全绿
-4. commit + tag + push（两个远端）
-5. build.py + publish_release.py
+4. 按授权提交并推送，确认发布目标后打 tag
+5. build.py + build_cli.py，验证两种产物
 ```
 
 详见 `RELEASE.md`。
@@ -420,9 +420,9 @@ products/
 
 | 仓库 | 角色 |
 |---|---|
-| `tianbot/tianbot_prodtest_ui` | **唯一正式版本**（GUI） |
+| `tianbot/tb-verify` | GUI 和 CLI 共用的项目仓库 |
 
-> CLI 版已停止维护，其仓库已删除。
+> 原独立 CLI 仓库已合并，入口与 GUI 共用核心检测逻辑。
 
 ---
 

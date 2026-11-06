@@ -18,7 +18,7 @@ user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 
 
 def main():
-    exe = Path("dist/TianracerT110_Test_SoftWare_RDK_UI.exe").resolve()
+    exe = Path("dist/tb-verify-ui.exe").resolve()
     proc = subprocess.Popen([str(exe)])
 
     hwnd = None
