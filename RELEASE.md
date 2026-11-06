@@ -5,7 +5,7 @@ tb-verify 的界面版与命令行版使用同一版本号，分别提供 Window
 ## 1. 确定源码和版本
 
 - 确认目标仓库 `tianbot/tb-verify`、版本号、发布渠道、负责人及授权；不要根据本地环境猜测目标。
-- 更新 `core/__init__.py` 和 `CHANGELOG.md`，移除待发布条目上的“未发布”标记。提交后记录完整 40 位源码 SHA；构建前确认 `HEAD` 与该 SHA 一致、工作区干净。
+- 更新 `core/__init__.py` 的版本号。提交后记录完整 40 位源码 SHA；构建前确认 `HEAD` 与该 SHA 一致、工作区干净。
 - tag 使用 `vMAJOR.MINOR.PATCH`，指向同一源码提交。已有 tag 指向其他提交时停止，不移动或覆盖它。
 
 ## 2. 验证和构建
@@ -30,7 +30,7 @@ $sourceSha = git rev-parse HEAD
 python tools/prepare_release.py --source-sha $sourceSha
 ```
 
-脚本检查源码 SHA、工作区、版本与 CHANGELOG，确认两个文件的基本 PE 类型并生成 `dist/SHA256SUMS.txt` 和 `dist/release-manifest.json`；若清单已存在则停止，避免覆盖。清单中的源码 SHA 是**操作人声明**，不能单独证明二进制由该提交构建。应另留构建环境、依赖版本、测试与产物检查记录，并核对完整下载的大小和 SHA-256。
+脚本检查源码 SHA、工作区和版本格式，确认两个文件的基本 PE 类型并生成 `dist/SHA256SUMS.txt` 和 `dist/release-manifest.json`；若清单已存在则停止，避免覆盖。清单中的源码 SHA 是**操作人声明**，不能单独证明二进制由该提交构建。应另留构建环境、依赖版本、测试与产物检查记录，并核对完整下载的大小和 SHA-256。
 
 按 [Release 模板](.github/RELEASE_TEMPLATE.md)准备说明，写清变化、适用平台、下载文件、校验方式、验证结果和限制。先创建 Draft 并上传两个 exe、`SHA256SUMS.txt`、`release-manifest.json`；不要在命令行参数中传递 GitHub token。避免覆写既有版本或删除已有附件。
 

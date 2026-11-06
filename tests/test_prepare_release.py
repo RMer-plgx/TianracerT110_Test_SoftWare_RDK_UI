@@ -34,9 +34,8 @@ def release_repo(tmp_path):
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "core").mkdir()
     (root / "core/__init__.py").write_text('__version__ = "2.3.0"\n', encoding="utf-8")
-    (root / "CHANGELOG.md").write_text("## [2.3.0] — 未发布\n", encoding="utf-8")
     (root / ".gitignore").write_text("dist/\n", encoding="utf-8")
-    _git(root, "add", "core/__init__.py", "CHANGELOG.md", ".gitignore")
+    _git(root, "add", "core/__init__.py", ".gitignore")
     _git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
          "commit", "-qm", "test: fixture")
     dist = root / "dist"

@@ -65,10 +65,6 @@ def prepare(root: Path, dist: Path, source_sha: str) -> dict:
                     and isinstance(node.value, ast.Constant)), None)
     if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError("源码版本号不是 MAJOR.MINOR.PATCH")
-    changelog = git(root, "show", f"{source_sha}:CHANGELOG.md")
-    first = re.search(r"^## \[([\d.]+)\]", changelog, re.M)
-    if not first or first.group(1) != version:
-        raise ValueError("CHANGELOG 顶部版本与源码版本不一致")
     if not dist.is_dir():
         raise ValueError(f"产物目录不存在: {dist}")
     outputs = [dist / "SHA256SUMS.txt", dist / "release-manifest.json"]

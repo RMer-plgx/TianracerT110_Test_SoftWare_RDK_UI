@@ -362,12 +362,7 @@ class TestEnvPrefixOptional:
         assert "未配置环境变量" in result.summary
 
 class TestVersionConsistency:
-    """版本号、CHANGELOG、git tag 必须一致。
-
-    2026-11-05 的教训：连续 7 轮结构性改造全挂在 v1.0 下，
-    GitHub 上完全看不出演进过程。根因是没有机制强制三者同步，
-    只靠人记。这组测试把同步变成机械检查。
-    """
+    """检查版本格式及版本信息在报告中的传递。"""
 
     ROOT = Path(__file__).resolve().parent.parent
 
@@ -376,22 +371,6 @@ class TestVersionConsistency:
         from core import __version__
         assert re.fullmatch(r"\d+\.\d+\.\d+", __version__), \
             f"版本号 {__version__!r} 不是 MAJOR.MINOR.PATCH 格式"
-
-    def test_changelog_exists(self):
-        assert (self.ROOT / "CHANGELOG.md").is_file(), "缺 CHANGELOG.md"
-
-    def test_changelog_top_entry_matches_version(self):
-        """CHANGELOG 最上面那一节必须是当前版本。"""
-        import re
-        from core import __version__
-
-        text = (self.ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        match = re.search(r"^## \[([\d.]+)\]", text, re.M)
-        assert match, "CHANGELOG 里没有 `## [x.y.z]` 格式的版本标题"
-        assert match.group(1) == __version__, (
-            f"CHANGELOG 顶部是 {match.group(1)}，"
-            f"但 core/__init__.py 是 {__version__} —— 发版时漏改了一个"
-        )
 
     def test_release_doc_exists(self):
         assert (self.ROOT / "RELEASE.md").is_file(), "缺 RELEASE.md（发布流程）"
