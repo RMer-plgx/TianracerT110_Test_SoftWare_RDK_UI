@@ -11,13 +11,18 @@
 
 用法
 ----
-    python tools/tap_probe.py --host 192.168.128.10 --seconds 20
+    python tools/tap_probe.py --host 192.168.128.10 --seconds 120
 
-安全
-----
+安全（必读）
+------------
+- ⚠️ **采集期间车辆必须架空且不得运动。** 桥接是控制链路上的单点：
+  本工具退出后，底盘节点已发给 MCU 的运动指令**不会自动撤销**。
+  是否停车取决于 MCU 固件的通信超时保护，而该行为**尚未确认**。
 - 全程 try/finally：无论怎么退出，都停 bringup、停 tap
-- tap 进程死亡会被检出，并立即停 bringup
+- 同时监视两种死亡：进程消失（`pgrep`）与**循环停摆**
+  （`TAP_STATS` 不再刷新）。后者进程还活着，只靠 `pgrep` 发现不了
 - 只读不写：本工具不发送任何运动指令
+- 电压帧上报极稀疏（实车 20 秒仅 3 帧），要稳定观测请用 ≥120 秒
 
 退出码：0 正常，1 参数/连接错误，2 车辆侧失败，3 解析失败
 """
@@ -42,6 +47,27 @@ TAP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 REMOTE_TAP = "/tmp/serial_tap.py"
 TAP_OUT = "/tmp/tap.out"
 TAP_DIR = "/tmp/tap"
+
+# TAP_STATS 每 5 秒一条，2 秒轮询。连续这么多次（即 10 秒）计数不动
+# 就判定转发停摆 —— 宁可误报也不敢让卡死的桥接继续挂着。
+STALL_LIMIT = 5
+
+
+def _last_stats_progress(out: str):
+    """从 tap 输出里取最后一行的转发计数。
+
+    返回 (to_mcu, from_mcu)；还没出现 TAP_STATS 时返回 None。
+    两项都不再增长就说明转发循环停摆了。
+    """
+    for line in reversed(out.splitlines()):
+        if not line.startswith("TAP_STATS "):
+            continue
+        try:
+            stats = json.loads(line.split(" ", 1)[1])
+        except (ValueError, IndexError):
+            return None
+        return (stats.get("to_mcu", 0), stats.get("from_mcu", 0))
+    return None
 
 
 def env_exports(profile, overrides: dict) -> str:
@@ -81,12 +107,17 @@ def stop_launch(remote: Remote, profile) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="协议层采集与解析")
+    ap = argparse.ArgumentParser(
+        description="协议层采集与解析",
+        epilog="⚠ 采集期间车辆必须架空且不得运动。桥接退出后，底盘节点"
+               "已发出的运动指令不会自动撤销；是否停车取决于 MCU 通信"
+               "超时保护，该行为尚未确认。",
+    )
     ap.add_argument("--host", default="192.168.128.10")
     ap.add_argument("--user", default="sunrise")
     ap.add_argument("--password", default="sunrise")
     ap.add_argument("--seconds", type=float, default=20.0,
-                    help="采集时长。至少要覆盖几个心跳周期。")
+                    help="采集时长。电压帧上报极稀疏，建议 ≥120 秒。")
     ap.add_argument("--profile", default=None,
                     help="产品 id，缺省用默认产品")
     ap.add_argument("--port", default=None,
@@ -111,6 +142,11 @@ def main() -> int:
 
     with open(TAP_SCRIPT, "r", encoding="utf-8") as fh:
         tap_source = fh.read()
+
+    # 运行时也必须提醒一次 —— help 里的文字安装完就没人看了。
+    log("⚠  安全约束：采集期间车辆必须架空且不得运动。")
+    log("   桥接退出后，底盘节点已发出的运动指令不会自动撤销；")
+    log("   是否停车取决于 MCU 通信超时保护，该行为尚未确认。")
 
     remote = Remote(args.host, args.user, args.password)
     pty_path = ""
@@ -169,7 +205,14 @@ def main() -> int:
         log(f"[4/6] bringup 已用 {pty_path} 启动，采集 {args.seconds:.0f} 秒…")
 
         # --- 采集期间监控 tap 存活 ---
+        # 两种死法都要发现：
+        #   1. 进程消失 —— pgrep 能看到
+        #   2. 进程还在但转发循环停摆 —— 只能靠 TAP_STATS 不再刷新发现
+        # 第二种才是真正的坑：旧版 os.write 阻塞就是这个形态，
+        # 当时 pgrep 一路正常，桥上却已经不通了。
         end = time.time() + args.seconds
+        last_progress = None
+        stalled = 0
         while time.time() < end:
             time.sleep(2)
             alive = remote.run("pgrep -f serial_tap.py > /dev/null; echo $?",
@@ -179,6 +222,21 @@ def main() -> int:
                 stop_launch(remote, profile)
                 log(remote.read_file(TAP_OUT))
                 return 2
+
+            progress = _last_stats_progress(remote.read_file(TAP_OUT))
+            if progress is None:
+                continue          # 第一份 TAP_STATS 还没到，不算异常
+            if progress == last_progress:
+                stalled += 1
+                if stalled >= STALL_LIMIT:
+                    log(f"[!] 桥接进程还活着，但转发已停摆 "
+                        f"（{stalled * 2} 秒无计数变化），立即停止 bringup")
+                    stop_launch(remote, profile)
+                    log(remote.read_file(TAP_OUT))
+                    return 2
+            else:
+                stalled = 0
+                last_progress = progress
         log("[5/6] 采集完成")
 
     except SSHError as exc:

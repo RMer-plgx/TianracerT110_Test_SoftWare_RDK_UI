@@ -32,11 +32,23 @@
 
 1. **绝不修改字节**。原样转发，连 bcc 错帧也照转 —— 我们不解释协议，
    只搬运。任何「修复」都可能把好帧改坏。
-2. **退出即安全**。本脚本退出/崩溃后，底盘节点写 pty 会失败并进入
-   ROS 的报错路径，不会凭空产生运动指令。上位机侧必须监听 `TAP_EXIT`
-   并立刻停 bringup。
-3. **写日志有上限**。默认每方向 32 MB，写满即停记录但继续转发 ——
+2. **转发路径不允许阻塞**。master 端写入是非阻塞的，写不完进队列，
+   由 select 的可写事件继续冲。否则队列满时循环会卡死，而上位机只能
+   看到「进程还在」—— 卡死反而不可见。.
+3. **串口写失败立即退出**。写不出去意味着底盘节点以为指令发了、
+   其实没到 MCU。继续循环会让「停车」这类指令静默丢失。
+4. **退出即不一定安全**（⚠ 重要，旧版本这里写错了）。
+   底盘节点持有自己的 slave fd；本进程死掉后它**不会**立刻写失败，
+   已发出的运动指令也不会自动撤销。是否停车取决于 **MCU 固件是否
+   具备通信超时保护**。因此：
+   - 采集期间**车辆必须架空且不得运动**，这是硬约束；
+   - 上位机除监听 `TAP_EXIT` 外，还必须监视 `TAP_STATS` 是否在刷新
+     （进程活着但循环停摆的情况只能靠这个发现）；
+   - 接入正式流程前必须先确认固件的超时停车行为。
+5. **写日志有上限**。默认每方向 32 MB，写满即停记录但继续转发 ——
    长时间测试不能把车机磁盘写满。
+6. **stdout 不阻塞**。上位机若停止读取，管道满后 print 会卡住整个循环；
+   这里改为非阻塞写，统计行可丢，关键行（READY/ERROR/EXIT）短暂重试。
 
 输出约定（上位机按这个解析）
 ---------------------------
@@ -74,12 +86,47 @@ MAX_LOG_BYTES = 32 * 1024 * 1024
 STATS_INTERVAL = 5.0
 # select 超时。小一点让信号响应及时。
 SELECT_TIMEOUT = 0.2
+# slave 尚未打开时的重试间隔。避免 master 持续 EIO 把 CPU 跑满。
+PTY_RETRY_INTERVAL = 0.2
+# from_mcu 积压上限。底盘节点不读 pty 时不能把内存涨爆。
+MAX_PENDING_BYTES = 1024 * 1024
+# 关键消息（READY/LOG/ERROR/EXIT）在管道拥塞时的最长重试时间。
+EMIT_RETRY_SEC = 1.0
+
+STDOUT_FD = 1
+
+# 关键消息不能丢；统计行丢了不影响判定。
+CRITICAL_TAGS = frozenset({"TAP_READY", "TAP_LOG", "TAP_ERROR", "TAP_EXIT"})
 
 
-def emit(tag: str, payload: str) -> None:
-    """向上位机输出一行。必须立即 flush，否则上位机拿不到 pty 路径。"""
-    sys.stdout.write(f"{tag} {payload}\n")
-    sys.stdout.flush()
+class TapFatal(Exception):
+    """不可继续的故障。抛出后必须以非零码退出。"""
+
+    def __init__(self, reason: str, code: int):
+        super().__init__(reason)
+        self.reason = reason
+        self.code = code
+
+
+def emit(tag: str, payload: str) -> bool:
+    """向上位机输出一行。非阻塞，避免管道满时拖停转发循环。
+
+    返回 True 表示写成功。统计行写不出去就丢掉并返回 False ——
+    那只是诊断信息，不能因为它把控制链路拖死。
+    """
+    line = f"{tag} {payload}\n".encode("utf-8", "replace")
+    critical = tag in CRITICAL_TAGS
+    deadline = time.time() + EMIT_RETRY_SEC
+    while True:
+        try:
+            os.write(STDOUT_FD, line)
+            return True
+        except BlockingIOError:
+            if not critical or time.time() > deadline:
+                return False
+            time.sleep(0.005)
+        except OSError:
+            return False
 
 
 class Tap:
@@ -103,8 +150,15 @@ class Tap:
         # 转发计数：用于判断「到底有没有数据流过」
         self.count_to_mcu = 0
         self.count_from_mcu = 0
-        self.dropped_to_mcu = 0    # pty 没被 open 时收到的数据
-        self.slave_is_open = False
+        # from_mcu 方向因 pty 未被打开而丢弃的字节数。
+        # （旧版本叫 dropped_to_mcu，方向写反了，排查时会看错方向）
+        self.dropped_from_mcu = 0
+        # 待写入 master 的积压数据。非阻塞写的出口。
+        self.pending_from_mcu = b""
+        # 底盘节点是否已经连过 pty。用来区分「还没启动」和「退出了」。
+        self.slave_connected = False
+        # slave 未打开时的下次重试时刻，避免 EIO 忙等。
+        self.pty_retry_at = 0.0
 
     # -- 生命周期 ---------------------------------------------------------
 
@@ -132,6 +186,11 @@ class Tap:
             pass
         pty_path = os.ttyname(self.slave_fd)
 
+        # master 必须非阻塞。否则底盘节点读得慢时，pty 队列满会让
+        # os.write 阻塞，整个 select 循环停摆 —— 而上位机只看到进程还在，
+        # 根本发现不了卡死。
+        os.set_blocking(self.master_fd, False)
+
         # 3. 日志
         self.log_to_mcu = open(os.path.join(self.out_dir, "to_mcu.raw"), "wb")
         self.log_from_mcu = open(os.path.join(self.out_dir, "from_mcu.raw"), "wb")
@@ -149,6 +208,13 @@ class Tap:
 
         emit("TAP_LOG", self.out_dir)
         emit("TAP_READY", pty_path)
+
+        # 3. 交出自己的 slave fd。
+        # 必须关，否则 slave 永远处于「已打开」状态，master 写永远不会
+        # 返回 EIO，「底盘节点到底连没连上」这个判断就永远拿不到真实值。
+        # 关闭后 /dev/pts/N 路径仍然存在，底盘节点照样能 open。
+        os.close(self.slave_fd)
+        self.slave_fd = -1
 
     def teardown(self) -> None:
         for fd in (self.master_fd, self.slave_fd):
@@ -201,53 +267,142 @@ class Tap:
         """底盘节点 → 真实串口（下发指令方向）。"""
         try:
             data = os.read(self.master_fd, 4096)
+        except BlockingIOError:
+            return
         except OSError as exc:
             if exc.errno == errno.EIO:
-                # master 还没有 slave 打开，或者 slave 已关闭。
-                # 这不是错误，静默等待。
+                self._on_pty_eio()
                 return
             raise
         if not data:
             return
+        if not self.slave_connected:
+            # 第一次读到数据，说明底盘节点已经连上 pty。
+            self.slave_connected = True
         self.count_to_mcu += len(data)
         self._record(self.log_to_mcu, data, "written_to_mcu")
+        # 写不出去就是真故障：底盘节点以为指令发了，实际没到 MCU。
+        # 若这条指令是「停车」，继续循环等于让车带着旧指令跑。
         try:
             self.ser.write(data)
         except Exception as exc:
-            emit("TAP_ERROR", f"serial_write_failed:{exc}")
+            raise TapFatal(f"serial_write_failed:{exc}", 5) from exc
+
+    def _on_pty_eio(self) -> None:
+        """master 读到 EIO：对端没有打开 / 已关闭。
+
+        注意：**写方向不会 EIO**（实车 Linux 实测：slave 未打开时写 master
+        照样成功，数据进内核缓冲，slave 后来打开还能读到）。所以这个
+        判断只靠读方向。
+        """
+        if self.slave_connected:
+            raise TapFatal("slave_closed", 6)
+        self.pty_retry_at = time.time() + PTY_RETRY_INTERVAL
+
+    def _on_pty_hup(self) -> None:
+        """poll 报 POLLHUP：当前没有 slave 打开。
+
+        仅靠「读到数据」判断 slave 在不在不够 —— 底盘节点可能开了 pty
+        但一时没写东西，此时关闭它我们就完全察觉不到。
+        POLLHUP 能补上这个洞：实车实测「slave 从未打开」与「打开后又关闭」
+        都会报 HUP，而**打开着就不报**，所以「本轮没 HUP」本身就是
+        「对端在」的证据。
+
+        注意不能先把 slave_connected 置 False 再判断 —— 那样「连过又断开」
+        会被当成「从未连过」，永远退不出去。
+        """
+        if self.slave_connected:
+            raise TapFatal("slave_closed", 6)
+        self.pty_retry_at = time.time() + PTY_RETRY_INTERVAL
+
+    def _flush_pending(self) -> None:
+        """把积压的 from_mcu 数据尽量写进 pty，能写多少算多少。"""
+        while self.pending_from_mcu:
+            try:
+                written = os.write(self.master_fd, self.pending_from_mcu)
+            except BlockingIOError:
+                return                      # 队列满了，等下次可写事件
+            except OSError as exc:
+                if exc.errno == errno.EIO:
+                    # 底盘节点没打开 / 已关闭。数据丢掉，但要计数 ——
+                    # 「pty 打开前的帧」是排查启动顺序问题的重要线索。
+                    self.dropped_from_mcu += len(self.pending_from_mcu)
+                    self.pending_from_mcu = b""
+                    self._on_pty_eio()
+                    return
+                raise
+            if written <= 0:
+                return
+            # 不要在写成功时置 slave_connected：写 master 在没有 slave 时
+            # 也会成功（数据进内核缓冲），根本不能证明对端在读。
+            self.pending_from_mcu = self.pending_from_mcu[written:]
 
     def _from_mcu(self) -> None:
-        """真实串口 → 底盘节点（上报数据方向）。"""
+        """真实串口 → 底盘节点（上报数据方向）。
+
+        绝不阻塞：写不完的进队列，由 select 的可写事件继续冲。
+        """
         data = self.ser.read(4096)
         if not data:
             return
         self.count_from_mcu += len(data)
         self._record(self.log_from_mcu, data, "written_from_mcu")
-        try:
-            os.write(self.master_fd, data)
-        except OSError as exc:
-            if exc.errno == errno.EIO:
-                # 底盘节点还没 open pty。数据丢掉，但要计数 ——
-                # 「pty 打开前的帧」是排查启动顺序问题的重要线索。
-                self.dropped_to_mcu += len(data)
-                return
-            raise
+        self.pending_from_mcu += data
+        # 积压太多说明 pty 缓冲已经满（底盘节点没启动 / 不读）。
+        # 内存不能无限涨；丢旧的、保留新的。
+        if len(self.pending_from_mcu) > MAX_PENDING_BYTES:
+            overflow = len(self.pending_from_mcu) - MAX_PENDING_BYTES
+            self.pending_from_mcu = self.pending_from_mcu[overflow:]
+            self.dropped_from_mcu += overflow
+        self._flush_pending()
 
     def loop(self) -> int:
         last_stats = time.time()
+        poller = select.poll()
+        poller.register(self.ser.fileno(), select.POLLIN)
+        master_watched = False
         while self.running:
+            now = time.time()
+            want_master = now >= self.pty_retry_at
+            if want_master and not master_watched:
+                poller.register(self.master_fd,
+                                select.POLLIN | select.POLLHUP | select.POLLERR)
+                master_watched = True
+            elif not want_master and master_watched:
+                poller.unregister(self.master_fd)
+                master_watched = False
+
+            if want_master:
+                timeout_ms = int(SELECT_TIMEOUT * 1000)
+            else:
+                remain = max(0.0, self.pty_retry_at - now)
+                timeout_ms = int(min(SELECT_TIMEOUT, remain) * 1000)
+
             try:
-                readable, _, _ = select.select(
-                    [self.ser.fileno(), self.master_fd], [], [], SELECT_TIMEOUT
-                )
+                events = poller.poll(timeout_ms)
             except (OSError, ValueError) as exc:
-                emit("TAP_ERROR", f"select_failed:{exc}")
+                emit("TAP_ERROR", f"poll_failed:{exc}")
                 return 3
 
-            if self.ser.fileno() in readable:
-                self._from_mcu()
-            if self.master_fd in readable:
-                self._to_mcu()
+            hup = False
+            for fd, ev in events:
+                if fd == self.ser.fileno():
+                    self._from_mcu()
+                elif fd == self.master_fd:
+                    if ev & (select.POLLHUP | select.POLLERR):
+                        hup = True
+                    if ev & select.POLLIN:
+                        self._to_mcu()
+
+            if want_master:
+                if hup:
+                    self._on_pty_hup()
+                else:
+                    # 本轮 poll 没有 HUP —— slave 是打开的。
+                    # 这也覆盖了「底盘节点开了 pty 但从不写」的情形，
+                    # 那是靠「读到数据」永远发现不了的。
+                    self.slave_connected = True
+                    self._flush_pending()
 
             now = time.time()
             if now - last_stats >= STATS_INTERVAL:
@@ -255,7 +410,9 @@ class Tap:
                 emit("TAP_STATS", json.dumps({
                     "to_mcu": self.count_to_mcu,
                     "from_mcu": self.count_from_mcu,
-                    "dropped_before_open": self.dropped_to_mcu,
+                    "dropped_before_open": self.dropped_from_mcu,
+                    "pending": len(self.pending_from_mcu),
+                    "slave_connected": self.slave_connected,
                 }))
         return 0
 
@@ -267,6 +424,12 @@ def main() -> int:
     ap.add_argument("--out", default="/tmp/tap")
     ap.add_argument("--max-log-mb", type=int, default=32)
     args = ap.parse_args()
+
+    # stdout 非阻塞：上位机若停止读取，管道满后 print 会卡死整个转发循环。
+    try:
+        os.set_blocking(STDOUT_FD, False)
+    except OSError:
+        pass
 
     if serial is None:
         emit("TAP_ERROR", "pyserial_missing")
@@ -285,6 +448,11 @@ def main() -> int:
 
     try:
         code = tap.loop()
+    except TapFatal as exc:
+        # 串口写失败 / 底盘节点已断开 —— 继续转发没有意义，
+        # 必须让上位机知道并停 bringup。
+        emit("TAP_ERROR", exc.reason)
+        code = exc.code
     except Exception as exc:
         emit("TAP_ERROR", f"loop_crashed:{exc}")
         code = 4
