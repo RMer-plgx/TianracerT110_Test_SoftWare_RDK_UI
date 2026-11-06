@@ -17,7 +17,7 @@
 ## 检测与交付
 
 <!-- ai-lint: ok 正文和表格重复 链接路径与索引重复，便于从相关架构跳转 -->
-- 运行数据主要通过 ROS 获取；系统、网络和设备信息还通过 SSH 等方式采集。当前没有直接读取底盘协议帧的检测。见[协议观测方案](0004-protocol-observation.md)。
+- 运行数据主要通过 ROS 获取；系统、网络和设备信息还通过 SSH 等方式采集。底盘协议帧旁路已实现（`probes/serial_tap.py`、`core/protocol.py`），但**未接入 GUI/CLI 正式流程**：仅在命令行验证工具中使用，第 20 项在未启用采集时判 SKIP，不影响交付判定。见[协议观测方案](0004-protocol-observation.md)。
 - 已确认未完成落地航向互校时自动判不可交付。当前未选择运动测试时，IMU 和里程计可能仍为 PASS，整机可能显示可交付但需确认，尚未满足该决策。见[航向互校决策](0002-ground-heading-verification.md)。
 - 当前自动判定保留 FAIL、致命项 PENDING 和未验证比例等规则。
 - 运动测试前保留电压检查、人员确认、取消、停车与 ROS 清理路径。实车连接、运动及修改车端配置需明确授权。
@@ -40,7 +40,7 @@
 | [0001](0001-shared-core-and-product-profiles.md) | 共用核心与产品配置 | Accepted | 已有实现 |
 | [0002](0002-ground-heading-verification.md) | 落地航向互校与自动交付判定 | Accepted | 有已知差距，待修复 |
 | [0003](0003-review-and-evidence.md) | 复核记录与证据追溯 | Proposed | 尚未完整实现 |
-| [0004](0004-protocol-observation.md) | 底盘协议观测 | Proposed | 尚未实现，待验证可行性 |
+| [0004](0004-protocol-observation.md) | 底盘协议观测 | Proposed | 旁路已实现，两次架空实车采集；未接入正式流程 |
 | [0006](0006-mygo-plugin-platform.md) | MyGo 桌面壳与多机器人产品插件 | Accepted | 已写技术方案；运行时、插件 SDK 与新 UI 均未实现 |
 
 记录约定：每项可独立取舍的架构决策使用独立文件，记录状态、背景、决策、替代方案和影响。`Accepted` 表示决策已确认，不代表实现或验收完成；`Proposed` 表示方案待确认。实现变化时同步更新本总览；被替代的决策保留记录并注明后续决策。
