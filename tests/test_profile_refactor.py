@@ -379,6 +379,25 @@ class TestVersionConsistency:
     def test_release_doc_exists(self):
         assert (self.ROOT / "RELEASE.md").is_file(), "缺 RELEASE.md（发布流程）"
 
+    def test_release_doc_version_matches_code(self):
+        """RELEASE.md 里的当前版本号必须与 core/__init__.py 一致。
+
+        上游用 ADR 替掉 CHANGELOG 之后，版本号只靠人工同步。
+        这里只钉「两处文字不矛盾」这一件最小的事 —— 不校 tag、不校发布状态，
+        那些得看远端，不是单测能回答的。
+        """
+        import re
+        from core import __version__
+
+        text = (self.ROOT / "RELEASE.md").read_text(encoding="utf-8")
+        # 只看「当前 `x.y.z` 尚未发布」这一句，不扫全文的示例版本号
+        match = re.search(r"当前\s*`(\d+\.\d+\.\d+)`\s*(?:尚未发布|已发布)?", text)
+        assert match, "RELEASE.md 里找不到「当前 `x.y.z` …」句子，无法校验版本一致性"
+        assert match.group(1) == __version__, (
+            f"RELEASE.md 写的是 {match.group(1)}，"
+            f"但 core/__init__.py 是 {__version__} —— 发版时漏改了一个"
+        )
+
     def test_version_reaches_report(self):
         """报告要带上版本号，否则拿到一份报告无法反查是哪版生成的。"""
         from core.verdict import Report
