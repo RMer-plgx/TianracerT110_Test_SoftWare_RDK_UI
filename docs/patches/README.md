@@ -54,11 +54,13 @@
 ```bash
 cd ~/tianracer_ros1_ws/src/tianracer/tianracer_core
 git stash          # 先清干净
-patch -p0 < tianracer_core-serial-tap.patch
+patch -p1 < tianracer_core-serial-tap.patch
 cd ~/tianracer_ros1_ws
 source /opt/ros/noetic/setup.bash
 catkin_make --only-pkg-with-deps tianracer_core
 ```
+
+用 `-p1`：补丁的路径带 `a/` `b/` 前缀。先 `patch -p1 --dry-run` 确认能应用。
 
 `--only-pkg-with-deps` 会写入 `CATKIN_WHITELIST_PACKAGES`，之后编译别的包
 会静默跳过。用完清掉：
@@ -78,6 +80,14 @@ catkin_make -DCATKIN_WHITELIST_PACKAGES=""
 | 目录不可写 | 两路 fd 均为 -1，通信正常，回传照收 |
 
 车端 `catkin_make --only-pkg-with-deps tianracer_core` 编译通过。
+
+补丁重放验证：从原始的 `serial.h` / `serial.cpp` 出发，`patch -p1` 应用后
+两个文件的 md5 与车上实际编译用文件**完全一致**：
+
+```
+40fba72855bc334fd6ec451d60726b24  include/tianboard/serial.h
+c25807cfecffcf69a267f48eb6d835f8  src/serial.cpp
+```
 
 **未验证**：真实底盘串口上的长时间采集、运动状态下的录音、
 与 9535 帧那份桥接数据的一致性对比。这几项要在底盘 USB 接上后重做。

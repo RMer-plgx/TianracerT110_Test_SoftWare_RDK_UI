@@ -1,5 +1,6 @@
---- /tmp/serial.h.bak	2026-11-07 21:34:48.404719909 +0800
-+++ include/tianboard/serial.h	2026-11-07 21:35:40.338108914 +0800
+diff -ruN a/include/tianboard/serial.h b/include/tianboard/serial.h
+--- a/include/tianboard/serial.h	2026-11-07 21:39:21.111241494 +0800
++++ b/include/tianboard/serial.h	2026-11-07 21:39:21.131241379 +0800
 @@ -55,6 +55,16 @@
      int running_;
      serial_recv_cb recv_cb_;
@@ -17,8 +18,9 @@
  };
  
  #endif
---- /tmp/serial.cpp.bak	2026-11-07 21:34:48.404719909 +0800
-+++ src/serial.cpp	2026-11-07 21:35:40.028101543 +0800
+diff -ruN a/src/serial.cpp b/src/serial.cpp
+--- a/src/serial.cpp	2026-11-07 21:39:21.111241494 +0800
++++ b/src/serial.cpp	2026-11-07 21:39:21.131241379 +0800
 @@ -39,6 +39,7 @@
  #include <termios.h>
  #include <unistd.h>
