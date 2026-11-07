@@ -1,13 +1,13 @@
 diff -ruN a/include/tianbot_core/serial.h b/include/tianbot_core/serial.h
---- a/include/tianbot_core/serial.h	2026-11-07 22:07:38.223768461 +0800
-+++ b/include/tianbot_core/serial.h	2026-11-07 22:07:38.243768368 +0800
+--- a/include/tianbot_core/serial.h	2026-11-07 22:43:02.553737978 +0800
++++ b/include/tianbot_core/serial.h	2026-11-07 22:43:02.573737903 +0800
 @@ -60,6 +60,16 @@
      int running_;
      recv_cb recv_cb_;
      int fd_;
 +
 +    // ---- 通讯录音（可选旁听，默认关闭）----
-+    // 环境变量 TIANRACER_TAP_DIR 指向一个目录时启用；不设则两路 fd 均为 -1，
++    // 环境变量 TIANBOT_TAP_DIR 指向一个目录时启用；不设则两路 fd 均为 -1，
 +    // 每次收发只多一次判空。只写普通文件，不碰串口，收发路径一个字节都不变。
 +    // 两个方向各自一个 fd、各自只被一个线程写，故不需要加锁。
 +    int tap_to_fd_;    // 上位机 → 下位机，在 send() 里写
@@ -19,8 +19,8 @@ diff -ruN a/include/tianbot_core/serial.h b/include/tianbot_core/serial.h
  
  #endif
 diff -ruN a/src/serial.cpp b/src/serial.cpp
---- a/src/serial.cpp	2026-11-07 22:07:38.233768414 +0800
-+++ b/src/serial.cpp	2026-11-07 22:07:38.253768322 +0800
+--- a/src/serial.cpp	2026-11-07 22:43:02.553737978 +0800
++++ b/src/serial.cpp	2026-11-07 22:43:02.563737940 +0800
 @@ -37,6 +37,7 @@
  #include <stdlib.h>
  #include <string.h>
@@ -73,7 +73,7 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
              pThis->recv_cb_(recvbuff, recvlen);
          }
      }
-@@ -233,6 +264,13 @@
+@@ -241,6 +272,13 @@
      pthread_attr_t attr;
      struct serial_cfg *pcfg = (struct serial_cfg *)cfg;
      recv_thread_ = 0;
@@ -87,7 +87,7 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
  
      // 句柄检查
      if (NULL == pcfg->device || NULL == cb)
-@@ -262,6 +300,33 @@
+@@ -270,6 +308,33 @@
      {
          goto error;
      }
@@ -96,10 +96,10 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
 +    // 放在接收线程启动之前：线程一起来就会调 tap_dump，
 +    // 那时 tap_from_fd_ 必须已是最终值。
 +    {
-+        const char *tap_dir = getenv("TIANRACER_TAP_DIR");
++        const char *tap_dir = getenv("TIANBOT_TAP_DIR");
 +        if (tap_dir != NULL && tap_dir[0] != '\0')
 +        {
-+            const char *mb = getenv("TIANRACER_TAP_MB");
++            const char *mb = getenv("TIANBOT_TAP_MB");
 +            if (mb != NULL && atoi(mb) > 0)
 +            {
 +                tap_limit_ = (long)atoi(mb) * 1024L * 1024L;
@@ -121,7 +121,7 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
      running_ = 1;
  
      // 创建线程，接收数据
-@@ -278,6 +343,16 @@
+@@ -286,6 +351,16 @@
  
  error:
      running_ = 0;
@@ -138,7 +138,7 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
      if (fd_ > 0)
      {
          ::close(fd_);
-@@ -298,6 +373,10 @@
+@@ -306,6 +381,10 @@
          return -1;
      }
  
@@ -149,7 +149,7 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
      // 反复发送，直到全部发完
      while (sended_len != len)
      {
-@@ -317,6 +396,16 @@
+@@ -325,6 +404,16 @@
  void Serial::close(void)
  {
      running_ = 0;

@@ -86,7 +86,26 @@ Proposed。协议旁路已实现（**代理桥接，不是只嗅探**，见下�
 两个方向都在增长，帧型为 ODOM 1930 / IMU 966 / Voltage 2。
 
 **未验**：运动状态下的录音、与桥接那 9535 帧数据的一致性对比、
-分钟级长时间录音的上限截断行为。
+分钟级长时间录音的上限截断行为、其他车型的表现。
+
+**实车验证补充（2026-11-07，车端 `tianbot_core` 分支 `feat/serial-tap-recording`）**：
+
+- `212785e`：串口改成真正的 raw 模式。原代码 `c_lflag |= ~(ICANON|...)` 写成
+  `|=` 而非 `&= ~`，等于把除这 4 位外的所有标志置 1，而 `icanon/echo/isig`
+  仍然打开 —— 行缓冲、回显、`0x03` 被当信号字符吞掉都会破坏二进制帧。
+  参照上游 `codex/fix-serial-raw-mode` 的 `59bd6c8`。
+  `stty` 验证：`-opost -isig -icanon -echo -extproc`、`-crtscts -ixon -ixoff`。
+- `8c502d6`：录音本体。25 秒采集 3571 帧，**bcc 错 0、长度错 0、校验失败帧 0**，
+  `BCC error 0`。不设开关时不产生任何文件。
+- 环境变量用 `TIANBOT_TAP_DIR`（非 `TIANRACER_`）：本仓库服务多种车型。
+- 两个补丁从 `7ce54f3` 可精确重放，结果 md5 与车端 HEAD 一致。
+
+**验收陷阱（已写进 `docs/patches/README.md`）**：
+`DEFAULT_SERIAL_BAUDRATE` 是 460800，本车 MCU 是 115200。
+直接 `rosrun` 漏传 `_serial_baudrate:=115200` 会得到规律性乱码
+（`78 00 f8 f8`），容易被误判为录音代码故障。
+另外 `roslaunch` 会 respawn 被杀的节点，清理时必须先杀 roslaunch
+再杀节点，否则多个进程交替占用串口，录音里是被拆散的字节流。
 
 两种实现**不冲突**：桥接仍在，适合「不改车端源码」的场合；
 内嵌录音是首选，因为它把单点风险降为零。

@@ -1,0 +1,54 @@
+diff -ruN a/src/serial.cpp b/src/serial.cpp
+--- a/src/serial.cpp	2026-11-07 22:43:02.523738090 +0800
++++ b/src/serial.cpp	2026-11-07 22:43:02.533738052 +0800
+@@ -112,6 +112,15 @@
+         return false;
+     }
+ 
++    // 二进制帧不能继承终端的输入处理（行缓冲、回显、信号字符、CR/NL 翻译）。
++    // 必须在下面的 |= CLOCAL / |= CREAD 之前做，否则 cfmakeraw 会把这些位清掉。
++    // 原先靠末尾的 c_oflag &= ~OPOST 加 c_lflag |= ~(ICANON|...) 实现，
++    // 但那句写成了 |= 而不是 &= ~，等于把除这 4 位以外的所有位全置 1。
++    cfmakeraw(&options);
++#ifdef EXTPROC
++    options.c_lflag &= ~EXTPROC;
++#endif
++
+     // 设置串口输入波特率和输出波特率 /i o 入和出
+     for (i = 0; i < sizeof(speed_arr) / sizeof(int); i++)
+     {
+@@ -128,16 +137,19 @@
+     options.c_cflag |= CREAD;
+ 
+     // 设置数据流控制
++    // 三种模式互斥，先全部清掉再按需打开，避免继承上一次的配置。
++    // IXON/IXOFF/IXANY 是输入标志位（c_iflag），原代码写进 c_cflag 是错的。
++    options.c_cflag &= ~CRTSCTS;
++    options.c_iflag &= ~(IXON | IXOFF | IXANY);
+     switch (flow_ctrl)
+     {
+     case 0: // 不使用流控制
+-        options.c_cflag &= ~CRTSCTS;
+         break;
+     case 1: // 使用硬件流控制
+         options.c_cflag |= CRTSCTS;
+         break;
+     case 2: // 使用软件流控制
+-        options.c_cflag |= IXON | IXOFF | IXANY;
++        options.c_iflag |= IXON | IXOFF | IXANY;
+         break;
+     default:
+         fprintf(stderr, "Unsupported flow ctrl\n");
+@@ -205,11 +217,7 @@
+         return false;
+     }
+ 
+-    // 修改输出模式，原始数据输出
+-    options.c_oflag &= ~OPOST;
+-
+-    options.c_lflag |= ~(ICANON | ECHOE | ECHO | ISIG);
+-    //(ICANON | ECHO | ECHOE);
++    // 输出模式与本地模式已由前面的 cfmakeraw 处理，这里不再重复。
+ 
+     // 设置等待时间和最小接收字符
+     options.c_cc[VTIME] = 1; /* 读取一个字符等待1*(1/10)s */
