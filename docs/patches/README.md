@@ -69,9 +69,9 @@ catkin_make --only-pkg-with-deps tianracer_core
 catkin_make -DCATKIN_WHITELIST_PACKAGES=""
 ```
 
-## 验证记录（2026-11-07）
+## 验证记录
 
-用 pty 虚拟串口，`/tmp/tap_test` 直接链接 `serial.cpp`：
+### 虚拟串口（pty）
 
 | 场景 | 结果 |
 | --- | --- |
@@ -79,7 +79,37 @@ catkin_make -DCATKIN_WHITELIST_PACKAGES=""
 | 不设开关 | 通信正常，无 tap 日志行，不产生任何文件 |
 | 目录不可写 | 两路 fd 均为 -1，通信正常，回传照收 |
 
-车端 `catkin_make --only-pkg-with-deps tianracer_core` 编译通过。
+### 真实底盘串口（2026-11-07）
+
+`/dev/ttyUSB0`（CP2102，115200 8N1）就是底盘 MCU，实测 7 KB/s。
+
+**直读对照**（pyserial，不经过节点）：
+
+| 项 | 值 |
+| --- | --- |
+| 20 秒字节 | 141082 |
+| 可解析帧 | 3003 |
+| bcc 错 / 长度错 | **0 / 0** |
+| 帧型 | ODOM 2001、IMU 1000、Voltage 2 |
+| 速率 | 7054 B/s、150 帧/s |
+
+**节点录音**（真 `tianracer_core_node` 直连真串口，开 `TIANRACER_TAP_DIR`）：
+
+| 项 | from_mcu.raw | to_mcu.raw |
+| --- | --- | --- |
+| 字节 | 167858 | 711 |
+| 帧 | 3572 | 79 |
+| bcc 错 / 长度错 | **0 / 0** | **0 / 0** |
+| 校验失败帧 | 0 | 0 |
+| 帧型 | ODOM 2380、IMU 1190、Voltage 2 | HEART_BEAT 79 |
+
+两个方向都在增长（15 s → 25 s：414→711、96736→167294），节点全程存活，
+日志零 ERROR。录音的字节用项目自己的 `FrameParser` 解析，零错误。
+
+**速率一致性**：直读 150 帧/s 与录音 143 帧/s 吻合，说明录音没有改变链路行为。
+
+**未验**：运动状态下的录音、与桥接那 9535 帧数据的一致性对比、
+长时间（分钟级）录音的上限截断行为。
 
 补丁重放验证：从原始的 `serial.h` / `serial.cpp` 出发，`patch -p1` 应用后
 两个文件的 md5 与车上实际编译用文件**完全一致**：
@@ -88,9 +118,6 @@ catkin_make -DCATKIN_WHITELIST_PACKAGES=""
 40fba72855bc334fd6ec451d60726b24  include/tianboard/serial.h
 c25807cfecffcf69a267f48eb6d835f8  src/serial.cpp
 ```
-
-**未验证**：真实底盘串口上的长时间采集、运动状态下的录音、
-与 9535 帧那份桥接数据的一致性对比。这几项要在底盘 USB 接上后重做。
 
 ## 回退
 
