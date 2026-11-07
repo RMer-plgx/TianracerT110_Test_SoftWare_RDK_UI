@@ -158,12 +158,14 @@ class TestWorker(QThread):
 # 主窗口
 # ---------------------------------------------------------------------------
 
-class UnplugWaitWorker(QThread):
-    """等用户拔掉 USB-C 线。
+class UnplugCheckWorker(QThread):
+    """用户点了「已拔线」之后的一次短确认。
 
     判据是有线地址 192.168.128.10 不再可达。
+    与轮询不同：用户已经在弹窗里确认拔了线，这里只等网卡从系统消失
+    （几百毫秒到几秒），不长时间无人值守探测。
     注意这不能区分「拔线」和「车断电」—— 两者都不可达，
-    所以超时后不报错，把判断交给用户（界面会问要不要继续）。
+    所以失败不报错，把判断交给用户（界面会问要不要继续）。
     """
 
     done = pyqtSignal(dict)
@@ -174,7 +176,7 @@ class UnplugWaitWorker(QThread):
 
     def run(self) -> None:
         try:
-            unplugged = conn.wait_for_unplug(timeout=60)
+            unplugged = conn.verify_unplugged(grace_seconds=6.0)
             self.done.emit({"unplugged": unplugged, "ip": self._ip})
         except Exception as exc:
             self.done.emit({"error": f"{type(exc).__name__}: {exc}", "ip": self._ip})
@@ -374,7 +376,7 @@ class MainWindow(QMainWindow):
         self._last_config: dict | None = None
         self._cleaner = None
         self._wired_worker = None
-        self._wait_unplug_worker = None
+        self._unplug_worker = None
 
         _title = (self.profile.name if self.profile else "产品") + " 整车测试"
         self.setWindowTitle(_title)
@@ -870,47 +872,75 @@ class MainWindow(QMainWindow):
         self._wifi_ip = ip
         self._log(f"车辆 WiFi：{ssid} → {ip}")
 
-        # 提示拔线
-        reply = QMessageBox.question(
-            self, "请拔掉 USB-C 线",
+        # 提示拔线：等用户在弹窗里确认，再做一次短确认。
+        # 不后台轮询 —— 轮询会每隔一秒起一个 ping 子进程，黑窗频闪。
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("请拔掉 USB-C 线")
+        box.setText(
             f"车辆已连上 WiFi「{ssid}」\n"
             f"WiFi IP：{ip}\n\n"
-            f"现在请拔掉电脑与车机之间的 USB-C 线。\n"
-            f"拔掉后程序会自动检测并开始测试。\n\n"
-            f"（拔线是为了验证：不依赖有线也能连上，\n"
-            f" 否则交付后远程连不上会很难排查）",
-            QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Ok,
+            f"现在请拔掉电脑与车机之间的 USB-C 线，\n"
+            f"拔好后点下面的「已拔线」。"
         )
-        if reply != QMessageBox.Ok:
+        box.setInformativeText(
+            "拔线是为了验证：不依赖有线也能连上，\n"
+            "否则交付后远程连不上会很难排查。"
+        )
+        confirm_btn = box.addButton("已拔线", QMessageBox.AcceptRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec_()
+        if box.clickedButton() is not confirm_btn:
             self._log("用户取消拔线，流程结束")
             return
 
-        self._log(f"等待拔线…（目标 {ip} 仍然可达即视为未拔）")
+        self._start_unplug_check()
+
+    def _start_unplug_check(self) -> None:
+        """用户确认拔线后的一次短确认（几秒，不轮询）。"""
         self.start_btn.setEnabled(False)
-        self._wait_unplug_worker = UnplugWaitWorker(ip, self)
-        self._wait_unplug_worker.done.connect(self._on_unplug_done)
-        self._wait_unplug_worker.start()
+        self._log(
+            f"已确认拔线，正在校验"
+            f"（{conn.WIRED_CAR_IP} 数秒内仍可达会继续等）"
+        )
+        self._unplug_worker = UnplugCheckWorker(self._wifi_ip, self)
+        self._unplug_worker.done.connect(self._on_unplug_done)
+        self._unplug_worker.start()
 
     def _on_unplug_done(self, data: dict) -> None:
-        self.start_btn.setEnabled(True)
         if data.get("error"):
+            self.start_btn.setEnabled(True)
             self._log(f"⚠ {data['error']}")
-            QMessageBox.warning(self, "拔线检测", str(data["error"]))
+            QMessageBox.warning(self, "拔线校验", str(data["error"]))
             return
+
         if not data.get("unplugged"):
-            reply = QMessageBox.question(
-                self, "仍未检测到拔线",
-                f"60 秒内 {conn.WIRED_CAR_IP} 仍然可达。\n\n"
-                f"可能原因：\n"
-                f"  · 线还没拔\n"
-                f"  · 电脑上有其它路由到该网段\n\n"
-                f"要用 WiFi IP {data.get('ip', '')} 继续吗？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("未检测到拔线")
+            box.setText(f"{conn.WIRED_CAR_IP} 仍然可达，有线可能还连着。")
+            box.setInformativeText(
+                "可能原因：\n"
+                "  · 线还没拔（或拔的不是车机这一端）\n"
+                "  · 电脑上有其它路由到 192.168.128.0/24\n\n"
+                f"要改用 WiFi 地址 {data.get('ip', '')} 继续吗？"
             )
-            if reply != QMessageBox.Yes:
+            retry_btn = box.addButton("再检测一次", QMessageBox.AcceptRole)
+            keep_btn = box.addButton("仍然继续", QMessageBox.ActionRole)
+            box.addButton("取消", QMessageBox.RejectRole)
+            box.exec_()
+            clicked = box.clickedButton()
+            if clicked is retry_btn:
+                self._start_unplug_check()
                 return
+            if clicked is not keep_btn:
+                self.start_btn.setEnabled(True)
+                self._log("用户取消：未检测到拔线")
+                return
+
+        self.start_btn.setEnabled(True)
         self._log(f"✅ 有线已断开，改用 WiFi 地址 {data.get('ip', '')} 开始检测")
-        self._launch_test(data.get("ip", self._wifi_ip))
+        self._launch_test(data.get("ip") or self._wifi_ip)
 
     def _launch_test(self, host: str, profile_id: str | None = None) -> None:
         """真正启动检测。有线/无线流程最终都汇到这里。"""

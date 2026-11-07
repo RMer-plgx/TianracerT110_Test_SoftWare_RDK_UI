@@ -11,7 +11,10 @@ M2 的根因值得记住：中文 netsh 输出里有三行都含「状态」
 以为是自己的 WiFi 有问题。
 """
 
+import ast
+import inspect
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -364,4 +367,80 @@ def _single_command(cmd: str) -> bool:
 
     # 引号内的分号会被 shlex 吃掉，只有裸露的分号才单独成 token
     return not any(t == ";" for t in tokens)
+
+
+# ---------------------------------------------------------------------------
+# 拔线确认：一次短校验，不是后台轮询
+# ---------------------------------------------------------------------------
+
+class TestVerifyUnplugged:
+    """用户点「已拔线」后的一次短确认。
+
+    2026-11-07 实车反馈：旧实现每 1.5 秒 ping 一次、连轮 60 秒，
+    打包后的 exe 里 ping 子进程每个都闪一个黑窗，观感很差。
+    改成「用户确认 → 几秒内落地校验」。
+    """
+
+    def test_returns_true_immediately_when_unreachable(self, monkeypatch):
+        monkeypatch.setattr(connect, "_ping", lambda *a, **k: False)
+        started = time.monotonic()
+        assert connect.verify_unplugged(grace_seconds=6.0) is True
+        # 不可达就立刻返回，不等满窗口
+        assert time.monotonic() - started < 1.0
+
+    def test_returns_false_when_still_reachable(self, monkeypatch):
+        monkeypatch.setattr(connect, "_ping", lambda *a, **k: True)
+        assert connect.verify_unplugged(grace_seconds=0.2, interval=0.05) is False
+
+    def test_tolerates_nic_removal_delay(self, monkeypatch):
+        """刚拔线时第一跳往往还能通 —— 窗口内的后续探测要能翻转。"""
+        results = iter([True, True, False])
+        monkeypatch.setattr(connect, "_ping", lambda *a, **k: next(results))
+        assert connect.verify_unplugged(grace_seconds=2.0, interval=0.01) is True
+
+
+# ---------------------------------------------------------------------------
+# 不弹黑窗：所有子进程必须带 CREATE_NO_WINDOW
+# ---------------------------------------------------------------------------
+
+def test_no_window_flag_matches_platform():
+    import subprocess
+
+    if sys.platform.startswith("win"):
+        assert connect._NO_WINDOW == subprocess.CREATE_NO_WINDOW
+    else:
+        # POSIX 上 creationflags 必须为 0
+        assert connect._NO_WINDOW == 0
+
+
+def test_all_subprocess_calls_hide_console():
+    """connect 里每个子进程调用都要带 creationflags。
+
+    打包后是 --windowed exe，没有控制台；子进程默认会各自开一个可见窗口，
+    ping 一次闪一个。这条测试防的是以后新增调用时漏掉。
+    """
+    tree = ast.parse(inspect.getsource(connect))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+        and node.func.attr in {"run", "Popen", "call", "check_output", "check_call"}
+    ]
+    assert calls, "connect 里应当有子进程调用"
+    for call in calls:
+        assert any(kw.arg == "creationflags" for kw in call.keywords), (
+            f"core/connect.py:{call.lineno} 的子进程调用没带 creationflags，"
+            f"打包后会闪黑窗"
+        )
+
+
+def test_ui_uses_one_shot_check_not_polling():
+    """界面侧不得回到长轮询（那是黑窗频闪的根源）。"""
+    src = (Path(__file__).resolve().parent.parent / "ui" / "main_window.py").read_text(
+        encoding="utf-8"
+    )
+    assert "verify_unplugged" in src
+    assert "wait_for_unplug" not in src
 

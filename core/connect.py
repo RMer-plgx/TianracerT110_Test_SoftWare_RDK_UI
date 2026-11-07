@@ -63,6 +63,12 @@ from .ssh import Remote, shquote
 # 先按 utf-8 试，失败按 gbk 再试；两者覆盖英文与中文 Windows。
 _NATIVE_ENCODINGS = ("utf-8", "gbk", "cp936")
 
+# GUI 程序（打包后的 --windowed exe）每起一个控制台子进程，Windows 都会给
+# 它配一个可见的控制台窗口 —— ping 一次闪一个黑窗。WiFi 探测与拔线确认会
+# 反复调 ping/netsh，黑窗频闪观感很差，所以统一带 CREATE_NO_WINDOW。
+# 非 Windows 上该常量为 0，而 POSIX 的 creationflags 必须为 0，传 0 合法。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 def _decode_native(raw: bytes) -> str:
     """把 Windows 自带命令的 stdout 解码成文本。"""
@@ -175,7 +181,7 @@ def host_wifi() -> HostWifi:
     try:
         result = subprocess.run(
             ["netsh", "wlan", "show", "interfaces"],
-            capture_output=True, timeout=10,
+            capture_output=True, timeout=10, creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return HostWifi()
@@ -191,6 +197,7 @@ def _ping(host: str, count: int = 2, timeout_ms: int = 1200) -> bool:
         result = subprocess.run(
             ["ping", "-n", str(count), "-w", str(timeout_ms), host],
             capture_output=True, timeout=count * 2 + 5,
+            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -403,23 +410,27 @@ def wired_link_present(remote: Remote) -> bool:
 # 拔线检测
 # ---------------------------------------------------------------------------
 
-def wait_for_unplug(poll_seconds: float = 1.5,
-                    timeout: int = 120) -> bool:
-    """等用户拔掉 USB 线。
+def verify_unplugged(grace_seconds: float = 6.0,
+                     interval: float = 1.0) -> bool:
+    """用户点了「我已拔线」之后，做一次短确认。
+
+    这不是无人值守的轮询：用户已经在界面上确认拔了线，这里只等 USB 网卡
+    从系统消失（几百毫秒到几秒），一旦 192.168.128.10 不可达立刻返回。
+    窗口给到几秒是因为网卡移除有延迟，第一跳往往还能 ping 通。
 
     判据：本机 192.168.128.10 不再可达。
     注意这**不能区分「拔线」和「车断电」** —— 两者都表现为不可达。
-    所以超时后不报错，由调用方提示用户自己确认。
+    所以 False 不当作错误，由调用方问用户要不要继续。
 
-    返回 True 表示已不可达（可以继续），False 表示超时仍连着。
+    返回 True 表示已断开，False 表示窗口内仍然可达。
     """
-    time.sleep(1.0)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.time() + grace_seconds
+    while True:
         if not _ping(WIRED_CAR_IP, count=1, timeout_ms=800):
             return True
-        time.sleep(poll_seconds)
-    return False
+        if time.time() >= deadline:
+            return False
+        time.sleep(interval)
 
 
 def build_wired_target(profile_id: Optional[str] = None):
