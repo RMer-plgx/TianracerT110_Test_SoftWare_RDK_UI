@@ -297,6 +297,67 @@ class TestGroundRunsSpin:
         assert [c[0] for c in recorder.calls].count("spin_probe") == 0
 
 
+class TestSkipSummaryIsNotFailure:
+    """SKIP 的摘要不能写成「存在失败项」。
+
+    回归：2026-11-07 20:06 的实车报告里，落地段四个子项全部 PASS，
+    只因转圈缺项而被 judge_all 合并成 SKIP（部分 PASS + 部分 SKIP → SKIP），
+    摘要却写「运动测试存在失败项」—— 用户会去找一个根本不存在的故障。
+    """
+
+    BASELINE = {
+        "motion": {
+            "micro_pulse": {"speed": 0.05, "duration": 0.1,
+                            "min_displacement_m": 0.0005},
+            "bench": {
+                "forward_speed": 0.1, "forward_duration": 0.1,
+                "min_displacement_m": 0.005,
+                "reverse_speed": -0.1, "reverse_duration": 0.1,
+                "steer_angle": 0.3, "steer_duration": 0.1,
+                "steer_speed": 0.05,
+            },
+            "ground": {
+                "forward_speed": 0.1, "forward_duration": 0.1,
+                "forward_expected_m": 0.3, "forward_tolerance": 0.2,
+                "reverse_speed": -0.1, "reverse_duration": 0.1,
+                "reverse_expected_m": 0.3, "reverse_tolerance": 0.2,
+                "steer_angle": 0.3, "steer_duration": 0.1,
+                "steer_expected_yaw_deg": 11, "steer_tolerance_deg": 6,
+            },
+            # 故意不放 spin：这是导致 SKIP 的缺项
+            "safety": {"spin_max_speed_mps": 0.25, "spin_max_seconds": 120},
+        }
+    }
+
+    def test_skip_summary_does_not_claim_failure(self, monkeypatch):
+        from checks import motion
+
+        def m(dyaw=0.0):
+            return {"ok": True, "dist_m": 0.30, "dyaw_deg": dyaw,
+                    "avg_speed": 0.10, "duration": 3.0}
+
+        # 微脉冲 → 架空前进/后退/左转/右转 → 落地前进/后退/左转/右转
+        # 左转 yaw 为正、右转为负，否则 bench 会判「两侧同向 = 一侧反了」
+        recorder = _ProbeRecorder([
+            m(0.015), m(), m(), m(11.0), m(-11.0),
+            m(), m(), m(11.0), m(-11.0),
+        ])
+        monkeypatch.setattr(motion, "run_probe", recorder)
+        ctx = _FakeCtx(self.BASELINE, "full")
+
+        result = motion.run(ctx)
+
+        assert result.status is Status.SKIP, (
+            f"期望 SKIP，实际 {result.status}；摘要＝{result.summary}"
+        )
+        assert "失败" not in result.summary, (
+            f"SKIP 却写成失败：{result.summary}"
+        )
+        assert "未验证" in result.summary, (
+            f"摘要没说清是没验完：{result.summary}"
+        )
+
+
 class TestImuOdomPending:
     def _run_check(self, module_name, ctx):
         import importlib

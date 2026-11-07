@@ -138,6 +138,8 @@ def run(ctx) -> CheckResult:
             result.summary = "架空段通过（微脉冲 + 前进/后退/左右转向均响应）"
         elif result.status is Status.WARN:
             result.summary = "架空段基本通过，但存在需关注的偏差"
+        elif result.status is Status.SKIP:
+            result.summary = "架空段有项目未验证完，详见明细"
         else:
             result.summary = "架空段存在失败项"
         result.detail = "本次未执行落地段。要验证真实行驶距离，请选择完整测试。"
@@ -192,6 +194,12 @@ def run(ctx) -> CheckResult:
         result.summary = "架空段与落地段全部通过"
     elif result.status is Status.WARN:
         result.summary = "运动测试通过，但速度或转向存在偏差"
+    elif result.status is Status.SKIP:
+        # SKIP 与 FAIL 是两回事：前者「有项没验证完」，后者「验了且不合格」。
+        # 混写成「存在失败项」会让用户去找一个不存在的故障
+        # （2026-11-07 实车报告即为此例：落地段四个子项全 PASS，只因转圈缺项
+        #   被判 SKIP，摘要却写「存在失败项」）。
+        result.summary = "运动测试有项目未验证完，详见明细"
     else:
         result.summary = "运动测试存在失败项"
     return result
