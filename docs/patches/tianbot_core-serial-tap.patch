@@ -1,9 +1,9 @@
-diff -ruN a/include/tianboard/serial.h b/include/tianboard/serial.h
---- a/include/tianboard/serial.h	2026-11-07 21:39:21.111241494 +0800
-+++ b/include/tianboard/serial.h	2026-11-07 21:39:21.131241379 +0800
-@@ -55,6 +55,16 @@
+diff -ruN a/include/tianbot_core/serial.h b/include/tianbot_core/serial.h
+--- a/include/tianbot_core/serial.h	2026-11-07 22:07:38.223768461 +0800
++++ b/include/tianbot_core/serial.h	2026-11-07 22:07:38.243768368 +0800
+@@ -60,6 +60,16 @@
      int running_;
-     serial_recv_cb recv_cb_;
+     recv_cb recv_cb_;
      int fd_;
 +
 +    // ---- 通讯录音（可选旁听，默认关闭）----
@@ -19,16 +19,16 @@ diff -ruN a/include/tianboard/serial.h b/include/tianboard/serial.h
  
  #endif
 diff -ruN a/src/serial.cpp b/src/serial.cpp
---- a/src/serial.cpp	2026-11-07 21:39:21.111241494 +0800
-+++ b/src/serial.cpp	2026-11-07 21:39:21.131241379 +0800
-@@ -39,6 +39,7 @@
- #include <termios.h>
- #include <unistd.h>
+--- a/src/serial.cpp	2026-11-07 22:07:38.233768414 +0800
++++ b/src/serial.cpp	2026-11-07 22:07:38.253768322 +0800
+@@ -37,6 +37,7 @@
+ #include <stdlib.h>
+ #include <string.h>
  #include <sys/file.h>
 +#include <sys/stat.h>
+ #include <termios.h>
+ #include <unistd.h>
  
- #define DBG_LOG_TRACE(format, ...) \
-     printf(format, ##__VA_ARGS__); \
 @@ -53,6 +54,33 @@
      printf(format, ##__VA_ARGS__);   \
      printf("\n")
@@ -63,19 +63,19 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
  void *Serial::serial_recv(void *p)
  {
      uint8_t recvbuff[1024];
-@@ -67,6 +95,9 @@
-             DBG_LOG_ERROR("uart_recv error: %d", errno);
-             continue;
+@@ -89,6 +117,9 @@
+             {
+                 continue;
+             }
++            // 先录音再交给上层：记的是串口上的原始字节，与上层怎么解析无关
++            tap_dump(&pThis->tap_from_fd_, &pThis->tap_written_from_,
++                     pThis->tap_limit_, recvbuff, recvlen);
+             pThis->recv_cb_(recvbuff, recvlen);
          }
-+        // 先录音再交给上层：记的是串口上的原始字节，与上层怎么解析无关
-+        tap_dump(&pThis->tap_from_fd_, &pThis->tap_written_from_,
-+                 pThis->tap_limit_, recvbuff, recvlen);
-         pThis->recv_cb_(recvbuff, recvlen);
      }
-     return NULL;
-@@ -210,6 +241,13 @@
-     int ret;
+@@ -233,6 +264,13 @@
      pthread_attr_t attr;
+     struct serial_cfg *pcfg = (struct serial_cfg *)cfg;
      recv_thread_ = 0;
 +    // 必须在任何 return 之前置位：否则提前失败时 tap_*_fd_ 是垃圾值，
 +    // 后面「>= 0 就 close」会去关一个随机 fd。
@@ -84,10 +84,10 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
 +    tap_written_to_ = 0;
 +    tap_written_from_ = 0;
 +    tap_limit_ = 32L * 1024L * 1024L;
-     DBG_LOG_TRACE("open serial %s ...", device);
-     //句柄检查
-     if (NULL == device || NULL == cb)
-@@ -240,6 +278,33 @@
+ 
+     // 句柄检查
+     if (NULL == pcfg->device || NULL == cb)
+@@ -262,6 +300,33 @@
      {
          goto error;
      }
@@ -120,8 +120,8 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
 +
      running_ = 1;
  
-     //创建线程，接收数据
-@@ -257,6 +322,16 @@
+     // 创建线程，接收数据
+@@ -278,6 +343,16 @@
  
  error:
      running_ = 0;
@@ -138,7 +138,7 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
      if (fd_ > 0)
      {
          ::close(fd_);
-@@ -278,6 +353,10 @@
+@@ -298,6 +373,10 @@
          return -1;
      }
  
@@ -146,10 +146,10 @@ diff -ruN a/src/serial.cpp b/src/serial.cpp
 +    // 一帧可能被 write 拆成几次，拼起来才是上位机真正想发的内容。
 +    tap_dump(&tap_to_fd_, &tap_written_to_, tap_limit_, data, len);
 +
-     //反复发送，直到全部发完
+     // 反复发送，直到全部发完
      while (sended_len != len)
      {
-@@ -297,6 +376,16 @@
+@@ -317,6 +396,16 @@
  void Serial::close(void)
  {
      running_ = 0;

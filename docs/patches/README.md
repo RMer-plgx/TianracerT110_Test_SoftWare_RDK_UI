@@ -1,6 +1,29 @@
-# 车端串口录音补丁（tianracer_core）
+# 车端串口录音补丁（tianbot_core）
 
 这个目录放的是**车端源码**的补丁，不是本仓库的代码。
+
+## 先搞清楚：底盘代码在哪个仓库
+
+这一点最容易搞错，包括我自己第一次就改错了包。
+
+| 包 | 仓库 | 作用 | 是否在跑 |
+| --- | --- | --- | --- |
+| `tianbot_core` | `github.com/tianbot/tianbot_core` | 底盘驱动，**真正打开串口的那个** | **是** |
+| `tianracer_core` | `gitee.com/tianbot/tianracer` | 同名 `tianracer_core_node` | **否** |
+
+关键证据在 `tianracer_core/launch/tianracer_core.launch`：
+
+```xml
+<node pkg="tianbot_core" type="tianbot_core" name="tianracer" output="screen">
+  <param name="serial_port" type="string" value="$(arg serial_port)"/>
+```
+
+节点名虽然叫 `tianracer`，**可执行文件来自 `tianbot_core` 包**。
+`devel/lib/tianbot_core/tianbot_core` 才是有串口 I/O 的那个二进制。
+`tianracer_core` 自己也有个 `tianracer_core_node`，但它不在 any launch 里，
+属历史遗留。
+
+所以补丁要打到 **`tianbot_core`**。
 
 ## 为什么需要它
 
@@ -14,9 +37,9 @@
 
 ## 补丁做了什么
 
-`tianracer_core/include/tianboard/serial.h` 加 5 个私有成员；
+`tianbot_core/include/tianbot_core/serial.h` 加 5 个私有成员；
 
-`tianracer_core/src/serial.cpp` 加 8 处：
+`tianbot_core/src/serial.cpp` 加 8 处：
 
 | 位置 | 改动 |
 | --- | --- |
@@ -52,15 +75,14 @@
 ## 应用
 
 ```bash
-cd ~/tianracer_ros1_ws/src/tianracer/tianracer_core
+cd ~/tianracer_ros1_ws/src/tianbot_core
 git stash          # 先清干净
-patch -p1 < tianracer_core-serial-tap.patch
+patch -p1 --dry-run < tianbot_core-serial-tap.patch
+patch -p1 < tianbot_core-serial-tap.patch
 cd ~/tianracer_ros1_ws
 source /opt/ros/noetic/setup.bash
-catkin_make --only-pkg-with-deps tianracer_core
+catkin_make --only-pkg-with-deps tianbot_core
 ```
-
-用 `-p1`：补丁的路径带 `a/` `b/` 前缀。先 `patch -p1 --dry-run` 确认能应用。
 
 `--only-pkg-with-deps` 会写入 `CATKIN_WHITELIST_PACKAGES`，之后编译别的包
 会静默跳过。用完清掉：
@@ -75,13 +97,15 @@ catkin_make -DCATKIN_WHITELIST_PACKAGES=""
 
 | 场景 | 结果 |
 | --- | --- |
-| 设 `TIANRACER_TAP_DIR` | `to_mcu.raw` 36 B（3 帧 × 12 B）、`from_mcu.raw` 24 B，字节逐一匹配 |
-| 不设开关 | 通信正常，无 tap 日志行，不产生任何文件 |
+| 设 `TIANRACER_TAP_DIR` | 双向字节逐一匹配 |
+| 不设开关 | 通信正常，无 tap 输出，不产生任何文件 |
 | 目录不可写 | 两路 fd 均为 -1，通信正常，回传照收 |
 
 ### 真实底盘串口（2026-11-07）
 
 `/dev/ttyUSB0`（CP2102，115200 8N1）就是底盘 MCU，实测 7 KB/s。
+**注意：雷达不占串口**——它是 richbeam LakiBeam1，走网口 192.168.198.2。
+`/dev/tianbot_lidar -> ttyUSB0` 是历史遗留的错误软链，richbeam 分支不走它。
 
 **直读对照**（pyserial，不经过节点）：
 
@@ -93,39 +117,31 @@ catkin_make -DCATKIN_WHITELIST_PACKAGES=""
 | 帧型 | ODOM 2001、IMU 1000、Voltage 2 |
 | 速率 | 7054 B/s、150 帧/s |
 
-**节点录音**（真 `tianracer_core_node` 直连真串口，开 `TIANRACER_TAP_DIR`）：
+**节点录音**（`roslaunch tianracer_core tianracer_core.launch`，
+实际起的是 `tianbot_core` 包的节点，开 `TIANRACER_TAP_DIR`）：
 
 | 项 | from_mcu.raw | to_mcu.raw |
 | --- | --- | --- |
-| 字节 | 167858 | 711 |
-| 帧 | 3572 | 79 |
+| 字节 | 136137 | 864 |
+| 帧 | 2898 | 96 |
 | bcc 错 / 长度错 | **0 / 0** | **0 / 0** |
 | 校验失败帧 | 0 | 0 |
-| 帧型 | ODOM 2380、IMU 1190、Voltage 2 | HEART_BEAT 79 |
+| 帧型 | ODOM 1930、IMU 966、Voltage 2 | HEART_BEAT 96 |
 
-两个方向都在增长（15 s → 25 s：414→711、96736→167294），节点全程存活，
-日志零 ERROR。录音的字节用项目自己的 `FrameParser` 解析，零错误。
-
-**速率一致性**：直读 150 帧/s 与录音 143 帧/s 吻合，说明录音没有改变链路行为。
+两个方向都在增长（12 s → 22 s：306→756、49458→120110），节点全程存活，
+日志零 ERROR、零 `open failed`。录音字节用项目自己的 `FrameParser` 解析，
+零错误。
 
 **未验**：运动状态下的录音、与桥接那 9535 帧数据的一致性对比、
-长时间（分钟级）录音的上限截断行为。
-
-补丁重放验证：从原始的 `serial.h` / `serial.cpp` 出发，`patch -p1` 应用后
-两个文件的 md5 与车上实际编译用文件**完全一致**：
-
-```
-40fba72855bc334fd6ec451d60726b24  include/tianboard/serial.h
-c25807cfecffcf69a267f48eb6d835f8  src/serial.cpp
-```
+分钟级长时间录音的上限截断行为。
 
 ## 回退
 
 ```bash
-cd ~/tianracer_ros1_ws/src/tianracer
-git checkout -- tianracer_core/src/serial.cpp \
-                tianracer_core/include/tianboard/serial.h
-catkin_make --only-pkg-with-deps tianracer_core
+cd ~/tianracer_ros1_ws/src/tianbot_core
+git checkout -- src/serial.cpp include/tianbot_core/serial.h
+cd ~/tianracer_ros1_ws
+catkin_make --only-pkg-with-deps tianbot_core
 ```
 
 补丁只做新增：不删代码、不改任何已有语句，所以回退不会丢东西。

@@ -48,7 +48,13 @@ Proposed。协议旁路已实现（**代理桥接，不是只嗅探**，见下�
 顺手录一份**。
 
 这需要改车端源码，所以单独做成补丁存档：
-[`docs/patches/tianracer_core-serial-tap.patch`](../patches/tianracer_core-serial-tap.patch)。
+[`docs/patches/tianbot_core-serial-tap.patch`](../patches/tianbot_core-serial-tap.patch)。
+
+**关键：底盘串口 I/O 在 `tianbot_core` 包，不在 `tianracer_core`。**
+`tianracer_core/launch/tianracer_core.launch` 里写的是
+`<node pkg="tianbot_core" type="tianbot_core" name="tianracer">` ——
+节点名叫 tianracer，可执行文件却来自 tianbot_core 包。
+两边各有一份 `serial.cpp`（内容不同），改错了包等于没改。
 
 | 方面 | 代理桥接 | 车端内嵌录音 |
 | --- | --- | --- |
@@ -73,10 +79,11 @@ Proposed。协议旁路已实现（**代理桥接，不是只嗅探**，见下�
 `catkin_make --only-pkg-with-deps tianracer_core` 编译通过。
 
 **已验（2026-11-07 真实底盘串口）**：`/dev/ttyUSB0`（CP2102）就是底盘 MCU，
-7 KB/s。真 `tianracer_core_node` 直连真串口并开录音，25 秒得到
-`from_mcu.raw` 167858 B / 3572 帧、`to_mcu.raw` 711 B / 79 帧（全 HEART_BEAT），
-**bcc 错 0、长度错 0、校验失败帧 0**，节点零 ERROR。两个方向都在增长，
-速率（143 帧/s）与不经节点的直读（150 帧/s）吻合 —— 录音没有改变链路行为。
+7 KB/s。以 `roslaunch tianracer_core tianracer_core.launch` 起真实节点
+（实际执行的是 `tianbot_core` 包）并开录音，22 秒得到
+`from_mcu.raw` 136137 B / 2898 帧、`to_mcu.raw` 864 B / 96 帧（全 HEART_BEAT），
+**bcc 错 0、长度错 0、校验失败帧 0**，节点零 ERROR、零 `open failed`。
+两个方向都在增长，帧型为 ODOM 1930 / IMU 966 / Voltage 2。
 
 **未验**：运动状态下的录音、与桥接那 9535 帧数据的一致性对比、
 分钟级长时间录音的上限截断行为。
