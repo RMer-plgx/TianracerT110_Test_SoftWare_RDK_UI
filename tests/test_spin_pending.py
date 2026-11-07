@@ -148,7 +148,8 @@ class TestSpinJudgement:
         ctx = _FakeCtx(self.BASELINE, motion_level)
         result = CheckResult(number=18, title="运动控制", status=Status.PASS)
         statuses, verified = motion._run_spin(
-            ctx, self.BASELINE["motion"], result, self.BASELINE["motion"]["safety"])
+            ctx, self.BASELINE["motion"]["spin"], result,
+            self.BASELINE["motion"]["safety"])
         return statuses, verified, result, recorder
 
     def test_small_diff_passes_and_verifies(self, monkeypatch):
@@ -216,9 +217,84 @@ class TestSpinJudgement:
         monkeypatch.setattr(motion, "run_probe", recorder)
         ctx = _FakeCtx(baseline, "full")
         result = CheckResult(number=18, title="运动控制", status=Status.PASS)
-        motion._run_spin(ctx, baseline["motion"], result,
+        motion._run_spin(ctx, baseline["motion"]["spin"], result,
                          baseline["motion"]["safety"])
         assert float(recorder.calls[0][1][0]) <= 0.25
+
+
+class TestGroundRunsSpin:
+    """落地段必须真的执行转圈互校。
+
+    回归：_run_ground 曾把 ground 段当成整个 motion 传进 _run_spin，
+    而 _run_spin 读的是 cfg["spin"]，于是永远走「配置缺失，未执行」分支。
+    实车报告里表现为：落地段有前进/后退/左右转，却一行转圈数据也没有，
+    第 18 项被拖成 SKIP，报告还会写「存在失败项」。
+    """
+
+    BASELINE = {
+        "motion": {
+            "ground": {
+                "forward_speed": 0.1, "forward_duration": 0.1,
+                "forward_expected_m": 0.3, "forward_tolerance": 0.2,
+                "reverse_speed": -0.1, "reverse_duration": 0.1,
+                "reverse_expected_m": 0.3, "reverse_tolerance": 0.2,
+                "steer_angle": 0.3, "steer_duration": 0.1,
+                "steer_expected_yaw_deg": 11, "steer_tolerance_deg": 6,
+            },
+            "spin": {
+                "speed": 0.12, "steer_angle": 0.35, "target_yaw_deg": 360,
+                "max_seconds": 90, "yaw_tolerance_deg": 15,
+                "yaw_warn_deg": 30, "closure_warn_m": 0.3,
+            },
+            "safety": {"spin_max_speed_mps": 0.25, "spin_max_seconds": 120},
+        }
+    }
+
+    def _motion(self):
+        return {"ok": True, "dist_m": 0.30, "dyaw_deg": 11.0,
+                "avg_speed": 0.10, "duration": 3.0}
+
+    def test_ground_segment_calls_spin_probe(self, monkeypatch):
+        from checks import motion
+
+        recorder = _ProbeRecorder([
+            self._motion(), self._motion(),   # 落地·前进 / 落地·后退
+            self._motion(), self._motion(),   # 落地·左转 / 落地·右转
+            _spin(360.0, 358.0), _spin(-360.0, -358.0),
+        ])
+        monkeypatch.setattr(motion, "run_probe", recorder)
+        ctx = _FakeCtx(self.BASELINE, "full")
+        result = CheckResult(number=18, title="运动控制", status=Status.PASS)
+
+        statuses, verified = motion._run_ground(
+            ctx, self.BASELINE["motion"]["ground"], result, 0.5, 10.0,
+            self.BASELINE["motion"]["safety"],
+            spin_cfg=self.BASELINE["motion"]["spin"])
+
+        names = [c[0] for c in recorder.calls]
+        assert names.count("spin_probe") == 2, (
+            f"落地段的探针调用是 {names}，转圈没执行"
+        )
+        assert verified is True
+
+    def test_missing_spin_config_still_skips_not_crashes(self, monkeypatch):
+        """老版本 baseline 没有 spin 段：退化为 SKIP，不能报错。"""
+        from checks import motion
+
+        recorder = _ProbeRecorder([
+            self._motion(), self._motion(), self._motion(), self._motion(),
+        ])
+        monkeypatch.setattr(motion, "run_probe", recorder)
+        ctx = _FakeCtx(self.BASELINE, "full")
+        result = CheckResult(number=18, title="运动控制", status=Status.PASS)
+
+        statuses, verified = motion._run_ground(
+            ctx, self.BASELINE["motion"]["ground"], result, 0.5, 10.0,
+            self.BASELINE["motion"]["safety"], spin_cfg=None)
+
+        assert verified is False
+        assert Status.SKIP in statuses
+        assert [c[0] for c in recorder.calls].count("spin_probe") == 0
 
 
 class TestImuOdomPending:

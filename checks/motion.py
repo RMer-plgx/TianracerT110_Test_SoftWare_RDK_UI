@@ -174,9 +174,13 @@ def run(ctx) -> CheckResult:
             return result
 
     # ---- 落地段 ----
+    # spin 段必须从完整的 motion 配置里取，不能从 ground 段取：
+    # 曾经把 ground_cfg 传给 _run_spin，而它读的是 cfg["spin"]，
+    # 于是每一台车都永远走「配置缺失，未执行」，转圈一次也没跑过。
     ground_cfg = cfg.get("ground", {})
     ground_statuses, spin_ok = _run_ground(
-        ctx, ground_cfg, result, max_speed, max_dur, safety)
+        ctx, ground_cfg, result, max_speed, max_dur, safety,
+        spin_cfg=cfg.get("spin", {}))
     sub_statuses.extend(ground_statuses)
 
     # 把「转向互校是否验证过」传给上层：IMU / 里程计这两项
@@ -292,8 +296,12 @@ def _run_bench(ctx, cfg, result, max_speed, max_dur):
     return statuses, ok
 
 
-def _run_ground(ctx, cfg, result, max_speed, max_dur, safety=None):
+def _run_ground(ctx, cfg, result, max_speed, max_dur, safety=None,
+                spin_cfg=None):
     """落地段：真实行驶，校验距离、转向弧度、航向互校。
+
+    cfg 是 baseline 的 motion.ground 段；spin_cfg 是 motion.spin 段。
+    两者分开传入，避免把子段当整段用（历史上正是这里出错，转圈从未执行）。
 
     返回 (statuses, spin_verified)。
     spin_verified 为 True 表示左右两圈都转成功且偏差合格，
@@ -331,8 +339,11 @@ def _run_ground(ctx, cfg, result, max_speed, max_dur, safety=None):
                    expected=f"{expected} ± {tolerance:.0%}")
         avg = data.get("avg_speed")
         if avg is not None:
+            # 探针的 avg_speed 是速率（hypot 恒为正），不是带符号的分量速度。
+            # 拿 -0.10 去对照只会让人以为符号错了，所以期望值也按速率显示。
             result.add(f"{label}实测速度", f"{avg:.3f}", "m/s",
-                       expected=f"{speed:.2f}")
+                       expected=f"{abs(speed):.2f}",
+                       note=f"指令 {speed:+.2f} m/s，这里比对速率")
 
     # 转向弧度：左右各一次，用 judge_repeats 取最差
     steer = float(cfg.get("steer_angle", 0.30))
@@ -362,19 +373,20 @@ def _run_ground(ctx, cfg, result, max_speed, max_dur, safety=None):
     statuses.append(judge_repeats(magnitudes, low, high))
 
     # ---- 转向互校：左右各转一整圈，比对 odom 与 IMU 的航向 ----
-    spin_statuses, spin_ok = _run_spin(ctx, cfg, result, safety)
+    spin_statuses, spin_ok = _run_spin(ctx, spin_cfg, result, safety)
     statuses.extend(spin_statuses)
 
     return statuses, spin_ok
 
 
-def _run_spin(ctx, cfg, result, safety):
+def _run_spin(ctx, spin_cfg, result, safety):
     """转整圈做航向互校。返回 (statuses, verified)。
 
+    spin_cfg 是 baseline 的 motion.spin 段本身（不是整个 motion）。
     verified 只在左右两圈都真的转成功、且偏差合格时为 True。
     这个值决定 IMU / 里程计这两项能不能从「待落地验证」转 PASS。
     """
-    spin = cfg.get("spin", {}) or {}
+    spin = spin_cfg or {}
     if not spin:
         # 配置里没有这一段（老版本 baseline），视为未验证
         result.add("转向互校", "配置缺失，未执行")
