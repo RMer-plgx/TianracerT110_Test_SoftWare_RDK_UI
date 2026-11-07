@@ -143,6 +143,88 @@ class TestParseNetsh:
 
 
 # ---------------------------------------------------------------------------
+# 编码：netsh 的输出编码随环境变
+# ---------------------------------------------------------------------------
+# 2026-11-07 实车发现：同一个 netsh，在 UTF-8 代码页的终端里输英文，
+# 在无控制台的 windowed 环境（打包后的 exe）里输**中文 GBK**。
+# host_wifi 原先把输出硬解为 utf-8，GBK 字节变乱码，
+# 「已连接」匹配不上 → connected=False → 有线模式报「读不到电脑当前连接的 WiFi」。
+#
+# 下面的用例直接给 bytes，堵住这条漏网：
+# 原有测试全部直接传 str，所以编码环节一直没被测到。
+
+# 真实的 GBK 字节样本（来自 2026-11-07 在 pythonw 下抓的 netsh 输出结构）
+CN_GBK_BYTES = (
+    "\r\n系统上有 1 个接口: \r\n\r\n"
+    "    名称                   : WLAN\r\n"
+    "    说明                   : Realtek 8822CE Wireless LAN 802.11ac PCI-E NIC\r\n"
+    "    状态                   : 已连接\r\n"
+    "    SSID                   : TianbotOffice-5G\r\n"
+    "    无线电状态             : 硬件 开\r\n"
+    "    承载网络状态           : 不可用\r\n"
+).encode("gbk")
+
+EN_UTF8_BYTES = (
+    "\r\nThere is 1 interface on the system: \r\n\r\n"
+    "    Name                   : WLAN\r\n"
+    "    State                  : connected\r\n"
+    "    SSID                   : TianbotOffice-5G\r\n"
+).encode("utf-8")
+
+
+class TestNativeEncoding:
+    def test_decode_gbk(self):
+        """GBK 字节要能正确解出中文。"""
+        text = "    状态                   : 已连接\r\n"
+        assert connect._decode_native(text.encode("gbk")) == text
+
+    def test_decode_utf8(self):
+        """UTF-8 仍然优先，不能被 gbk 抢掉。"""
+        text = "    State                  : connected\r\n"
+        assert connect._decode_native(text.encode("utf-8")) == text
+
+    def test_decode_garbage_does_not_raise(self):
+        """两种编码都解不开时不能抛异常。"""
+        assert isinstance(connect._decode_native(b"\xff\xfe\x00\x01"), str)
+
+    def _patch(self, monkeypatch, raw: bytes):
+        class _Result:
+            stdout = raw
+            stderr = b""
+            returncode = 0
+
+        monkeypatch.setattr(connect.subprocess, "run",
+                            lambda *a, **k: _Result())
+
+    def test_host_wifi_reads_gbk_output(self, monkeypatch):
+        """windowed 环境下 netsh 输出 GBK —— 必须仍判为已连接。
+
+        这是 2026-11-07 有线模式失败的直接原因：
+        真实输出 connected=False，而 WiFi 明明是连着的。
+        """
+        self._patch(monkeypatch, CN_GBK_BYTES)
+        wifi = connect.host_wifi()
+        assert wifi.connected is True
+        assert wifi.ssid == "TianbotOffice-5G"
+
+    def test_host_wifi_reads_utf8_output(self, monkeypatch):
+        """英文 UTF-8 输出仍要正常工作（防止改坏）。"""
+        self._patch(monkeypatch, EN_UTF8_BYTES)
+        wifi = connect.host_wifi()
+        assert wifi.connected is True
+        assert wifi.ssid == "TianbotOffice-5G"
+
+    def test_host_wifi_disconnected_in_gbk(self, monkeypatch):
+        """GBK 的「已断开」仍要判为未连接，不能一律放行。"""
+        raw = CN_GBK_BYTES.decode("gbk").replace(
+            "状态                   : 已连接",
+            "状态                   : 已断开",
+        ).encode("gbk")
+        self._patch(monkeypatch, raw)
+        assert connect.host_wifi().connected is False
+
+
+# ---------------------------------------------------------------------------
 # M1：shell 转义
 # ---------------------------------------------------------------------------
 

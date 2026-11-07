@@ -52,6 +52,28 @@ from typing import List, Optional
 
 from .ssh import Remote, shquote
 
+# Windows 自带命令（netsh / ping）的输出编码随环境变化，不能用 utf-8 硬解
+# -------------------------------------------------------------------------
+# 2026-11-07 实车测试发现：同一个 `netsh wlan show interfaces`，
+#   · 在 UTF-8 代码页的终端里跑 → 输出**英文**（`State : connected`）
+#   · 在无控制台的 windowed 环境（打包后的 exe）里跑 → 输出**中文 GBK**
+#     （`系统上有 1 个接口` / `状态 : 已连接`）
+# 代码原先硬用 encoding="utf-8"，GBK 字节被解成乱码，
+# `已连接` 匹配不上 → `connected=False` → 有线模式报「读不到电脑当前连接的 WiFi」。
+# 先按 utf-8 试，失败按 gbk 再试；两者覆盖英文与中文 Windows。
+_NATIVE_ENCODINGS = ("utf-8", "gbk", "cp936")
+
+
+def _decode_native(raw: bytes) -> str:
+    """把 Windows 自带命令的 stdout 解码成文本。"""
+    for encoding in _NATIVE_ENCODINGS:
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    # 都不行时退回替换模式，至少不抛异常（后面的解析会自然判为未连接）
+    return raw.decode("utf-8", errors="replace")
+
 # 有线直连时车机的固定地址。这是硬件事实，不随产品变化，
 # 因此可以写在代码里（与「产品话题」不同）。
 WIRED_CAR_IP = "192.168.128.10"
@@ -147,16 +169,18 @@ def host_wifi() -> HostWifi:
 
     Windows 用 netsh；其它平台返回未连接（本工具主要跑 Windows）。
     失败不抛异常 —— 拿不到就当没有，由调用方决定怎么提示。
+
+    输出编码不固定（见 `_decode_native` 上的注释），所以读 bytes 自己解。
     """
     try:
-        out = subprocess.run(
+        result = subprocess.run(
             ["netsh", "wlan", "show", "interfaces"],
-            capture_output=True, text=True, timeout=10,
-            encoding="utf-8", errors="replace",
-        ).stdout
+            capture_output=True, timeout=10,
+        )
     except (OSError, subprocess.SubprocessError):
         return HostWifi()
 
+    out = _decode_native(result.stdout or b"")
     ssid, _state, connected = parse_netsh_output(out)
     return HostWifi(connected=connected, ssid=ssid)
 
@@ -166,13 +190,12 @@ def _ping(host: str, count: int = 2, timeout_ms: int = 1200) -> bool:
     try:
         result = subprocess.run(
             ["ping", "-n", str(count), "-w", str(timeout_ms), host],
-            capture_output=True, text=True, timeout=count * 2 + 5,
-            encoding="utf-8", errors="replace",
+            capture_output=True, timeout=count * 2 + 5,
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    out = (result.stdout or "") + (result.stderr or "")
-    # 英文 "TTL=" / 中文 "TTL=" 都存在；用 TTL 判成功最稳
+    # 只用 ASCII 子串「TTL=」判定，但输出编码仍不固定，统一走 _decode_native
+    out = _decode_native((result.stdout or b"") + (result.stderr or b""))
     return "TTL=" in out.upper()
 
 
