@@ -9,3 +9,7 @@ platform/product-plugins/** text eol=lf
 # Go 与 TypeScript 源码统一 LF，避免跨平台 diff 噪声。
 *.go text eol=lf
 *.ts text eol=lf
+
+# 补丁文件必须保持 LF。patch 的上下文行要逐字节匹配目标源文件，
+# 而车端 C++ 源码是 LF；一旦检出成 CRLF，`patch -p0` 会全部匹配失败。
+*.patch text eol=lf

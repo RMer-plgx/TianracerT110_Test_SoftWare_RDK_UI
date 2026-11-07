@@ -134,11 +134,13 @@ def run(ctx) -> CheckResult:
         result.detail = (
             "未启用底层采集（本项为可选增强）。\n"
             "开关：profile.yaml 的 `ros.tap.enabled`，当前为 false。\n\n"
-            "开启方式：设 `ros.tap.enabled: true` 并启用串口桥接"
-            "（probes/serial_tap.py）。\n\n"
-            "⚠ 串口桥接是控制链路单点故障。停车靠下位机固件的\n"
-            "通信超时保护（已实测确认 0.4~2.1 秒；属固件特性，换型号需重做）。\n"
-            "采集期间仍必须架空。\n\n"
+            "开启方式（首选）：车端内嵌录音。安装\n"
+            "docs/patches/tianracer_core-serial-tap.patch，并在 profile 的\n"
+            "env_overrides 里加 `TIANRACER_TAP_DIR: /tmp/tap`。\n"
+            "它只在底盘节点的收发路径上顺手写一份，通信路径不变，\n"
+            "录音坏了也不影响控制。\n\n"
+            "备选：串口桥接（probes/serial_tap.py）。不用改车端源码，\n"
+            "但桥接是控制链路单点故障，采集期间必须架空。\n\n"
             "未启用时其它检测项照常工作，判定不受影响。"
         )
         return result
