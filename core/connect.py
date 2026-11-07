@@ -50,7 +50,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .ssh import Remote, _shquote
+from .ssh import Remote, shquote
 
 # 有线直连时车机的固定地址。这是硬件事实，不随产品变化，
 # 因此可以写在代码里（与「产品话题」不同）。
@@ -322,7 +322,7 @@ def join_wireless(remote: Remote, ssid: str, password: str,
     # nmcli，因此在车上的 `ps aux` 里能看到明文，直到 nmcli 退出；
     # NetworkManager 也会把它明文存进 system-connections/<SSID>。
     # 这不是新增漏洞，但**不要在共用车上使用重要的 WiFi 密码**。
-    q_ssid = _shquote(ssid)
+    q_ssid = shquote(ssid)
 
     # 已有同名连接就直接 up 它，避免重复创建
     existing = remote.run(
@@ -335,7 +335,7 @@ def join_wireless(remote: Remote, ssid: str, password: str,
     else:
         if not password:
             return False, "该 WiFi 需要密码，但未提供"
-        cmd = f"nmcli device wifi connect {q_ssid} password {_shquote(password)}"
+        cmd = f"nmcli device wifi connect {q_ssid} password {shquote(password)}"
 
     result = remote.run(f"timeout {timeout} {cmd} 2>&1", timeout=timeout + 15)
     text = (result.stdout or "").strip()

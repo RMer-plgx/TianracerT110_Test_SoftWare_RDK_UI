@@ -35,6 +35,7 @@ import base64
 
 from core.protocol import FrameParser, ParseStats, pack_type_name
 from core.profile import TapConfig
+from core.ssh import shquote
 from core.verdict import CheckResult, Status
 
 # 每方向最多回传这么多字节用于统计。2 MB 约 18 万帧，
@@ -62,10 +63,13 @@ def _fetch(ctx, path: str):
     而 SKIP 是不影响交付判定的 —— 等于把一次失败藏起来。
 
     存在性判断合成一条命令，省一次 SSH 往返（本项在 runtime 阶段末尾）。
+    path 来自 profile 的 log_dir，只校验过「绝对路径」，未禁空格 ——
+    一律引号包裹，否则带空格的路径会被 shell 拆成多个参数。
     """
+    quoted = shquote(path)
     probe = ctx.remote.run(
-        f"if [ -e {path} ]; then "
-        f"if [ -s {path} ]; then echo nonempty; else echo empty; fi; "
+        f"if [ -e {quoted} ]; then "
+        f"if [ -s {quoted} ]; then echo nonempty; else echo empty; fi; "
         f"else echo missing; fi",
         timeout=20, record=False,
     ).stdout.strip()
@@ -78,7 +82,7 @@ def _fetch(ctx, path: str):
         # 不是「没启用采集」，不能静默成 SKIP。
         return b"", "error"
 
-    cmd = f"head -c {MAX_FETCH_BYTES} {path} 2>/dev/null | base64 -w0"
+    cmd = f"head -c {MAX_FETCH_BYTES} {quoted} 2>/dev/null | base64 -w0"
     raw = ctx.remote.run(cmd, timeout=60, record=False).stdout
     text = "".join((raw or "").split())
     if not text:

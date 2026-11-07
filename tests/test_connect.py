@@ -19,7 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import connect  # noqa: E402
-from core.ssh import _shquote  # noqa: E402
+from core.ssh import shquote  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -228,14 +228,14 @@ class TestNoCommandInjection:
 
 class TestShquoteHelper:
     def test_plain_string(self):
-        assert _shquote("abc") == "'abc'"
+        assert shquote("abc") == "'abc'"
 
     def test_single_quote(self):
-        assert _shquote("a'b") == "'a'\"'\"'b'"
+        assert shquote("a'b") == "'a'\"'\"'b'"
 
     def test_dollar_and_backtick_are_inert(self):
         # 单引号内的 $ 与反引号不展开
-        assert _shquote("$HOME`id`") == "'$HOME`id`'"
+        assert shquote("$HOME`id`") == "'$HOME`id`'"
 
 
 # ---------------------------------------------------------------------------

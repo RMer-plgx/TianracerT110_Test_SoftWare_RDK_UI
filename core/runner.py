@@ -23,7 +23,7 @@ from . import __version__ as _pkg_version
 from . import profile as product_profile
 from . import remote as ros_remote
 from .paths import lock_file_path, make_record_dir, resource_path
-from .ssh import Remote, SSHError
+from .ssh import Remote, SSHError, shquote
 from .verdict import CheckResult, Report, Status
 
 
@@ -345,7 +345,8 @@ class Runner:
             # 无条件清掉上次运行残留的电压文件（不只 auto）。
             # 否则本次可能读到旧值，导致低电压车被当成合格并放行运动测试
             # （Round 3 审查发现）。
-            ctx.remote.run(f"rm -f {ros_remote.VOLTAGE_TAP_PATH}", record=False)
+            ctx.remote.run(f"rm -f {shquote(ros_remote.VOLTAGE_TAP_PATH)}",
+                           record=False)
 
             # 同理清掉串口桥接的日志目录（第 20 项）。
             # 不清的话，只要现场手工跑过一次 tap_probe，之后每次检测
@@ -355,7 +356,9 @@ class Runner:
             # 无条件清（不看开关）：残留本身就是垃圾，清掉最安全。
             tap_cfg = getattr(getattr(profile, "ros", None), "tap", None)
             if tap_cfg is not None:
-                ctx.remote.run(f"rm -rf {tap_cfg.log_dir}", record=False)
+                # log_dir 来自 profile，只校验了「绝对路径」，没禁空格。
+                # 这是 rm -rf，必须加引号 —— 否则 /tmp/my tap 会变成删两个路径。
+                ctx.remote.run(f"rm -rf {shquote(tap_cfg.log_dir)}", record=False)
 
             self._run_static_phase(ctx)
             if self._should_abort():
@@ -399,7 +402,7 @@ class Runner:
             # 等于写了个永不执行的清理（Round 4 审查发现）。
             try:
                 self._remote.run(
-                    f"rm -f {ros_remote.VOLTAGE_TAP_PATH}", record=False
+                    f"rm -f {shquote(ros_remote.VOLTAGE_TAP_PATH)}", record=False
                 )
             except Exception:
                 pass

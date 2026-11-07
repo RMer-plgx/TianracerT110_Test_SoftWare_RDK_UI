@@ -100,7 +100,7 @@ class Remote:
         started = time.time()
         try:
             _stdin, stdout, stderr = self._client.exec_command(
-                f"bash -c {_shquote(command)}", timeout=timeout
+                f"bash -c {shquote(command)}", timeout=timeout
             )
             out = stdout.read().decode("utf-8", "replace")
             err = stderr.read().decode("utf-8", "replace")
@@ -143,8 +143,8 @@ class Remote:
     def sudo(self, command: str, sudo_password: str,
              timeout: int = 60) -> CommandResult:
         """带密码的 sudo 执行。"""
-        escaped = _shquote(command)
-        cmd = f"echo {_shquote(sudo_password)} | sudo -S bash -c {escaped}"
+        escaped = shquote(command)
+        cmd = f"echo {shquote(sudo_password)} | sudo -S bash -c {escaped}"
         return self.run(cmd, timeout=timeout)
 
     # -- 辅助 -------------------------------------------------------------
@@ -157,7 +157,7 @@ class Remote:
         return self.run(f"test -e {path}", record=False).exit_code == 0
 
 
-def _shquote(text: str) -> str:
+def shquote(text: str) -> str:
     """POSIX 安全的单引号转义。"""
     return "'" + text.replace("'", "'\"'\"'") + "'"
 

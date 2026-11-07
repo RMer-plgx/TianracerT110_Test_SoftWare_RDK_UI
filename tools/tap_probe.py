@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.protocol import FrameParser, ParseStats          # noqa: E402
 from core.profile import load as load_profile              # noqa: E402
 from core.remote import source_only                        # noqa: E402
-from core.ssh import Remote, SSHError                      # noqa: E402
+from core.ssh import Remote, SSHError, shquote             # noqa: E402
 
 TAP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "..", "probes", "serial_tap.py")
@@ -166,7 +166,8 @@ def main() -> int:
         # --- 清场 ---
         stop_launch(remote, profile)
         kill_tap(remote)
-        remote.run(f"rm -rf {tap_dir} {TAP_OUT}; mkdir -p {tap_dir}", record=False)
+        remote.run(f"rm -rf {shquote(tap_dir)} {shquote(TAP_OUT)}; "
+                   f"mkdir -p {shquote(tap_dir)}", record=False)
 
         # --- 上传并启动 tap ---
         remote.put_script(tap_source, REMOTE_TAP)
@@ -263,7 +264,8 @@ def main() -> int:
     try:
         def fetch(name: str) -> bytes:
             raw = remote.run(
-                f"head -c 8000000 {tap_dir}/{name} 2>/dev/null | base64 -w0",
+                f"head -c 8000000 {shquote(tap_dir + '/' + name)} "
+                f"2>/dev/null | base64 -w0",
                 timeout=120, record=False).stdout
             text = "".join((raw or "").split())
             return base64.b64decode(text) if text else b""
@@ -275,7 +277,7 @@ def main() -> int:
         # 不留给下一次：第 20 项读的就是这个目录，残留数据会被当成
         # 下一次检测的结果（Round 10 审查）。必须放在 close() 之前。
         try:
-            remote.run(f"rm -rf {tap_dir}", record=False)
+            remote.run(f"rm -rf {shquote(tap_dir)}", record=False)
         except Exception:
             pass
         remote.close()

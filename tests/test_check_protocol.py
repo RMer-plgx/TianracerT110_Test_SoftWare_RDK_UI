@@ -264,6 +264,30 @@ def test_log_dir_comes_from_profile_not_hardcoded():
     assert not any("/tmp/tap" in c for c in probes), probes
 
 
+def test_log_path_is_shell_quoted():
+    """路径必须被引号包裹。
+
+    `log_dir` 来自 profile，`core/profile.py` 只校验了「必须是绝对路径」，
+    没禁空格。带空格的路径不引号会被 shell 拆成多个参数：
+    `head -c N /tmp/my tap/from_mcu.raw` → 读两个文件。
+    """
+    ctx = _Ctx({"from_mcu.raw": _odom()}, log_dir="/tmp/my tap")
+    check.run(ctx)
+
+    probes = [c for c in ctx.remote.commands if "-e " in c and "nonempty" in c]
+    assert probes, "没发出取数探测"
+    for cmd in probes:
+        # 带空格的路径必须以单引号形式出现，否则会被 shell 拆开。
+        # 两个方向（to_mcu / from_mcu）都取，不能只断言其中一个。
+        assert "'/tmp/my tap/" in cmd, cmd
+        assert " -e /tmp/my tap/" not in cmd, f"未加引号: {cmd}"
+
+    fetches = [c for c in ctx.remote.commands if "head -c" in c]
+    assert fetches, "没发出取数命令"
+    for cmd in fetches:
+        assert "'/tmp/my tap/" in cmd, cmd
+
+
 # ---------------------------------------------------------------------------
 # 传输层故障不能被当成「未启用采集」
 # ---------------------------------------------------------------------------
