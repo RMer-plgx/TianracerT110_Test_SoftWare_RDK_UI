@@ -1,0 +1,2 @@
+# Plugin integrity manifests hash the fixture files byte for byte.
+platform/product-plugins/** text eol=lf
