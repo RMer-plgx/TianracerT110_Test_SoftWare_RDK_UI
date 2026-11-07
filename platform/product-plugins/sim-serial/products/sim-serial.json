@@ -1,0 +1,26 @@
+{
+  "id": "sim-serial",
+  "title": "串口协议合成夹具",
+  "deviceKind": "serial_fixture",
+  "hardwareRevisions": [
+    "fixture"
+  ],
+  "inputSchema": "input.schema.json",
+  "baselines": [
+    {
+      "id": "simulation",
+      "revision": "fixture",
+      "path": "baselines/simulation.json"
+    }
+  ],
+  "checks": [
+    {
+      "id": "frame",
+      "title": "替身只读项",
+      "required": true,
+      "criterionKey": "frameType"
+    }
+  ],
+  "requiredSafetyGates": [],
+  "reviewOnWarnings": true
+}

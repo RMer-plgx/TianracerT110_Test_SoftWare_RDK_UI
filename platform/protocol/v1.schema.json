@@ -1,0 +1,985 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tianbot.github.io/tb-verify/protocol/v1.schema.json",
+  "$defs": {
+    "PackagePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$",
+      "not": {"pattern": "[.](/|$)"}
+    },
+    "Capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "major": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      },
+      "required": ["id", "major"]
+    },
+    "Json": {
+      "oneOf": [
+        {"type": "string"},
+        {"type": "number"},
+        {"type": "boolean"},
+        {"type": "null"},
+        {"type": "array", "items": {"$ref": "#/$defs/Json"}},
+        {"type": "object", "additionalProperties": {"$ref": "#/$defs/Json"}}
+      ]
+    },
+    "Effect": {"enum": ["read", "session_change", "persistent_write", "motion"]},
+    "Verdict": {"enum": ["PASS", "WARN", "FAIL", "SKIP", "PENDING"]},
+    "RunState": {
+      "enum": [
+        "CREATED",
+        "RUNNING",
+        "WAITING_INPUT",
+        "CANCELLING",
+        "FINALIZING",
+        "COMPLETED",
+        "CANCELLED",
+        "FAILED",
+        "RECOVERY_REQUIRED"
+      ]
+    },
+    "StopState": {
+      "enum": [
+        "NOT_REQUIRED",
+        "REQUESTED",
+        "COMMAND_ACKNOWLEDGED",
+        "SAFE_STATE_CONFIRMED",
+        "UNCONFIRMED"
+      ]
+    },
+    "StepState": {
+      "enum": [
+        "QUEUED",
+        "RUNNING",
+        "WAITING_INPUT",
+        "SUCCEEDED",
+        "ERROR",
+        "TIMED_OUT",
+        "CANCELLED",
+        "BLOCKED"
+      ]
+    },
+    "Eligibility": {"enum": ["NOT_ELIGIBLE", "REVIEW_REQUIRED", "ELIGIBLE"]},
+    "Condition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "op": {"const": "eq"},
+            "field": {"type": "string", "minLength": 1},
+            "value": {"$ref": "#/$defs/Json"}
+          },
+          "required": ["op", "field", "value"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "op": {"const": "in"},
+            "field": {"type": "string", "minLength": 1},
+            "values": {"type": "array", "items": {"$ref": "#/$defs/Json"}, "minItems": 1}
+          },
+          "required": ["op", "field", "values"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "op": {"const": "all"},
+            "conditions": {"type": "array", "items": {"$ref": "#/$defs/Condition"}, "minItems": 1}
+          },
+          "required": ["op", "conditions"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "op": {"const": "any"},
+            "conditions": {"type": "array", "items": {"$ref": "#/$defs/Condition"}, "minItems": 1}
+          },
+          "required": ["op", "conditions"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"op": {"const": "not"}, "condition": {"$ref": "#/$defs/Condition"}},
+          "required": ["op", "condition"]
+        }
+      ]
+    },
+    "Helper": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "platform": {"type": "string", "pattern": "^(windows|darwin|linux)/(amd64|arm64)$"},
+        "entry": {"$ref": "#/$defs/PackagePath"},
+        "files": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/PackagePath"},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": ["id", "platform", "entry", "files"]
+    },
+    "Manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*){2,}$"},
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "apiVersion": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
+        "uiSchemaVersion": {"const": 1},
+        "entry": {"$ref": "#/$defs/PackagePath"},
+        "products": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/PackagePath"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "requires": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "capabilities": {"type": "array", "items": {"$ref": "#/$defs/Capability"}, "uniqueItems": true},
+            "platforms": {
+              "type": "array",
+              "items": {"type": "string", "pattern": "^(windows|darwin|linux)/(amd64|arm64)$"},
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": ["capabilities", "platforms"]
+        },
+        "permissions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "deviceCapabilities": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+            "networkHosts": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+            "helperIds": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+          },
+          "required": ["deviceCapabilities", "networkHosts", "helperIds"]
+        },
+        "helpers": {"type": "array", "items": {"$ref": "#/$defs/Helper"}, "uniqueItems": true},
+        "integrity": {"const": "integrity.json"}
+      },
+      "required": [
+        "schemaVersion",
+        "id",
+        "name",
+        "version",
+        "apiVersion",
+        "uiSchemaVersion",
+        "entry",
+        "products",
+        "requires",
+        "permissions",
+        "helpers",
+        "integrity"
+      ]
+    },
+    "Integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {"$ref": "#/$defs/PackagePath"},
+              "size": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            },
+            "required": ["path", "size", "sha256"]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": ["files"]
+    },
+    "ProductDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "deviceKind": {"type": "string", "minLength": 1},
+        "hardwareRevisions": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "inputSchema": {"$ref": "#/$defs/PackagePath"},
+        "baselines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "revision": {"type": "string", "minLength": 1},
+              "path": {"$ref": "#/$defs/PackagePath"}
+            },
+            "required": ["id", "revision", "path"]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "title": {"type": "string", "minLength": 1},
+              "required": {"type": "boolean"},
+              "criterionKey": {"type": "string", "minLength": 1},
+              "applicableWhen": {"$ref": "#/$defs/Condition"}
+            },
+            "required": ["id", "title", "required", "criterionKey"]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "requiredSafetyGates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "maxAgeMs": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+            },
+            "required": ["id"]
+          },
+          "uniqueItems": true
+        },
+        "reviewOnWarnings": {"const": true}
+      },
+      "required": [
+        "id",
+        "title",
+        "deviceKind",
+        "hardwareRevisions",
+        "inputSchema",
+        "baselines",
+        "checks",
+        "requiredSafetyGates",
+        "reviewOnWarnings"
+      ]
+    },
+    "Baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "productId": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "criteria": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Json"}}
+      },
+      "required": ["id", "productId", "revision", "criteria"]
+    },
+    "FormField": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "text"},
+            "id": {"type": "string", "minLength": 1},
+            "label": {"type": "string", "minLength": 1},
+            "required": {"type": "boolean"},
+            "visibleWhen": {"$ref": "#/$defs/Condition"}
+          },
+          "required": ["kind", "id", "label", "required"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "number"},
+            "id": {"type": "string", "minLength": 1},
+            "label": {"type": "string", "minLength": 1},
+            "required": {"type": "boolean"},
+            "visibleWhen": {"$ref": "#/$defs/Condition"}
+          },
+          "required": ["kind", "id", "label", "required"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "enum"},
+            "id": {"type": "string", "minLength": 1},
+            "label": {"type": "string", "minLength": 1},
+            "required": {"type": "boolean"},
+            "choices": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "visibleWhen": {"$ref": "#/$defs/Condition"}
+          },
+          "required": ["kind", "id", "label", "required", "choices"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "boolean"},
+            "id": {"type": "string", "minLength": 1},
+            "label": {"type": "string", "minLength": 1},
+            "required": {"type": "boolean"},
+            "visibleWhen": {"$ref": "#/$defs/Condition"}
+          },
+          "required": ["kind", "id", "label", "required"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "secret"},
+            "id": {"type": "string", "minLength": 1},
+            "label": {"type": "string", "minLength": 1},
+            "required": {"type": "boolean"},
+            "visibleWhen": {"$ref": "#/$defs/Condition"}
+          },
+          "required": ["kind", "id", "label", "required"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "directory"},
+            "id": {"type": "string", "minLength": 1},
+            "label": {"type": "string", "minLength": 1},
+            "required": {"type": "boolean"},
+            "visibleWhen": {"$ref": "#/$defs/Condition"}
+          },
+          "required": ["kind", "id", "label", "required"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "device"},
+            "id": {"type": "string", "minLength": 1},
+            "label": {"type": "string", "minLength": 1},
+            "required": {"type": "boolean"},
+            "visibleWhen": {"$ref": "#/$defs/Condition"}
+          },
+          "required": ["kind", "id", "label", "required"]
+        }
+      ]
+    },
+    "ViewSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "blocks": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {"const": "text"},
+                  "id": {"type": "string", "minLength": 1},
+                  "props": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {"text": {"type": "string", "minLength": 1}},
+                    "required": ["text"]
+                  },
+                  "optional": {"type": "boolean"}
+                },
+                "required": ["kind", "id", "props"]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {"const": "form"},
+                  "id": {"type": "string", "minLength": 1},
+                  "props": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "fields": {"type": "array", "items": {"$ref": "#/$defs/FormField"}, "minItems": 1}
+                    },
+                    "required": ["fields"]
+                  },
+                  "optional": {"type": "boolean"}
+                },
+                "required": ["kind", "id", "props"]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {"const": "checklist"},
+                  "id": {"type": "string", "minLength": 1},
+                  "props": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {"type": "string", "minLength": 1},
+                            "label": {"type": "string", "minLength": 1}
+                          },
+                          "required": ["id", "label"]
+                        }
+                      }
+                    },
+                    "required": ["items"]
+                  },
+                  "optional": {"type": "boolean"}
+                },
+                "required": ["kind", "id", "props"]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {"const": "measurements"},
+                  "id": {"type": "string", "minLength": 1},
+                  "props": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "label": {"type": "string", "minLength": 1},
+                            "value": {"$ref": "#/$defs/Json"},
+                            "unit": {"type": "string"}
+                          },
+                          "required": ["label", "value", "unit"]
+                        }
+                      }
+                    },
+                    "required": ["items"]
+                  },
+                  "optional": {"type": "boolean"}
+                },
+                "required": ["kind", "id", "props"]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {"const": "table"},
+                  "id": {"type": "string", "minLength": 1},
+                  "props": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "columns": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "minItems": 1
+                      },
+                      "rows": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"$ref": "#/$defs/Json"}}
+                      }
+                    },
+                    "required": ["columns", "rows"]
+                  },
+                  "optional": {"type": "boolean"}
+                },
+                "required": ["kind", "id", "props"]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {"const": "image"},
+                  "id": {"type": "string", "minLength": 1},
+                  "props": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "source": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {"const": "asset"},
+                              "path": {"$ref": "#/$defs/PackagePath"}
+                            },
+                            "required": ["kind", "path"]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {"const": "artifact"},
+                              "id": {"type": "string", "minLength": 1}
+                            },
+                            "required": ["kind", "id"]
+                          }
+                        ]
+                      },
+                      "alt": {"type": "string", "minLength": 1}
+                    },
+                    "required": ["source", "alt"]
+                  },
+                  "optional": {"type": "boolean"}
+                },
+                "required": ["kind", "id", "props"]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {"const": "timeseries"},
+                  "id": {"type": "string", "minLength": 1},
+                  "props": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "unit": {"type": "string"},
+                      "points": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "at": {"type": "string", "format": "date-time"},
+                            "value": {"type": "number"}
+                          },
+                          "required": ["at", "value"]
+                        }
+                      }
+                    },
+                    "required": ["unit", "points"]
+                  },
+                  "optional": {"type": "boolean"}
+                },
+                "required": ["kind", "id", "props"]
+              }
+            ]
+          }
+        }
+      },
+      "required": ["schemaVersion", "blocks"]
+    },
+    "PromptSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "purpose": {"enum": ["observation", "safety_confirmation"]},
+        "title": {"type": "string", "minLength": 1},
+        "body": {"$ref": "#/$defs/ViewSpec"},
+        "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      },
+      "required": ["purpose", "title", "body", "timeoutMs"]
+    },
+    "PluginDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "products": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "title": {"type": "string", "minLength": 1},
+              "inputSchema": {"$ref": "#/$defs/Json"},
+              "form": {"$ref": "#/$defs/ViewSpec"},
+              "requiredChecks": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "uniqueItems": true
+              }
+            },
+            "required": ["id", "title", "inputSchema", "form", "requiredChecks"]
+          },
+          "minItems": 1
+        }
+      },
+      "required": ["id", "products"]
+    },
+    "PlanInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "productId": {"type": "string", "minLength": 1},
+        "inputs": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Json"}},
+        "baseline": {"$ref": "#/$defs/Baseline"},
+        "capabilityVersions": {
+          "type": "object",
+          "additionalProperties": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"}
+        }
+      },
+      "required": ["productId", "inputs", "baseline", "capabilityVersions"]
+    },
+    "Step": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "checkIds": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "title": {"type": "string", "minLength": 1},
+        "dependsOn": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "effect": {"$ref": "#/$defs/Effect"},
+        "resources": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "maxAttempts": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "requiredCapabilities": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "requiredGates": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "params": {"$ref": "#/$defs/Json"}
+      },
+      "required": [
+        "id",
+        "checkIds",
+        "title",
+        "dependsOn",
+        "effect",
+        "resources",
+        "timeoutMs",
+        "maxAttempts",
+        "requiredCapabilities",
+        "requiredGates",
+        "params"
+      ],
+      "if": {"properties": {"effect": {"not": {"const": "read"}}}},
+      "then": {"properties": {"maxAttempts": {"const": 1}}}
+    },
+    "Plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "steps": {"type": "array", "items": {"$ref": "#/$defs/Step"}},
+        "requiredChecks": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "deliveryGates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "checkIds": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "uniqueItems": true
+              }
+            },
+            "required": ["id", "checkIds"]
+          }
+        }
+      },
+      "required": ["schemaVersion", "steps", "requiredChecks", "deliveryGates"]
+    },
+    "Measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {"type": "string", "minLength": 1},
+        "value": {"$ref": "#/$defs/Json"},
+        "unit": {"type": "string"},
+        "quality": {"enum": ["valid", "missing", "invalid"]},
+        "observedAt": {"type": "string", "format": "date-time"},
+        "artifactIds": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+      },
+      "required": ["key", "value", "unit", "quality", "observedAt", "artifactIds"],
+      "if": {"properties": {"quality": {"const": "valid"}}},
+      "then": {"properties": {"value": {"not": {"type": "null"}}}}
+    },
+    "CheckResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "checkId": {"type": "string", "minLength": 1},
+        "verdict": {"$ref": "#/$defs/Verdict"},
+        "reasonCode": {"type": "string", "minLength": 1},
+        "message": {"type": "string"},
+        "measurements": {"type": "array", "items": {"$ref": "#/$defs/Measurement"}},
+        "criteria": {"$ref": "#/$defs/Json"},
+        "artifactIds": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+      },
+      "required": ["checkId", "verdict", "reasonCode", "message", "measurements", "criteria", "artifactIds"]
+    },
+    "StepResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "checks": {"type": "array", "items": {"$ref": "#/$defs/CheckResult"}}
+      },
+      "required": ["schemaVersion", "checks"]
+    },
+    "StepInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {"type": "string", "minLength": 1},
+        "step": {"$ref": "#/$defs/Step"},
+        "attempt": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "deviceHandle": {"type": "string", "minLength": 1},
+        "previousResults": {"type": "array", "items": {"$ref": "#/$defs/CheckResult"}}
+      },
+      "required": ["runId", "step", "attempt", "deviceHandle", "previousResults"]
+    },
+    "HostProgressInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "message": {"type": "string", "minLength": 1},
+        "completed": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "total": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      },
+      "required": ["message"]
+    },
+    "HostProgressResult": {"const": null},
+    "HostLogInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {"enum": ["info", "warn", "error"]},
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1}
+      },
+      "required": ["level", "code", "message"]
+    },
+    "HostLogResult": {"const": null},
+    "HostCancelledInput": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+    "HostCancelledResult": {"type": "boolean"},
+    "HostInvokeInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "handle": {"type": "string", "minLength": 1},
+        "capability": {"type": "string", "minLength": 1},
+        "operation": {"type": "string", "minLength": 1},
+        "params": {"$ref": "#/$defs/Json"},
+        "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      },
+      "required": ["handle", "capability", "operation", "params", "timeoutMs"]
+    },
+    "HostInvokeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "value": {"$ref": "#/$defs/Json"},
+        "artifactIds": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+      },
+      "required": ["value", "artifactIds"]
+    },
+    "HostPromptInput": {"$ref": "#/$defs/PromptSpec"},
+    "HostPromptResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "promptId": {"type": "string", "minLength": 1},
+        "values": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Json"}}
+      },
+      "required": ["promptId", "values"]
+    },
+    "HostSaveJsonInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "data": {"$ref": "#/$defs/Json"},
+        "derivedFrom": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+      },
+      "required": ["name", "data", "derivedFrom"]
+    },
+    "HostSaveJsonResult": {"type": "string", "minLength": 1},
+    "AdapterDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolMajor": {"const": 1},
+        "protocolMinor": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "platform": {"type": "string", "pattern": "^(windows|darwin|linux)/(amd64|arm64)$"},
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "major": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+              "operations": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "effect": {"$ref": "#/$defs/Effect"},
+                    "paramsSchema": {"$ref": "#/$defs/Json"}
+                  },
+                  "required": ["effect", "paramsSchema"]
+                }
+              }
+            },
+            "required": ["id", "major", "operations"]
+          }
+        },
+        "resourceScopes": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "stopGuarantees": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+      },
+      "required": [
+        "protocolMajor",
+        "protocolMinor",
+        "platform",
+        "capabilities",
+        "resourceScopes",
+        "stopGuarantees"
+      ]
+    },
+    "Handshake": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolMajor": {"const": 1},
+        "protocolMinor": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "maxFrameBytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "capabilities": {"type": "array", "items": {"$ref": "#/$defs/Capability"}}
+      },
+      "required": ["protocolMajor", "protocolMinor", "maxFrameBytes", "capabilities"]
+    },
+    "ProbeCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": {"enum": ["describe", "plan", "execute"]},
+        "entry": {"enum": ["js", "ts"]},
+        "source": {"type": "string", "maxLength": 65536},
+        "input": {"$ref": "#/$defs/Json"}
+      },
+      "required": ["method", "entry", "source", "input"]
+    },
+    "ProbeCancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"callId": {"type": "string", "minLength": 1}},
+      "required": ["callId"]
+    },
+    "ProbeControlAck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"callId": {"type": "string", "minLength": 1}, "accepted": {"const": true}},
+      "required": ["callId", "accepted"]
+    },
+    "IPCError": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1},
+        "retryable": {"type": "boolean"},
+        "details": {"$ref": "#/$defs/Json"}
+      },
+      "required": ["code", "message", "retryable", "details"]
+    },
+    "Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"const": "request"},
+        "protocolMajor": {"const": 1},
+        "protocolMinor": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "id": {"type": "string", "minLength": 1},
+        "method": {"type": "string", "minLength": 1},
+        "params": {"$ref": "#/$defs/Json"},
+        "idempotencyKey": {"type": "string", "minLength": 1}
+      },
+      "required": ["kind", "protocolMajor", "protocolMinor", "id", "method", "params"]
+    },
+    "Response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "response"},
+            "protocolMajor": {"const": 1},
+            "protocolMinor": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+            "id": {"type": "string", "minLength": 1},
+            "result": {"$ref": "#/$defs/Json"}
+          },
+          "required": ["kind", "protocolMajor", "protocolMinor", "id", "result"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "response"},
+            "protocolMajor": {"const": 1},
+            "protocolMinor": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+            "id": {"type": "string", "minLength": 1},
+            "error": {"$ref": "#/$defs/IPCError"}
+          },
+          "required": ["kind", "protocolMajor", "protocolMinor", "id", "error"]
+        }
+      ]
+    },
+    "Event": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"const": "event"},
+        "protocolMajor": {"const": 1},
+        "runId": {"type": "string", "minLength": 1},
+        "seq": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "type": {"type": "string", "minLength": 1},
+        "occurredAt": {"type": "string", "format": "date-time"},
+        "payload": {"$ref": "#/$defs/Json"},
+        "stepId": {"type": "string", "minLength": 1},
+        "attempt": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      },
+      "required": ["kind", "protocolMajor", "runId", "seq", "type", "occurredAt", "payload"],
+      "allOf": [
+        {
+          "if": {"properties": {"type": {"const": "step.state_changed"}}},
+          "then": {"properties": {"payload": {"$ref": "#/$defs/StepStatePayload"}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "probe.progress"}}},
+          "then": {"properties": {"payload": {"$ref": "#/$defs/HostProgressInput"}}}
+        }
+      ]
+    },
+    "StepStatePayload": {
+      "type": "object",
+      "properties": {"state": {"$ref": "#/$defs/StepState"}},
+      "additionalProperties": false,
+      "required": ["state"]
+    }
+  }
+}

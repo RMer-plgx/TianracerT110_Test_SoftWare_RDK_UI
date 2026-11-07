@@ -1,0 +1,10 @@
+{
+  "id": "simulation",
+  "productId": "sim-serial",
+  "revision": "fixture",
+  "criteria": {
+    "frameType": {
+      "expected": "synthetic"
+    }
+  }
+}

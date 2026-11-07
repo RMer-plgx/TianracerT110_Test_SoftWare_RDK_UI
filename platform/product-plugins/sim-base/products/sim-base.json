@@ -1,0 +1,26 @@
+{
+  "id": "sim-base",
+  "title": "底盘连接替身",
+  "deviceKind": "drive_base",
+  "hardwareRevisions": [
+    "fixture"
+  ],
+  "inputSchema": "input.schema.json",
+  "baselines": [
+    {
+      "id": "simulation",
+      "revision": "fixture",
+      "path": "baselines/simulation.json"
+    }
+  ],
+  "checks": [
+    {
+      "id": "identity",
+      "title": "替身只读项",
+      "required": true,
+      "criterionKey": "model"
+    }
+  ],
+  "requiredSafetyGates": [],
+  "reviewOnWarnings": true
+}

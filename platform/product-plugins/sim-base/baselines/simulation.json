@@ -1,0 +1,10 @@
+{
+  "id": "simulation",
+  "productId": "sim-base",
+  "revision": "fixture",
+  "criteria": {
+    "model": {
+      "expected": "synthetic"
+    }
+  }
+}

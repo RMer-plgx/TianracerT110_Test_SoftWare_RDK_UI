@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "org.tianbot.demo-base",
+  "name": "底盘连接替身",
+  "version": "0.1.0",
+  "apiVersion": "1.0",
+  "uiSchemaVersion": 1,
+  "entry": "main.ts",
+  "products": [
+    "products/sim-base.json"
+  ],
+  "requires": {
+    "capabilities": [
+      {
+        "id": "sim.base",
+        "major": 1
+      }
+    ],
+    "platforms": [
+      "darwin/arm64",
+      "windows/amd64",
+      "linux/amd64"
+    ]
+  },
+  "permissions": {
+    "deviceCapabilities": [
+      "sim.base.read"
+    ],
+    "networkHosts": [],
+    "helperIds": []
+  },
+  "helpers": [],
+  "integrity": "integrity.json"
+}
