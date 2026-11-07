@@ -1,4 +1,7 @@
--r requirements-cli.txt
+paramiko>=2.8
+Jinja2>=3.0
+PyYAML>=5.4
+psutil>=5.9
 PyQt5>=5.15
 
 # 说明：车辆端不需要安装任何依赖，probes/ 下的脚本只用 Python 标准库 + rospy。

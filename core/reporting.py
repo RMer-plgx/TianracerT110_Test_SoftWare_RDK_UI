@@ -38,8 +38,7 @@ def _env(autoescape: bool = False) -> Environment:
 def _safe_filename_part(text: str) -> str:
     """把任意字符串压成可安全放进文件名/JS 字符串的形式。
 
-    只保留字母、数字、点、横线、下划线。host 目前经 UI 的 `_valid_host`
-    校验过，但 CLI 版的 `--host` 参数不经过那里，所以统一在这里消毒。
+    只保留字母、数字、点、横线和下划线。
     """
     cleaned = "".join(
         c for c in (text or "") if c.isalnum() or c in ".-_"

@@ -41,13 +41,16 @@ def release_repo(tmp_path):
     dist = root / "dist"
     dist.mkdir()
     _pe(dist / "tb-verify-ui.exe", 2)
-    _pe(dist / "tb-verify-cli.exe", 3)
     return root, dist, _git(root, "rev-parse", "HEAD")
 
 
 def test_generates_checksums_and_declared_source(release_repo):
     root, dist, sha = release_repo
+    stale = dist / "tb-verify-cli.exe"
+    _pe(stale, 3)
     result = prepare(root, dist, sha)
+    assert [item["name"] for item in result["assets"]] == ["tb-verify-ui.exe"]
+    assert stale.is_file()
     assert result["declared_source_sha"] == sha
     assert result["version"] == "2.3.0"
     assert "not independently verified" in result["source_provenance"]

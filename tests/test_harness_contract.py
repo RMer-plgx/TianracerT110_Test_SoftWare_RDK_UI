@@ -1,10 +1,9 @@
-"""已配置产品的检测模块必须能被两个入口打包和界面自检发现。"""
+"""已配置产品的检测模块必须能被打包脚本和界面自检发现。"""
 
 import importlib.util
 
 import app
 import build
-import build_cli
 from core import profile
 
 
@@ -19,18 +18,17 @@ def test_each_product_is_complete_and_loadable():
         assert profile.load(directory.name).checks, directory
 
 
-def test_configured_checks_are_importable_and_in_both_builds():
+def test_configured_checks_are_importable_and_in_all_entrypoints():
     for product_id in profile.list_profiles():
         modules = {spec.module for spec in profile.load(product_id).checks}
         for module in modules:
             assert importlib.util.find_spec(f"checks.{module}"), (product_id, module)
-        for entry in (app, build, build_cli):
-            assert modules <= set(entry.CHECK_MODULES), (product_id, entry.__name__,
-                                                         modules - set(entry.CHECK_MODULES))
-        for entry in (build, build_cli):
-            assert {f"checks.{name}" for name in modules} <= set(entry.HIDDEN_IMPORTS), entry.__name__
+        for entry in (app, build):
+            assert modules <= set(entry.CHECK_MODULES), (
+                product_id, entry.__name__, modules - set(entry.CHECK_MODULES))
+        assert {f"checks.{name}" for name in modules} <= set(build.HIDDEN_IMPORTS), \
+            build.__name__
 
 
-def test_both_builds_include_shared_resources():
-    for entry in (build, build_cli):
-        assert {"products", "probes", "report"} <= set(entry.DATA_DIRS), entry.__name__
+def test_build_includes_shared_resources():
+    assert {"products", "probes", "report"} <= set(build.DATA_DIRS), build.__name__
