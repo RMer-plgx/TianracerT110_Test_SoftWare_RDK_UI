@@ -47,8 +47,10 @@ Proposed。协议旁路已实现（**代理桥接，不是只嗅探**，见下�
 「被动采集不写串口」的正确做法只有一条：**在底盘节点自己的收发路径上
 顺手录一份**。
 
-这需要改车端源码，所以单独做成补丁存档：
-[`docs/patches/tianbot_core-serial-tap.patch`](../patches/tianbot_core-serial-tap.patch)。
+这需要改车端源码，所以单独做成补丁存档。两个补丁有先后依赖，按编号应用：
+[`tianbot_core-01-raw-mode.patch`](../patches/tianbot_core-01-raw-mode.patch)（串口 raw 模式）
+与 [`tianbot_core-02-serial-tap.patch`](../patches/tianbot_core-02-serial-tap.patch)（录音本体），
+说明见 [`docs/patches/README.md`](../patches/README.md)。
 
 **关键：底盘串口 I/O 在 `tianbot_core` 包，不在 `tianracer_core`。**
 `tianracer_core/launch/tianracer_core.launch` 里写的是
@@ -94,6 +96,12 @@ Proposed。协议旁路已实现（**代理桥接，不是只嗅探**，见下�
   `|=` 而非 `&= ~`，等于把除这 4 位外的所有标志置 1，而 `icanon/echo/isig`
   仍然打开 —— 行缓冲、回显、`0x03` 被当信号字符吞掉都会破坏二进制帧。
   参照上游 `codex/fix-serial-raw-mode` 的 `59bd6c8`。
+
+**这个补丁的性质要分清**：它是**产品 bug 修复**，不是检测工具的采集前提。
+未打补丁的车一直在丢帧（`0x03` 被当信号字符吞掉、行缓冲导致帧错位），
+而 odom 均值仍能到 100 Hz，所以从未被发现。
+因此它应该进 `tianbot_core` 上游，而不是只躺在本仓库的 `docs/patches/`。
+上报上游需单独授权，本轮未做。
   `stty` 验证：`-opost -isig -icanon -echo -extproc`、`-crtscts -ixon -ixoff`。
 - `8c502d6`：录音本体。25 秒采集 3571 帧，**bcc 错 0、长度错 0、校验失败帧 0**，
   `BCC error 0`。不设开关时不产生任何文件。

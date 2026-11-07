@@ -1,6 +1,9 @@
 # 检测能力平台抽象层
 
-状态：**接口已建立，唯一实现是 ROS1；现有检测项尚未迁移。**
+状态：**接口已建立，唯一实现是 ROS1；现有检测项尚未迁移，`core/platform.py`
+在生产代码里零引用**（`grep -r "core.platform\|from .platform" core checks app.py`
+无命中）。提交信息与模块 docstring 已写明「本轮只建边界」，这里再显式标注一次，
+避免读者以为迁移已完成。
 
 本文说明 `core/platform.py` 的设计与迁移路径，服务于
 [ADR-0006](../adr/0006-mygo-plugin-platform.md) 的插件化方向。

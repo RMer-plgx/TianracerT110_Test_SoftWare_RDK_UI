@@ -444,3 +444,38 @@ def test_ui_uses_one_shot_check_not_polling():
     assert "verify_unplugged" in src
     assert "wait_for_unplug" not in src
 
+
+def test_runtime_modules_have_no_unescaped_subprocess():
+    """运行时模块（core/checks/ui）里每个子进程调用都要带 creationflags。
+
+    上一条只扫 `core/connect.py`。但打包后的 exe 会跑 core/、checks/、ui/
+    全部模块，任一处新增一个 `subprocess.run` 忘带 flags，用户就会看到黑窗。
+    这条按 AST 扫整个运行时包，把口子堵上。
+
+    `tools/` 与 `build.py` 不在扫描范围：它们不进打包产物，
+    且本来就跑在开发者自己的终端里（有控制台，无观感问题）。
+    """
+    root = Path(__file__).resolve().parent.parent
+    targets = []
+    for pkg in ("core", "checks", "ui"):
+        targets.extend((root / pkg).glob("*.py"))
+    assert targets, "运行时包目录不存在，测试本身失效"
+
+    offenders = []
+    for path in targets:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "subprocess"
+                    and node.func.attr in {"run", "Popen", "call",
+                                           "check_output", "check_call"}):
+                continue
+            if not any(kw.arg == "creationflags" for kw in node.keywords):
+                rel = str(path.relative_to(root)).replace("\\", "/")
+                offenders.append(f"{rel}:{node.lineno}")
+    assert not offenders, (
+        "以下子进程调用没带 creationflags，打包后会闪黑窗：" + "、".join(offenders)
+    )
+
