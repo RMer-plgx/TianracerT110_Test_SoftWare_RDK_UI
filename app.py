@@ -5,8 +5,7 @@
     python app.py                正常启动界面
     python app.py --self-check   不建窗口，检查资源与依赖是否齐全（打包验证用）
 
-所有检测逻辑复用本工程内的 core/ 与 checks/（独立一份，
-与命令行版互不影响）。
+检测逻辑由 core/ 与 checks/ 提供。
 """
 
 from __future__ import annotations

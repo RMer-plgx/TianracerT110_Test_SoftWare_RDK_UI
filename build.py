@@ -4,8 +4,7 @@
 产物：dist/tb-verify-ui.exe
 
 注意：
-- UI 版比命令行版多一个 PyQt5 依赖，体积会明显更大（约 58 MB）
-- config/、report/、probes/、assets/ 会作为资源打进 exe
+- products/、report/、probes/、assets/ 会作为资源打进 exe
 - test records/ 创建在 exe 所在目录
 """
 

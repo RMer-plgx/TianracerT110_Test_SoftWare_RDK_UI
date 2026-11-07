@@ -264,8 +264,8 @@ class Runner:
             raise
         except BaseException as exc:
             # 兵库捕获：任何未预期异常都不能让程序“默默消失”
-            # 之前只捕 AlreadyRunning，其他异常会让 finally 执行完后继续向上抛，
-            # 而 run.py 没有对应 try，结果就是目录建了但里面空无一物。
+            # 之前只捕 AlreadyRunning，其他异常让 finally 执行完后继续向上抛，
+            # 结果就是报告目录建了但里面空无一物（有目录无报告，会被误当成已测完）。
             detail = str(exc) or repr(exc)
             self.report.aborted_reason = (
                 self.report.aborted_reason
@@ -637,7 +637,7 @@ class Runner:
                     "你选择了「检测已运行的 ROS 环境」，但 rosnode list 失败。\n"
                     "请先在车上启动：\n"
                     "  roslaunch tianracer_bringup tianracer_bringup.launch\n\n"
-                    "或改用自动模式：python run.py --mode auto"
+                    "或把左侧「运行方式」改为「程序自动启停 ROS（推荐）」"
                 )
                 self.report.add(result)
                 self.report.aborted_reason = "ROS master 未运行"

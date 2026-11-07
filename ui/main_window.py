@@ -137,7 +137,7 @@ class TestWorker(QThread):
             self._runner = runner
             report = runner.run()
 
-            # 渲染报告（与命令行版同样的模板）
+            # 渲染报告
             record_dir = str(runner.record_dir) if runner.record_dir else ""
             try:
                 render(report, runner.record_dir)

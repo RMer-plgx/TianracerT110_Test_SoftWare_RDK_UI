@@ -15,7 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ASSETS = (("tb-verify-ui.exe", 2), ("tb-verify-cli.exe", 3))
+# PE 子系统 2 对应 Windows GUI。
+ASSETS = (("tb-verify-ui.exe", 2),)
 
 
 def git(root: Path, *args: str) -> str:
@@ -38,7 +39,8 @@ def check_pe(path: Path, expected_subsystem: int) -> None:
         if struct.unpack_from("<H", pe, 24)[0] != 0x20B:
             raise ValueError(f"{path.name}: 不是 PE32+ 文件")
         if struct.unpack_from("<H", pe, 92)[0] != expected_subsystem:
-            raise ValueError(f"{path.name}: GUI/CLI 子系统与文件名不匹配")
+            kind = "Windows GUI" if expected_subsystem == 2 else "控制台"
+            raise ValueError(f"{path.name}: 子系统应为 {kind}（{expected_subsystem}）")
 
 
 def digest(path: Path) -> str:

@@ -1,4 +1,0 @@
-paramiko>=2.8
-Jinja2>=3.0
-PyYAML>=5.4
-psutil>=5.9
