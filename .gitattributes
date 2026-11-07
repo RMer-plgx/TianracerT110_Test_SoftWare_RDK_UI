@@ -1,2 +1,11 @@
-# Plugin integrity manifests hash the fixture files byte for byte.
+# 插件包内的文件参与 integrity.json 的字节级校验：
+# size 与 sha256 必须与磁盘上的实际字节一致，任何换行符转换都会让
+# `go test` 与 `tb-p0 check` 失败。
+#
+# 用 `text eol=lf`（而非 `-text`）：前者保证检出时一定是 LF；
+# 后者只是「不转换」，工作区里已有的 CRLF 会被按原样存进 Git。
 platform/product-plugins/** text eol=lf
+
+# Go 与 TypeScript 源码统一 LF，避免跨平台 diff 噪声。
+*.go text eol=lf
+*.ts text eol=lf

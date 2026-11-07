@@ -71,3 +71,5 @@ jobs:
           go run ./cmd/tb-p0 check ./product-plugins/sim-serial linux/amd64
       - name: Worker probes
         run: go run ./cmd/tb-p0 smoke ./product-plugins/sim-base/main.ts
+      - name: Generated TypeScript matches schema
+        run: go run ./cmd/schema-ts plugin-sdk/protocol-v1.ts --check
