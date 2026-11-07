@@ -14,6 +14,12 @@ build/
 dist/
 *.spec
 
+# Go 构建产物（platform/cmd 下三个命令的默认输出）
+platform/tb-p0
+platform/tb-p0-ui
+platform/schema-ts
+platform/bin/
+
 # Python
 __pycache__/
 *.py[cod]

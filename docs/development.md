@@ -23,6 +23,10 @@
 | UI 或连接流程 | 对应 UI／连接测试；无显示环境设 `QT_QPA_PLATFORM=offscreen` |
 | 资源、动态模块、打包逻辑 | `python app.py --self-check` 和 `python -m pytest tests/test_harness_contract.py tests/test_build_entrypoints.py -q`；产物交付前还须在目标系统检查实际产物 |
 | 发布清单或发布说明 | `python -m pytest tests/test_prepare_release.py -q`；按[发布流程](../RELEASE.md)核对版本、源码、附件和实际发布状态 |
+| `platform/`（Go 平台探针） | 在 `platform/` 下：`go vet ./...`、`go test -race ./...`；插件包结构改动另跑 `go run ./cmd/tb-p0 check <插件目录> <os/arch>`；沙箱或协议改动另跑 `go run ./cmd/tb-p0 smoke <entry>` |
+
+`platform/` 需要 Go 工具链，版本以 `platform/go.mod` 的 `go` 指令为准；
+本仓库当前未启用 CI，这些检查不会自动运行。当前 Python 程序的验证不需要 Go。
 
 完整回归使用 `python -m pytest tests -q`。规则检查器只校验仓库内文档链接、标题和工具桥接；产品清单检查覆盖已发现的产品配置与入口打包清单，不能证明所有运行分支或真实产物可用。
 

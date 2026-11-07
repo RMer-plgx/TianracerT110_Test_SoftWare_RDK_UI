@@ -2,7 +2,11 @@
 
 本仓库是车辆出厂检测工具 tb-verify。入口是 `app.py`（图形界面）；`ui/` 管界面，`core/` 管连接、执行、判定和报告，`checks/` 管检测项，`probes/` 是在车端运行的脚本。产品配置和报告资源位于 `products/`、`report/`。
 
-后续平台采用 MyGo 桌面壳、独立检测运行时和产品插件，方向已确认、实现尚未开始。设计或实现新平台、插件、运行时和 UI/UX 时，先读[技术方案](docs/design/mygo-plugin-platform.md)及其接口、界面文档；当前 Python 行为与未来能力分开说明。NSH 探索不作为新平台选型成本或实施前置条件。
+后续平台采用 MyGo 桌面壳、独立检测运行时和产品插件，方向已确认。
+**P0 探针已落地于 `platform/`**（包校验、协议 schema、MoeJS 沙箱、一次性子进程探针、原生界面 spike）；检测运行时会话、设备能力、证据归档与正式 UI 尚未实现，与现有 Python 程序无集成。
+设计或实现新平台、插件、运行时和 UI/UX 时，先读[技术方案](docs/design/mygo-plugin-platform.md)及其接口、界面文档；当前 Python 行为与未来能力分开说明。
+`platform/` 使用 Go，验证命令见[开发指南](docs/development.md)；本仓库 CI 未启用，那些检查不会自动跑。
+NSH 探索不作为新平台选型成本或实施前置条件。
 
 ## 协作与授权
 
