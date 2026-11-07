@@ -4,6 +4,8 @@
 
 当前默认产品是 Tianracer T110 RDK，包含 19 项检测。检测清单和产品目标见[产品说明](docs/product.md)。
 
+后续方向已确定为 **MyGo 桌面壳 + 独立检测运行时 + 产品插件**，支持不同协议和流程的机器人，架构及 UI/UX 参考 `mygo-music`。见[完整技术方案](docs/design/mygo-plugin-platform.md)与 [ADR-0006](docs/adr/0006-mygo-plugin-platform.md)。目前只完成方案文档，新平台尚未实现；下文仍描述当前 Python 程序。
+
 ![tb-verify 界面](docs/screenshot_dark.png)
 
 ## 开始使用

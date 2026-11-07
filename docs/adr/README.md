@@ -2,6 +2,12 @@
 
 本文记录 tb-verify 当前的架构和已确认决策。具体背景与取舍见各项 ADR；已决定但尚未实现的内容会标明差距，候选方案不作为现行能力。产品目标和检测清单见[产品说明](../product.md)。
 
+## 已确定的新平台方向
+
+[ADR-0006](0006-mygo-plugin-platform.md) 确认以 MyGo 桌面壳、独立检测运行时和 JS/TS 产品插件构建多机器人检测平台，架构与 UI/UX 参考 `mygo-music`。插件提供产品流程、判定和交互描述，运行时负责会话、设备能力、停止、恢复和证据；原生 SDK 按需经辅助程序接入。
+
+目前仅完成[技术方案](../design/mygo-plugin-platform.md)、[插件接口](../design/plugin-api-v1.md)和[UI/UX 设计](../design/mygo-ui-ux.md)，全部实施阶段尚未开始。下述当前架构仍指 Python 实现；NSH 是独立探索，不构成新平台的成本或实施依赖。
+
 ## 入口与产品配置
 
 <!-- ai-lint: ok 正文和表格重复 链接路径与索引重复，便于从相关架构跳转 -->
@@ -35,5 +41,6 @@
 | [0002](0002-ground-heading-verification.md) | 落地航向互校与自动交付判定 | Accepted | 有已知差距，待修复 |
 | [0003](0003-review-and-evidence.md) | 复核记录与证据追溯 | Proposed | 尚未完整实现 |
 | [0004](0004-protocol-observation.md) | 底盘协议观测 | Proposed | 尚未实现，待验证可行性 |
+| [0006](0006-mygo-plugin-platform.md) | MyGo 桌面壳与多机器人产品插件 | Accepted | 已写技术方案；运行时、插件 SDK 与新 UI 均未实现 |
 
 记录约定：每项可独立取舍的架构决策使用独立文件，记录状态、背景、决策、替代方案和影响。`Accepted` 表示决策已确认，不代表实现或验收完成；`Proposed` 表示方案待确认。实现变化时同步更新本总览；被替代的决策保留记录并注明后续决策。
