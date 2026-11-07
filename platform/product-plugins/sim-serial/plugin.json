@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "org.tianbot.demo-serial",
+  "name": "串口协议合成夹具",
+  "version": "0.1.0",
+  "apiVersion": "1.0",
+  "uiSchemaVersion": 1,
+  "entry": "main.js",
+  "products": [
+    "products/sim-serial.json"
+  ],
+  "requires": {
+    "capabilities": [
+      {
+        "id": "sim.serial",
+        "major": 1
+      }
+    ],
+    "platforms": [
+      "darwin/arm64",
+      "windows/amd64",
+      "linux/amd64"
+    ]
+  },
+  "permissions": {
+    "deviceCapabilities": [
+      "sim.serial.read"
+    ],
+    "networkHosts": [],
+    "helperIds": []
+  },
+  "helpers": [],
+  "integrity": "integrity.json"
+}

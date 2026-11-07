@@ -1,0 +1,29 @@
+{
+  "files": [
+    {
+      "path": "baselines/simulation.json",
+      "size": 149,
+      "sha256": "3c803b814020c3a4ae74a10c7c9c4a0474e668f6b405af7092bc32b62af984ea"
+    },
+    {
+      "path": "input.schema.json",
+      "size": 217,
+      "sha256": "7259c2955fa45331cc19fa5bffd2fc5d22b98768c1eb100f20810ebc2f3a838d"
+    },
+    {
+      "path": "main.ts",
+      "size": 1374,
+      "sha256": "29fbee8e44400c8230b44ca4be8535786596ceae96052eae9db3f10a55a431b8"
+    },
+    {
+      "path": "plugin.json",
+      "size": 607,
+      "sha256": "66b431907cd1d516fd587ba208ae4b11a3bbe7321b91d3f4372dbd1d1668b65b"
+    },
+    {
+      "path": "products/sim-base.json",
+      "size": 499,
+      "sha256": "35a8a1a2d1db5627c3822ecb88fe611829d3f2bf7c51046b7935d7cca1ad5f7b"
+    }
+  ]
+}
