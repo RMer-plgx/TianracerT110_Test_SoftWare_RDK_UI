@@ -62,10 +62,10 @@ Proposed。协议旁路已实现（**代理桥接，不是只嗅探**，见下�
 | 是否写串口 | 是 | **否** |
 | 录音模块挂掉 | 控制链路中断 | **通信照常**，只丢录音 |
 | 采集期间能否运动 | 硬约束：必须架空 | 无额外约束（仍受其它安全规则约束） |
-| 是否改车端源码 | 否 | **是**（需重编 `tianracer_core`） |
+| 是否改车端源码 | 否 | **是**（需重编 `tianbot_core`） |
 | 录音文件格式 | 纯原始字节流 | **完全一致**，解析端零改动 |
 
-**为什么只改两处就够**：`tianracer_core/src/serial.cpp` 全文 308 行，
+**为什么只改两处就够**：`tianbot_core/src/serial.cpp` 全文 308 行，
 真正的 I/O 只有 `serial_recv()` 的 `read()` 和 `Serial::send()` 的 `write()`。
 其余全是 termios 配置。两个注入点， 5 个新成员。
 
@@ -76,7 +76,7 @@ Proposed。协议旁路已实现（**代理桥接，不是只嗅探**，见下�
 
 **已验（pty 虚拟串口）**：设开关时双向字节数逐一匹配；不设开关时不产生
 任何文件且通信正常；目录不可写时两路 fd 均为 -1、通信与回传照常；
-`catkin_make --only-pkg-with-deps tianracer_core` 编译通过。
+`catkin_make --only-pkg-with-deps tianbot_core` 编译通过。
 
 **已验（2026-11-07 真实底盘串口）**：`/dev/ttyUSB0`（CP2102）就是底盘 MCU，
 7 KB/s。以 `roslaunch tianracer_core tianracer_core.launch` 起真实节点
