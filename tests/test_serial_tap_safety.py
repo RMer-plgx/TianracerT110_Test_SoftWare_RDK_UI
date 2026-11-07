@@ -118,6 +118,16 @@ def test_safety_doc_does_not_promise_automatic_stop(text: str):
     assert "架空" in text, "安全约定里必须写明采集期间车辆架空"
 
 
+def test_safety_doc_reflects_measured_timeout(text: str):
+    """文档必须反映 2026-11-07 的实测结论，不能回退成「未确认」。
+
+    也不能因为确认了就放松硬约束 —— 它是固件特性，不是协议保证。
+    """
+    assert "尚未确认" not in text, "实测已完成，不应再写「尚未确认」"
+    assert "固件特性" in text, "必须标明超时保护属于固件特性"
+    assert "不得运动" in text or "必须架空" in text, "架空仍是硬约束"
+
+
 def test_pending_buffer_is_bounded(tree: ast.Module):
     """底盘节点不读 pty 时，积压不能无限涨。"""
     from_mcu = _method(tree, "_from_mcu")

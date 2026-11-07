@@ -132,8 +132,9 @@ def run(ctx) -> CheckResult:
             "开关：profile.yaml 的 `ros.tap.enabled`，当前为 false。\n\n"
             "开启方式：设 `ros.tap.enabled: true` 并启用串口桥接"
             "（probes/serial_tap.py）。\n\n"
-            "⚠ 串口桥接是控制链路单点故障：启用前须确认下位机具备\n"
-            "通信超时保护，且采集期间车辆必须架空。\n\n"
+            "⚠ 串口桥接是控制链路单点故障。停车靠下位机固件的\n"
+            "通信超时保护（已实测确认 0.4~2.1 秒；属固件特性，换型号需重做）。\n"
+            "采集期间仍必须架空。\n\n"
             "未启用时其它检测项照常工作，判定不受影响。"
         )
         return result
