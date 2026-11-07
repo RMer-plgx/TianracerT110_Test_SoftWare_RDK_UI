@@ -53,6 +53,19 @@ MAX_FETCH_BYTES = 2 * 1024 * 1024
 # 正常串口应该是 0；给 1% 容忍偶发噪声。
 BCC_ERROR_LIMIT = 0.01
 
+# 车端录音的开关环境变量名。
+# 这里是**唯一权威定义**：SKIP 文案与测试都引用它，不各自硬编码字符串。
+# 用 TIANBOT_ 前缀而非 TIANRACER_：tianbot_core 服务多种车型，
+# 录音是通用能力（见 docs/patches/README.md）。
+TAP_ENV_VAR = "TIANBOT_TAP_DIR"
+
+# 补丁所在目录，以及它们在 README 里的编号顺序。
+# 文案不写具体文件名 —— 以前硬编码 `tianracer_core-serial-tap.patch`，
+# 补丁改成 `tianbot_core-01/02` 后文案没跟上，用户照做会 patch 找不到文件
+# （Round 13 审查 R13-1）。现在只说「按编号顺序」，
+# 具体文件由 tests/test_check_protocol.py 断言与目录一致。
+TAP_PATCH_DIR = "docs/patches"
+
 
 def _fetch(ctx, path: str):
     """把车上的二进制日志取回本地。
@@ -141,11 +154,16 @@ def run(ctx) -> CheckResult:
         result.detail = (
             "未启用底层采集（本项为可选增强）。\n"
             "开关：profile.yaml 的 `ros.tap.enabled`，当前为 false。\n\n"
-            "开启方式（首选）：车端内嵌录音。安装\n"
-            "docs/patches/tianracer_core-serial-tap.patch，并在 profile 的\n"
-            "env_overrides 里加 `TIANRACER_TAP_DIR: /tmp/tap`。\n"
-            "它只在底盘节点的收发路径上顺手写一份，通信路径不变，\n"
-            "录音坏了也不影响控制。\n\n"
+            "开启方式（首选）：车端内嵌录音。\n"
+            f"  1. 先装车端补丁：{TAP_PATCH_DIR}/ 下按编号顺序（01 → 02），\n"
+            "     用 patch -p1，装在 tianbot_core 包（底盘串口 I/O 在那里，\n"
+            "     不在 tianracer_core），然后只重编该包。\n"
+            f"  2. 在 profile 的 env_overrides 里加 `{TAP_ENV_VAR}: /tmp/tap`。\n"
+            "  3. 把 `ros.tap.enabled` 改为 true。\n"
+            "01 是修 raw 模式的位操作（改写 config() 里三处，等价替换），\n"
+            "02 是录音本体（纯新增）。回退都是 git checkout 那两个文件再重编。\n"
+            "录音在底盘节点收发路径上顺手写一份，通信路径不变，\n"
+            f"录音坏了也不影响控制。不设 `{TAP_ENV_VAR}` 则完全不写文件。\n\n"
             "备选：串口桥接（probes/serial_tap.py）。不用改车端源码，\n"
             "但桥接是控制链路单点故障，采集期间必须架空。\n\n"
             "未启用时其它检测项照常工作，判定不受影响。"

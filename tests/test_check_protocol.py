@@ -341,3 +341,96 @@ def test_type_breakdown_is_compact_not_raw_dict():
     assert "{" not in note and "'" not in note
     assert "ODOM_RESPONSE×" in note
     assert len(note) <= 80
+
+
+# ---------------------------------------------------------------------------
+# SKIP 文案必须指向真实存在的东西（Round 13 审查 R13-1）
+# ---------------------------------------------------------------------------
+#
+# 曾经的缺陷：补丁从 `tianracer_core-serial-tap.patch` 改成
+# `tianbot_core-01-raw-mode.patch` + `tianbot_core-02-serial-tap.patch`，
+# 环境变量从 `TIANRACER_TAP_DIR` 改成 `TIANBOT_TAP_DIR`，但 SKIP 文案没跟上。
+# 而这是**全仓唯一一处**告诉用户怎么开启第 20 项的地方 —— 用户照做
+# `patch` 找不到文件、环境变量设了不生效，只能认为软件坏了。
+#
+# 当时 433 条测试没有一条覆盖这个方向，所以它能一直错下去。
+
+
+class TestSkipHintIsActionable:
+    """SKIP detail 里的每个具体指引都必须在仓库里成立。"""
+
+    @staticmethod
+    def _repo_root():
+        from pathlib import Path
+        return Path(__file__).resolve().parent.parent
+
+    def test_patch_dir_has_numbered_patches_in_order(self):
+        """补丁目录必须有 01、02 且按编号顺序，文案说的「01 → 02」才成立。"""
+        d = self._repo_root() / check.TAP_PATCH_DIR
+        assert d.is_dir(), f"{check.TAP_PATCH_DIR} 不存在"
+        patches = sorted(p.name for p in d.glob("*.patch"))
+        assert patches, f"{check.TAP_PATCH_DIR} 下没有补丁"
+        # 文件名形如 tianbot_core-01-raw-mode.patch，编号在中间
+        assert "-01-" in patches[0] or patches[0].startswith("01"), \
+            f"首个补丁编号不是 01：{patches[0]}"
+        if len(patches) > 1:
+            assert "-02-" in patches[1] or patches[1].startswith("02"), \
+                f"第二个补丁编号不是 02：{patches[1]}"
+
+    def test_env_var_name_matches_patch_and_readme(self):
+        """环境变量名要在补丁本体与 README 里一致。
+
+        只改 Python 常量而没改车端补丁，用户设了变量也不会生效。
+        """
+        root = self._repo_root()
+        var = check.TAP_ENV_VAR
+
+        readme = (root / check.TAP_PATCH_DIR / "README.md").read_text(encoding="utf-8")
+        assert var in readme, f"{check.TAP_PATCH_DIR}/README.md 没提到 {var}"
+
+        # 车端补丁里应出现同一个名字（getenv 的参数）
+        patched = False
+        for p in (root / check.TAP_PATCH_DIR).glob("*.patch"):
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if f'getenv("{var}")' in text:
+                patched = True
+                break
+        assert patched, f"没有任何补丁读取 ${var}"
+
+    def test_old_names_are_gone(self):
+        """旧名不该残留在用户可见文案里。"""
+        detail = _run({}, enabled=False).detail or ""
+        assert "TIANRACER_TAP_DIR" not in detail, "文案还在用旧变量名"
+        assert "tianracer_core-serial-tap" not in detail, "文案还在引用不存在的补丁"
+
+    def test_skip_detail_mentions_correct_package(self):
+        """必须说清补丁装在 tianbot_core，不是 tianracer_core。"""
+        detail = _run({}, enabled=False).detail or ""
+        assert "tianbot_core" in detail
+        assert "-p1" in detail, "没提醒用 -p1，用户可能用 -p0 直接失败"
+
+    def test_detail_survives_missing_patch_dir(self):
+        """打包产物可能不带 docs/。文案生成不能因此抛异常。"""
+        result = _run({}, enabled=False)
+        assert result.status is Status.SKIP
+        assert result.detail  # 非空
+
+
+    def test_docs_do_not_present_old_var_name_as_current(self):
+        """docs/ 下不得把旧变量名当现行用法写。
+
+        只在明确的历史叙述（「以前 / 曾 / 改成 / 旧」）里允许出现。
+        实测抓到过 ADR-0004:77 写「不设 `TIANRACER_TAP_DIR`」——
+        用户读 ADR 会设错变量，而 SKIP 文案与 README 都已经改了。
+        """
+        root = self._repo_root()
+        historical = ("以前", "曾", "改成", "旧", "历史", "原", "removed", "renamed")
+        offenders = []
+        for path in sorted((root / "docs").rglob("*.md")):
+            for line_no, line in enumerate(
+                    path.read_text(encoding="utf-8").splitlines(), 1):
+                for stale in ("TIANRACER_TAP_DIR", "tianracer_core-serial-tap"):
+                    if stale in line and not any(h in line for h in historical):
+                        rel = str(path.relative_to(root)).replace("\\", "/")
+                        offenders.append(f"{rel}:{line_no} 把 {stale} 写成现行用法")
+        assert not offenders, "；".join(offenders)

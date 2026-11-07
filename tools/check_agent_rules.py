@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import unicodedata
@@ -23,10 +24,16 @@ SOURCES = (
 SCAN_SKIP = ("dist", ".git", "node_modules", ".codewhale",
              "product-plugins", "__pycache__", ".pytest_cache")
 SECTIONS = ("协作与授权", "修改边界", "安全与结果", "验证")
-LINK = re.compile(r"!?\[[^\]\n]+\]\(([^)\n]+)\)")
+LINK = re.compile(r"!?\[[^\]\n]*\]\(([^)\n]+)")
+# 文字部分用 `*` 而非 `+`：
+#   ![](img.png)  图片是最常见的空文字形式，`+` 会整个漏掉
+#   [](x.md)      空文字链接（少见但合法）
+# 覆盖率边界：本检查器只管**行内链接**。引用式（`[t][r]` + `[r]: url`）
+# 与 HTML `<a href>` 不检查 —— 若日后引入这两种写法，需先扩展这里。
+#
 # 行内代码：把内容换成等长占位符，**不能整段删除**。
-# 删除 `[`foo`](bar)` 会变成 `[](bar)`，而空链接文字不匹配 LINK，
-# 整条链接就静默跳过了 —— 死链正是这么漏掉的（2026-11-07 审查 M1）。
+# 删除 `[`foo`](bar)` 会变成 `[](bar)`；用 `*` 后反而会被当成正常链接，
+# 但占位符仍能避免行内代码里的 `](` 被误判成链接（2026-11-07 审查 M1）。
 INLINE_CODE = re.compile(r"`[^`\n]*`")
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
@@ -77,14 +84,20 @@ def heading_anchors(text: str) -> set[str]:
 
 
 def markdown_files(root: Path) -> list[Path]:
-    """仓库内所有该检查的 Markdown。"""
+    """仓库内所有该检查的 Markdown。
+
+    用 `os.walk` 就地剪枝而不是 `rglob` + 过滤：后者会先把 `dist/`
+    （里面装的是带 report.md 的历史报告）、`node_modules/` 整个走完
+    再丢弃，随构建次数线性变慢（Round 13 审查 R13-4）。
+    """
     out = []
-    for path in sorted(root.rglob("*.md")):
-        parts = path.relative_to(root).parts
-        if any(skip in parts for skip in SCAN_SKIP):
-            continue
-        out.append(path)
-    return out
+    for dirpath, dirnames, filenames in os.walk(root):
+        # 就地修改 dirnames，walk 就不会下去
+        dirnames[:] = [d for d in dirnames if d not in SCAN_SKIP]
+        for name in filenames:
+            if name.endswith(".md"):
+                out.append(Path(dirpath) / name)
+    return sorted(out)
 
 
 def check_links(root: Path, path: Path) -> list[str]:

@@ -446,36 +446,84 @@ def test_ui_uses_one_shot_check_not_polling():
 
 
 def test_runtime_modules_have_no_unescaped_subprocess():
-    """运行时模块（core/checks/ui）里每个子进程调用都要带 creationflags。
+    """打包产物里的每个子进程调用都要带 creationflags。
 
-    上一条只扫 `core/connect.py`。但打包后的 exe 会跑 core/、checks/、ui/
-    全部模块，任一处新增一个 `subprocess.run` 忘带 flags，用户就会看到黑窗。
-    这条按 AST 扫整个运行时包，把口子堵上。
+    打包后是 `--windowed` exe，没有控制台；子进程默认会各自开一个可见窗口，
+    ping 一次闪一个。
 
-    `tools/` 与 `build.py` 不在扫描范围：它们不进打包产物，
-    且本来就跑在开发者自己的终端里（有控制台，无观感问题）。
+    扫描范围从 `build.py` 的 `DATA_DIRS` 与 `CHECK_MODULES` 推导 ——
+    **单一来源**。上一版写死 `core/checks/ui`，漏了 `probes/`，
+    而它是随 exe 分发的资源（`DATA_DIRS = ["products", "report", "probes", "assets"]`）。
+
+    两类形式盲区一并堵上：
+    - `from subprocess import run` 后直接 `run(...)`（通过解析 import 表识别）
+    - `creationflags=0` 字面量（Windows 上等于没设，照样闪黑窗）
     """
     root = Path(__file__).resolve().parent.parent
-    targets = []
-    for pkg in ("core", "checks", "ui"):
-        targets.extend((root / pkg).glob("*.py"))
-    assert targets, "运行时包目录不存在，测试本身失效"
+    targets = _packaged_python_files(root)
+    assert targets, "推导出的运行时包目录为空，测试本身失效"
 
     offenders = []
     for path in targets:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        aliases = _subprocess_aliases(tree)
+        rel = str(path.relative_to(root)).replace("\\", "/")
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and isinstance(node.func.value, ast.Name)
-                    and node.func.value.id == "subprocess"
-                    and node.func.attr in {"run", "Popen", "call",
-                                           "check_output", "check_call"}):
+            if not isinstance(node, ast.Call):
                 continue
-            if not any(kw.arg == "creationflags" for kw in node.keywords):
-                rel = str(path.relative_to(root)).replace("\\", "/")
-                offenders.append(f"{rel}:{node.lineno}")
+            if not _is_subprocess_call(node.func, aliases):
+                continue
+            flags = [kw.value for kw in node.keywords if kw.arg == "creationflags"]
+            if not flags:
+                offenders.append(f"{rel}:{node.lineno} 没带 creationflags")
+            elif any(isinstance(v, ast.Constant) and v.value == 0 for v in flags):
+                # 字面量 0 在 Windows 上不隐藏窗口；该用 _NO_WINDOW
+                offenders.append(f"{rel}:{node.lineno} creationflags=0，会闪黑窗")
     assert not offenders, (
-        "以下子进程调用没带 creationflags，打包后会闪黑窗：" + "、".join(offenders)
+        "以下子进程调用会闪黑窗：" + "；".join(offenders)
     )
+
+
+def _packaged_python_files(root: Path) -> list:
+    """从 build.py 推导出会被打包的 Python 文件。
+
+    不写死包名：`build.py` 改了数据目录或检测模块清单时，这里自动跟上。
+    """
+    import build as build_mod
+
+    files = []
+    for pkg in ("core", "checks", "ui"):
+        files.extend((root / pkg).glob("*.py"))
+    for name in build_mod.DATA_DIRS:
+        d = root / name
+        if d.is_dir():
+            files.extend(d.glob("*.py"))
+    return sorted(set(files))
+
+
+def _subprocess_aliases(tree) -> set:
+    """识别 `import subprocess as sp` / `from subprocess import run as r`。"""
+    module_aliases = {"subprocess"}
+    func_aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "subprocess" and a.asname:
+                    module_aliases.add(a.asname)
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            for a in node.names:
+                if a.name in {"run", "Popen", "call", "check_output", "check_call"}:
+                    func_aliases.add(a.asname or a.name)
+    return {"modules": module_aliases, "funcs": func_aliases}
+
+
+def _is_subprocess_call(func, aliases) -> bool:
+    """是否是 subprocess 的调用（含别名写法）。"""
+    attrs = {"run", "Popen", "call", "check_output", "check_call"}
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return func.value.id in aliases["modules"] and func.attr in attrs
+    if isinstance(func, ast.Name):
+        return func.id in aliases["funcs"]
+    return False
 
