@@ -153,7 +153,12 @@ def run(ctx) -> CheckResult:
         result.summary = "本产品未启用底层采集，本项跳过"
         result.detail = (
             "未启用底层采集（本项为可选增强）。\n"
-            "开关：profile.yaml 的 `ros.tap.enabled`，当前为 false。\n\n"
+            # 不能写死「当前为 false」：若配置读取失败，_tap_config() 会退回
+            # 默认 TapConfig()，而用户确实在 profile 里写了 true。
+            # 报「本次读到 X」把两种情形区分开（2026-11-10 Round 14 审查）。
+            f"开关：profile.yaml 的 `ros.tap.enabled`，本次读到 {tap_cfg.enabled}。\n"
+            "若你确认配置里写的是 true，则说明配置没读到，"
+            "需检查产品 id 与 profile.yaml 路径。\n\n"
             "开启方式（首选）：车端内嵌录音。\n"
             f"  1. 先装车端补丁：{TAP_PATCH_DIR}/ 下按编号顺序（01 → 02），\n"
             "     用 patch -p1，装在 tianbot_core 包（底盘串口 I/O 在那里，\n"

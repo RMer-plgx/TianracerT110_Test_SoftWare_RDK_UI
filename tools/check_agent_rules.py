@@ -24,7 +24,7 @@ SOURCES = (
 SCAN_SKIP = ("dist", ".git", "node_modules", ".codewhale",
              "product-plugins", "__pycache__", ".pytest_cache")
 SECTIONS = ("协作与授权", "修改边界", "安全与结果", "验证")
-LINK = re.compile(r"!?\[[^\]\n]*\]\(([^)\n]+)")
+LINK = re.compile(r"!?\[[^\]\n]*\]\(([^)\n]+)\)")
 # 文字部分用 `*` 而非 `+`：
 #   ![](img.png)  图片是最常见的空文字形式，`+` 会整个漏掉
 #   [](x.md)      空文字链接（少见但合法）
