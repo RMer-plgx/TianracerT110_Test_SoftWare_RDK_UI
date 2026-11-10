@@ -59,6 +59,10 @@ class TapConfig:
     baudrate_env: str = ""
     log_dir: str = "/tmp/tap"
     max_log_mb: int = 32
+    # 车端录音目录的环境变量名。车端补丁读这个变量决定往哪写。
+    # 用 TIANBOT_ 前缀而不是产品的 TIANRACER_：tianbot_core 服务多种车型，
+    # 录音是它的通用能力，不该绑在某个产品前缀上。
+    dir_env: str = "TIANBOT_TAP_DIR"
 
     def log_path(self, name: str) -> str:
         """某个方向的日志绝对路径。"""
@@ -195,6 +199,13 @@ class Profile:
             "export DISABLE_ROS1_EOL_WARNINGS=True",
         ]
         parts.extend(self.env_export_lines())
+        # 车端录音目录单独注入，**不放 env_overrides**。
+        # env_overrides 的语义是「纠正 env-hooks 的产品变量」，
+        # 会被第 4 项环境变量检查当作白名单比对；把录音开关混进去
+        # 会让那一项报「变量被改过」的假告警。
+        tap = getattr(self.ros, "tap", None)
+        if tap is not None and tap.enabled and tap.dir_env:
+            parts.append(f"export {tap.dir_env}={tap.log_dir}")
         return "; ".join(parts) + "; "
 
     def baseline_section(self, key: str) -> Dict[str, Any]:

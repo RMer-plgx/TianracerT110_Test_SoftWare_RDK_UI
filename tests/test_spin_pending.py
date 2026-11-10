@@ -164,7 +164,8 @@ class TestSpinJudgement:
         result = CheckResult(number=18, title="运动控制", status=Status.PASS)
         statuses, verified = motion._run_spin(
             ctx, self.BASELINE["motion"]["spin"], result,
-            self.BASELINE["motion"]["safety"], wheelbase=0.261)
+            self.BASELINE["motion"]["safety"], wheelbase=0.261,
+            track=self.BASELINE["motion"]["spin"]["track_m"])
         return statuses, verified, result, recorder
 
     def test_small_diff_passes_and_verifies(self, monkeypatch):
@@ -257,7 +258,8 @@ class TestSpinJudgement:
         ctx = _FakeCtx(baseline, "full")
         result = CheckResult(number=18, title="运动控制", status=Status.PASS)
         motion._run_spin(ctx, baseline["motion"]["spin"], result,
-                         baseline["motion"]["safety"], wheelbase=0.261)
+                         baseline["motion"]["safety"], wheelbase=0.261,
+                         track=baseline["motion"]["spin"].get("track_m", 0))
         assert float(recorder.calls[0][1][0]) <= 0.25
 
 
@@ -757,3 +759,82 @@ class TestSpinUnitConsistency:
         assert "travelled = abs(imu_tracker.total - imu0)" not in src, (
             "出现了裸的弧度比较，会重现永不 reached 的 bug"
         )
+
+
+class TestSpinGeometryWiring:
+    """轴距/轮距必须真的传到 _run_spin，否则打滑判据会静默失效。
+
+    2026-11-10 实车报告里写着「缺轴距/轮距参数，无法与理论值对比」——
+    因为 `track` 写成了从 spin 段读，而 baseline 里它在 motion.track_m
+    （与 spin 平级），永远读到 0。
+    这种「配置写了但读不到」的 bug 不会报错，只会让判据静默降级。
+    """
+
+    def test_run_passes_track_from_motion_top_level(self):
+        """run() 要从 motion 顶层取 track_m 并传下去。"""
+        import inspect
+        from checks import motion
+        src = inspect.getsource(motion.run)
+        assert '"track_m"' in src and "cfg.get(" in src, (
+            "run() 没从 motion 顶层读 track_m，打滑判据会拿不到轮距"
+        )
+        assert "track=" in src, "run() 没把 track 传给 _run_ground"
+
+    def test_run_ground_forwards_track_to_spin(self):
+        import inspect
+        from checks import motion
+        src = inspect.getsource(motion._run_ground)
+        assert "track=track" in src, "_run_ground 没把 track 转给 _run_spin"
+
+    def test_geometry_measured_when_track_given(self, monkeypatch):
+        """给了轮距就该出现「转向几何」测量项。"""
+        from checks import motion
+        from core.verdict import CheckResult, Status
+        baseline = {"motion": {"spin": {
+            "speed": 0.12, "steer_angle": 0.35, "target_yaw_deg": 360,
+            "max_seconds": 90, "yaw_tolerance_deg": 15, "yaw_warn_deg": 30,
+            "closure_warn_m": 0.3, "track_m": 0.1631, "slip_tolerance_pct": 15,
+        }, "safety": {"spin_max_speed_mps": 0.25, "spin_max_seconds": 120}}}
+        rec = _ProbeRecorder([_spin(360.5), _spin(-360.5)])
+        monkeypatch.setattr(motion, "run_probe", rec)
+        ctx = _FakeCtx(baseline, "full")
+        res = CheckResult(number=18, title="运动控制", status=Status.PASS)
+        motion._run_spin(ctx, baseline["motion"]["spin"], res,
+                         baseline["motion"]["safety"],
+                         wheelbase=0.261, track=0.1631)
+        names = [m.name for m in res.measurements]
+        assert "转向几何" in names, f"没有几何项：{names}"
+        geom = next(m for m in res.measurements if m.name == "转向几何")
+        assert "理论打滑" in str(geom.value)
+
+    def test_no_geometry_without_track(self, monkeypatch):
+        """不给轮距就不该凭空算打滑 —— 缺参数要显式缺席，不能猜。"""
+        from checks import motion
+        from core.verdict import CheckResult, Status
+        baseline = {"motion": {"spin": {
+            "speed": 0.12, "steer_angle": 0.35, "target_yaw_deg": 360,
+            "max_seconds": 90, "yaw_tolerance_deg": 15, "yaw_warn_deg": 30,
+            "closure_warn_m": 0.3,
+        }, "safety": {"spin_max_speed_mps": 0.25, "spin_max_seconds": 120}}}
+        rec = _ProbeRecorder([_spin(360.5), _spin(-360.5)])
+        monkeypatch.setattr(motion, "run_probe", rec)
+        ctx = _FakeCtx(baseline, "full")
+        res = CheckResult(number=18, title="运动控制", status=Status.PASS)
+        motion._run_spin(ctx, baseline["motion"]["spin"], res,
+                         baseline["motion"]["safety"],
+                         wheelbase=0.261, track=0)
+        names = [m.name for m in res.measurements]
+        assert "转向几何" not in names
+
+    def test_baseline_declares_both_geometry_values(self):
+        """产品配置必须同时给出轴距与轮距，否则几何判据不完整。"""
+        import yaml
+        from core.paths import resource_path
+        data = yaml.safe_load(
+            resource_path("products/tianracer_t110_rdk/baseline.yaml")
+            .read_text(encoding="utf-8"))
+        motion_cfg = data["motion"]
+        assert motion_cfg.get("wheelbase_m"), "baseline 缺 wheelbase_m"
+        assert motion_cfg.get("track_m"), "baseline 缺 track_m"
+        assert motion_cfg["spin"].get("slip_tolerance_pct"), \
+            "baseline 缺 slip_tolerance_pct"

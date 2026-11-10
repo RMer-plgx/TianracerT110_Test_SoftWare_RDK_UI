@@ -412,3 +412,57 @@ class TestVersionConsistency:
         src = inspect.getsource(runner.Runner._run_inner)
         assert "self.report.tool_version" in src
 
+
+
+class TestTapEnvInjection:
+    """车端录音目录必须由 tap 段注入，不能混进 env_overrides。
+
+    2026-11-10：第 20 项一直是 SKIP，因为 `ros.tap.enabled` 为 false。
+    开启时需要把录音目录传给车端节点，但**不能放 env_overrides** ——
+    那里的语义是「纠正 env-hooks 的产品变量」，会被第 4 项环境变量检查
+    当作白名单比对，混进去会让那一项报假告警。
+    """
+
+    def test_tap_dir_not_in_env_overrides(self):
+        from core.profile import load
+        prof = load("tianracer_t110_rdk")
+        for key in prof.ros.env_overrides:
+            assert not key.startswith("TIANBOT_"), (
+                f"env_overrides 里混进了非产品变量 {key}；"
+                f"录音目录应由 tap 段注入"
+            )
+
+    def test_enabled_tap_injects_dir_env(self):
+        from core.profile import load
+        prof = load("tianracer_t110_rdk")
+        tap = prof.ros.tap
+        prefix = prof.ros_env_prefix()
+        if tap.enabled:
+            assert f"export {tap.dir_env}=" in prefix, (
+                f"tap 已启用但没注入 {tap.dir_env}，车端不会录音"
+            )
+            assert tap.log_dir in prefix
+
+    def test_disabled_tap_injects_nothing(self):
+        """关闭时不能注入 —— 否则车端会一直写文件。"""
+        import dataclasses
+        from core.profile import load
+        prof = load("tianracer_t110_rdk")
+        if not prof.ros.tap.enabled:
+            return      # 本产品已启用，跳过
+        old = prof.ros.tap
+        prof.ros.tap = dataclasses.replace(old, enabled=False)
+        try:
+            assert "TIANBOT_TAP_DIR" not in prof.ros_env_prefix()
+        finally:
+            prof.ros.tap = old
+
+    def test_tap_log_dir_matches_dir_env_value(self):
+        """路径要一致：第 20 项按 log_dir 读文件，车端按同一个值写。"""
+        from core.profile import load
+        prof = load("tianracer_t110_rdk")
+        tap = prof.ros.tap
+        assert tap.log_dir.startswith("/")
+        assert tap.dir_env == "TIANBOT_TAP_DIR", (
+            "环境变量名要与车端补丁 getenv 的参数一致"
+        )

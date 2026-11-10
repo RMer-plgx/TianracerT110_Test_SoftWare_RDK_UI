@@ -93,7 +93,11 @@ ros:
   # BASE_BAUDRATE，避免同一事实在两处维护、改一处忘另一处。
   # ---------------------------------------------------------------------------
   tap:
-    enabled: false
+    # 2026-11-10 开启：车端补丁（tianbot_core 01/02）已装并验证，
+    # 实测能拿到 3571 帧零错误的数据。
+    # 未装补丁的车也会正常运行：enabled 为 true 但车上无数据时判 SKIP，
+    # 不会误判 FAIL，所以开启是安全的降级。
+    enabled: true
     port_env: TIANRACER_BASE_PORT
     baudrate_env: TIANRACER_BASE_BAUDRATE
     log_dir: /tmp/tap

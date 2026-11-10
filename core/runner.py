@@ -701,6 +701,17 @@ class Runner:
                 ctx.say(f"       ⏳ [{item.number:02d}] {item.title} "
                         f"保持待验证（落地互校未通过）")
 
+            # 必须再通知一次 GUI。
+            # 架空段结束时这两项已经是 PENDING，卡片已按 PENDING 渲染；
+            # 这里改了 status 却不发信号，界面就停在「待验证」上，
+            # 而报告里已经显示 PASS —— 两边对不上（2026-11-10 用户反馈）。
+            notify = getattr(ctx, "on_check_done", None)
+            if notify is not None:
+                try:
+                    notify(item)
+                except Exception:
+                    pass    # 界面回调出错不能影响测试结论
+
     # -- 单项执行 ---------------------------------------------------------
 
     def _execute(self, ctx: Context, entry) -> None:

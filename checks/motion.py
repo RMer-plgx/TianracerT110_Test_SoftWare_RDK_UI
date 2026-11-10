@@ -187,7 +187,8 @@ def run(ctx) -> CheckResult:
     ground_statuses, spin_ok = _run_ground(
         ctx, ground_cfg, result, max_speed, max_dur, safety,
         spin_cfg=cfg.get("spin", {}),
-        wheelbase=float(cfg.get("wheelbase_m", 0) or 0))
+        wheelbase=float(cfg.get("wheelbase_m", 0) or 0),
+        track=float(cfg.get("track_m", 0) or 0))
     sub_statuses.extend(ground_statuses)
 
     # 把「转向互校是否验证过」传给上层：IMU / 里程计这两项
@@ -310,7 +311,7 @@ def _run_bench(ctx, cfg, result, max_speed, max_dur):
 
 
 def _run_ground(ctx, cfg, result, max_speed, max_dur, safety=None,
-                spin_cfg=None, wheelbase=0.0):
+                spin_cfg=None, wheelbase=0.0, track=0.0):
     """落地段：真实行驶，校验距离、转向弧度、航向互校。
 
     cfg 是 baseline 的 motion.ground 段；spin_cfg 是 motion.spin 段。
@@ -387,17 +388,18 @@ def _run_ground(ctx, cfg, result, max_speed, max_dur, safety=None,
 
     # ---- 转向互校：左右各转一整圈，比对 odom 与 IMU 的航向 ----
     spin_statuses, spin_ok = _run_spin(ctx, spin_cfg, result, safety,
-                                       wheelbase=wheelbase)
+                                       wheelbase=wheelbase, track=track)
     statuses.extend(spin_statuses)
 
     return statuses, spin_ok
 
 
-def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0):
+def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0, track=0.0):
     """转整圈做航向互校。返回 (statuses, verified)。
 
     spin_cfg 是 baseline 的 motion.spin 段本身（不是整个 motion）。
-    wheelbase 为轴距（米），大于 0 时额外算理论角速度、打滑率与反推转角。
+    wheelbase / track 是 motion 顶层的轴距与轮距（米）。
+    大于 0 时额外算理论角速度、打滑率与反推转角。
     verified 只在左右两圈都真的转成功、且偏差合格时为 True。
     这个值决定 IMU / 里程计这两项能不能从「待落地验证」转 PASS。
     """
@@ -418,8 +420,10 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0):
     # 四驱同速的阿克曼车转弯必然打滑，理论值由几何算出；
     # 超出这个带宽才说明轮胎磨损、地面油污或某轮卡死。
     slip_tol = float(spin.get("slip_tolerance_pct", 15.0))
-    # 轮距（左右轮中心距）。与轴距不同，它主要影响内外轮速差。
-    track = float(spin.get("track_m", 0) or 0)
+    # 轮距（左右轮中心距）由调用方从 motion 顶层传入。
+    # 曾经写成 `spin.get("track_m")` —— 而 baseline 里它在 motion.track_m，
+    # 与 spin 平级，于是永远读到 0，报告一直显示
+    # 「缺轴距/轮距参数，无法与理论值对比」（2026-11-10 实车报告即为此）。
 
     # 理论打滑率只看几何，与具体哪一次跑无关，循环外算一次。
     theory_slip = expected_slip(wheelbase, track, steer) if track > 0 else None

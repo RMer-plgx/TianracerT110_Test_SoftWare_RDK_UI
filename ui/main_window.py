@@ -1134,12 +1134,16 @@ class MainWindow(QMainWindow):
         dialog = QMessageBox(self)
         dialog.setWindowTitle("架空段已通过")
         dialog.setIcon(QMessageBox.Information)
+        # 不用 `<strong>`：Qt 的富文本子集不认这个标签，会原样显示
+        # （2026-11-10 用户看到「并<strong>左转…」）。用纯文本 + 分隔符强调。
         dialog.setText(
             "架空段已通过。\n\n"
             "把车放到开阔平地、轮子着地。\n\n"
-            "落地段会让车前进后退、左右转向，"
-            "并<strong>左转、右转各转一整圈</strong>做航向互校。\n"
-            "请确认周围约 <strong>2.5 m × 2.5 m</strong> 内无人无障碍。\n\n"
+            "落地段会让车前进后退、左右转向，\n"
+            "并左转、右转各转一整圈做航向互校。\n\n"
+            "场地要求：约 4 m × 4 m 无人无障碍。\n"
+            "（纯圆弧只需 1.8 m，但四驱同速转弯必然打滑，\n"
+            "  实测转一圈会偏离起点 1.1~1.3 m，所以要多留空间。）\n\n"
             "放好后点「继续落地段」；不需要则点「跳过」。"
         )
         continue_btn = dialog.addButton("继续落地段", QMessageBox.AcceptRole)
