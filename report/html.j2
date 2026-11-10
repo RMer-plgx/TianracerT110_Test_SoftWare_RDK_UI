@@ -592,20 +592,78 @@
   // 避免特殊字符破坏 JS 字符串或路径。
   var PDF_FILENAME = '检测报告_{{ safe_host }}_{{ report.started_at | replace("-","") | replace(":","") | replace(" ","-") }}.pdf';
 
+  // 页边距（mm）。上下左右都留白，切点也就不会紧贴纸张边缘。
+  var PDF_MARGIN_MM = 12;
+
+  /* 在理想切点上方找一条「整行全白」的横带，作为真正的分页位置。
+
+     为什么要这样：下面把整份报告画成一张位图再按页高切，硬切会正好
+     落在文字行中间——上半截在上一页页尾、下半截在下一页页头。
+     CSS 的 break-inside: avoid 对它无效，html2canvas 截图时根本不看分页
+     规则，所以只能在像素上找真正的空白行。
+
+     只读理想切点上方一小条（maxSpan，通常为页高的 18%），不整幅
+     getImageData——scale=2 的整页 canvas 动辄上亿像素，一次读全会把
+     浏览器内存拉爆。 */
+  function findCleanBreak(srcCtx, idealY, maxSpan, width) {
+    var searchSpan = Math.floor(Math.min(maxSpan, idealY));
+    if (searchSpan < 4) return Math.floor(idealY);
+    var searchTop = Math.floor(idealY) - searchSpan;
+    var bandH = Math.floor(idealY) - searchTop;
+    var band;
+    try {
+      band = srcCtx.getImageData(0, searchTop, width, bandH).data;
+    } catch (e) {
+      return Math.floor(idealY);   // 取不到像素就退回硬切，不能因此中断导出
+    }
+    // 从下往上找。
+    // 逐像素扫，不抽样：原先每 4 像素取一个点，会漏掉细于 4px 的内容
+    // （表格的 1px 边框、页码下的细横线），切在那里同样是「半个元素跨页」。
+    // 代价可控：只读页高 18% 的一条带，1800×250 量级，逐像素扫也就几毫秒；
+    // 而且每一行一旦碰到非白像素立刻跳到下一行，绝大多数行只扫开头的几个点。
+    for (var row = bandH - 1; row >= 0; row--) {
+      var base = row * width * 4;
+      var clean = true;
+      for (var x = 0; x < width; x++) {
+        var p = base + x * 4;
+        if (band[p] < 248 || band[p + 1] < 248 || band[p + 2] < 248) {
+          clean = false;
+          break;
+        }
+      }
+      if (clean) return searchTop + row;
+    }
+    return Math.floor(idealY);     // 整条带都有内容（如大表格），只能硬切
+  }
+
   function sliceCanvasToPdf(canvas) {
     var jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
     if (!jsPDFCtor) throw new Error('jsPDF 未加载');
 
     var pdf = new jsPDFCtor('p', 'mm', 'a4');
-    var pageW = 210, pageH = 297;
-    // canvas 宽度映射到 A4 宽度后，一页能容纳多少像素高度
-    var pxPerMm = canvas.width / pageW;
-    var pageHeightPx = Math.floor(pageH * pxPerMm);
+    var pageW = 210, pageH = 297, margin = PDF_MARGIN_MM;
+    var contentW = pageW - margin * 2;
+    var contentH = pageH - margin * 2;
+    // canvas 宽度映射到「内容宽度」（不是整页宽度），加了边距后比例才对
+    var pxPerMm = canvas.width / contentW;
+    var pageHeightPx = Math.floor(contentH * pxPerMm);
 
+    var srcCtx = canvas.getContext('2d');
     var offsetY = 0;
     var first = true;
     while (offsetY < canvas.height) {
-      var sliceH = Math.min(pageHeightPx, canvas.height - offsetY);
+      var sliceH;
+      if (offsetY + pageHeightPx >= canvas.height) {
+        sliceH = canvas.height - offsetY;          // 最后一页，不再找切点
+      } else {
+        // 往回找白行的幅度上限取页高的 18%，否则会切出极短的页、页数暴涨
+        var breakY = findCleanBreak(
+          srcCtx, offsetY + pageHeightPx,
+          Math.floor(pageHeightPx * 0.18), canvas.width);
+        sliceH = breakY - offsetY;
+      }
+      if (sliceH <= 0) break;                      // 防死循环
+
       var pageCanvas = document.createElement('canvas');
       pageCanvas.width = canvas.width;
       pageCanvas.height = sliceH;
@@ -617,7 +675,7 @@
 
       if (!first) pdf.addPage();
       pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG',
-                   0, 0, pageW, sliceH / pxPerMm);
+                   margin, margin, contentW, sliceH / pxPerMm);
       first = false;
       offsetY += sliceH;
     }

@@ -717,15 +717,12 @@ class MainWindow(QMainWindow):
         self.view_btn.clicked.connect(self.open_report)
         layout.addWidget(self.view_btn)
 
-        # 人工检测项：打开 report.html，在那里打勾（勾选状态会保存）
-        self.manual_btn = QPushButton("人工检测项")
-        self.manual_btn.setObjectName("Ghost")
-        self.manual_btn.setEnabled(False)
-        self.manual_btn.setToolTip(
-            "打开报告：逐条勾选人工确认项、「确认接受」告警项，并在报告里下载 PDF"
-        )
-        self.manual_btn.clicked.connect(self.open_manual_check)
-        layout.addWidget(self.manual_btn)
+        # 「人工检测项」按钮已于 2026-11-10 删除：
+        # 它只是跳到 report.html 的 #manual 锚点，而「查看报告」已经能打开同一份
+        # 报告，勾选与 PDF 下载都在报告页面内完成，这个入口是多余的。
+        # 实测点击无反应（系统未接管 file:// 的 fragment 跳转），留着只会误导。
+        # 报告里的「需要人工现场确认的项目」一节保留 —— 它是人工复核与
+        # 「确认接受」告警项的唯一载体，删按钮不等于删功能。
 
         # 清理使用记录：删掉车上 ROS 日志 / bash_history / .viminfo
         self.clean_btn = QPushButton("清理使用记录")
@@ -1193,7 +1190,6 @@ class MainWindow(QMainWindow):
             self.record_dir = Path(record_dir)
             self.view_btn.setEnabled(True)
             self.open_btn.setEnabled(True)
-            self.manual_btn.setEnabled(True)
             self._log(f"报告已生成：{self.record_dir}")
 
         # 清理按钮只要有过一次可用的连接参数就放开——
@@ -1261,32 +1257,7 @@ class MainWindow(QMainWindow):
         import os
         os.startfile(str(self.record_dir))  # noqa: S606
 
-    # -- 人工项 / 清理 / PDF ----------------------------------------------
-
-    def open_manual_check(self) -> None:
-        """打开报告并直接定位到「需要人工确认的项目」。
-
-        用默认浏览器打开，而不是内置窗口：
-        - 报告里勾选状态存在浏览器 localStorage，下次打开还在
-        - 「下载 PDF」按钮在报告内部，用浏览器自己的打印转 PDF，
-          勾选状态天然带进 PDF（内置 QWebEngine 是独立 profile，
-          拿不到浏览器里勾的东西，这是 2026-11-03 审查指出的问题）
-        """
-        if self.record_dir is None:
-            return
-        html = self.record_dir / "report.html"
-        if not html.exists():
-            QMessageBox.warning(
-                self, "报告不存在",
-                f"没有找到 {html}。\n请先完成一次检测。",
-            )
-            return
-        from PyQt5.QtCore import QUrl
-        from PyQt5.QtGui import QDesktopServices
-
-        url = QUrl.fromLocalFile(str(html))
-        url.setFragment("manual")
-        QDesktopServices.openUrl(url)
+    # -- 清理 -------------------------------------------------------------
 
     def cleanup_traces(self) -> None:
         """手动清理车上使用痕迹。"""
