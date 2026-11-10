@@ -150,3 +150,65 @@ def summarize(wheelbase_m: float, steer_cmd_rad: float, speed_cmd_mps: float,
         "curve_length_m": (round(abs(math.radians(target_deg)) * radius, 2)
                            if radius else None),
     }
+
+
+def expected_slip(wheelbase_m: float, track_m: float,
+                  steer_rad: float) -> Optional[dict]:
+    """四驱同速阿克曼车转弯时的**理论打滑率**。
+
+    为什么这是必然的
+    ----------------
+    T110 是阿克曼四驱：一个电机经齿轮/皮带带四个轮子，**四轮转速强制相同**。
+    而转弯时四个轮子走过的路径长度各不相同：
+
+    1. **内外轮**：同一轴上，内轮走半径 `R − W/2`、外轮走 `R + W/2`。
+       速度需求差 `W / R`。四驱同速 → 必有一侧打滑。
+    2. **前后轴**：前轴走 `√(R² + L²)`，后轴走 `R`。
+       需求差 `√(1 + (L/R)²) − 1`。四驱同速 → 某一轴被拖着走。
+    3. **单舵机**：真阿克曼要求内外前轮转角不同
+       （`atan(L/(R∓W/2))`），单舵机拉杆只能给一个角，
+       近似平行转向 → 前轮额外侧滑。
+
+    实测验证（2026-11-10，δ=0.35 rad、v=0.12 m/s、轴距 0.261、轮距 0.163）：
+        理论 29.3%  vs  实测左转 28.4% / 右转 34.5%
+
+    左转几乎完全吻合，说明打滑量**由几何决定，不是偶发故障**。
+
+    返回 dict，`total_pct` 是与 odom/IMU 对比时可直接用的打滑率。
+    转角为 0 或参数非法返回 None。
+    """
+    if wheelbase_m <= 0 or track_m <= 0:
+        return None
+    radius = turning_radius(wheelbase_m, steer_rad)
+    if radius is None or radius <= 0:
+        return None
+    lr = track_m / radius                              # 内外轮
+    fb = math.hypot(radius, wheelbase_m) / radius - 1.0  # 前后轴
+    return {
+        "radius_m": round(radius, 4),
+        "lateral_pct": round(lr * 100, 2),
+        "fore_aft_pct": round(fb * 100, 2),
+        "total_pct": round((lr + fb) * 100, 2),
+    }
+
+
+def ideal_front_angles(wheelbase_m: float, track_m: float,
+                       steer_rad: float) -> Optional[dict]:
+    """真阿克曼要求的内外前轮转角，用于说明单舵机的偏差。
+
+    外轮：`atan(L / (R + W/2))`，内轮：`atan(L / (R − W/2))`。
+    两者之差就是单舵机无法消除的侧滑角。
+    """
+    radius = turning_radius(wheelbase_m, steer_rad)
+    if radius is None or track_m <= 0:
+        return None
+    half = track_m / 2.0
+    if radius - half <= 0:
+        return None
+    outer = math.atan(wheelbase_m / (radius + half))
+    inner = math.atan(wheelbase_m / (radius - half))
+    return {
+        "outer_deg": round(math.degrees(outer), 2),
+        "inner_deg": round(math.degrees(inner), 2),
+        "spread_deg": round(math.degrees(inner - outer), 2),
+    }

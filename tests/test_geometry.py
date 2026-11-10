@@ -12,6 +12,7 @@ import math
 import pytest
 
 from core.geometry import (closure_after_turn, correct_for_slip,
+                           expected_slip, ideal_front_angles,
                            slip_ratio, spin_seconds, steer_from_measurement,
                            steer_from_radius, summarize, turning_radius,
                            yaw_rate_rad)
@@ -224,3 +225,55 @@ class TestSlipSymmetry:
         a = slip_ratio(94.0, 72.8)
         b = slip_ratio(-94.0, -72.8)
         assert a == pytest.approx(b)
+
+
+class TestExpectedSlip:
+    """四驱同速阿克曼车的理论打滑率。
+
+    这是 2026-11-10 最关键的一个结论：打滑不是故障，是几何必然。
+    如果这个函数算错，判据会把正常车判成异常。
+    """
+
+    L, W = 0.261, 0.1631     # URDF 实测
+
+    def test_matches_hand_calculation(self):
+        """δ=0.35 时理论打滑应为 29.3%（内外 22.8 + 前后 6.5）。"""
+        s = expected_slip(self.L, self.W, 0.35)
+        assert s["total_pct"] == pytest.approx(29.3, abs=0.5)
+        assert s["lateral_pct"] == pytest.approx(22.8, abs=0.5)
+        assert s["fore_aft_pct"] == pytest.approx(6.5, abs=0.5)
+
+    def test_decreases_with_smaller_steer(self):
+        """转角越小半径越大，打滑越小 —— 单调性。"""
+        vals = [expected_slip(self.L, self.W, d)["total_pct"]
+                for d in (0.35, 0.30, 0.25, 0.20)]
+        assert vals == sorted(vals, reverse=True)
+
+    def test_straight_line_has_no_slip(self):
+        assert expected_slip(self.L, self.W, 0.0) is None
+
+    def test_real_vehicle_agrees(self):
+        """实车实测左转 28.4%、右转 34.5%，应与理论 29.3% 同量级。
+
+        左转几乎完全吻合；右转偏高（重心偏向内侧轮）。
+        """
+        theory = expected_slip(self.L, self.W, 0.35)["total_pct"]
+        assert abs(theory - 28.4) < 2.0
+        assert abs(theory - 34.5) < 6.0
+
+
+class TestIdealFrontAngles:
+    """单舵机做不到真阿克曼，内外前轮角差就是无法消除的侧滑。"""
+
+    def test_spread_is_a_few_degrees(self):
+        f = ideal_front_angles(0.261, 0.1631, 0.35)
+        assert f["inner_deg"] > f["outer_deg"]
+        assert f["spread_deg"] == pytest.approx(4.25, abs=0.3)
+
+    def test_spread_shrinks_with_smaller_steer(self):
+        big = ideal_front_angles(0.261, 0.1631, 0.35)["spread_deg"]
+        small = ideal_front_angles(0.261, 0.1631, 0.20)["spread_deg"]
+        assert small < big
+
+    def test_straight_line_has_no_spread(self):
+        assert ideal_front_angles(0.261, 0.1631, 0.0) is None

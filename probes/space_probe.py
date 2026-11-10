@@ -45,6 +45,20 @@ FRONT_OVERHANG = 0.16    # 前轴到车头
 REAR_OVERHANG = 0.10     # 后轴到车尾
 SAFETY_MARGIN = 0.15     # 判定时额外留的余量
 
+# 打滑导致的**终点位置漂移**（米），仅作提示，不进扫掠判定。
+#
+# 2026-11-10 实测：转满一圈后车偏离起点 1.12 m（左）/ 1.27 m（右）。
+# 但同一测试在最近障碍 1.48 m 的场地完成且未碰撞 —— 说明漂移发生在
+# 扫掠范围之内（打滑让轨迹内缩成螺旋，不向外扩）。
+#
+# 所以**不能**把漂移量直接加到扫掠外环上：那会把 2.5 m 的场地判成
+# unsafe，而实测 1.5 m 就能转。仅作为报告提示，提醒操作者留出返程空间。
+SLIP_DRIFT_NOTE_M = 1.30
+
+# 扫掠判定是否加打滑余量。默认 False —— 几何扫掠才是碰撞判据。
+# 若某天发现轨迹确实外扩（例如打滑方向相反），再打开并重新标定数值。
+SLIP_INFLATE = False
+
 FAR_M = 30.0
 
 SECTORS = [
@@ -112,6 +126,11 @@ def swept_check(scan, steer_rad, speed, seconds, wheelbase=WHEELBASE):
     omega = abs(speed) / turn_radius                    # rad/s
     sweep_deg = math.degrees(omega * seconds)           # 扫过角度
 
+    # 默认不加打滑余量：实测表明漂移在扫掠范围之内，不是向外扩。
+    # 打开 SLIP_INFLATE 会把保守度提高，但也可能把可行场地误判为不可行。
+    slip_allow = (SLIP_DRIFT_NOTE_M * min(1.0, sweep_deg / 360.0)
+                  if SLIP_INFLATE else 0.0)
+
     sign = 1.0 if steer_rad > 0 else -1.0
     cy = sign * turn_radius                             # 回转中心（车体坐标）
 
@@ -144,13 +163,14 @@ def swept_check(scan, steer_rad, speed, seconds, wheelbase=WHEELBASE):
         if delta > sweep_deg + 5:        # 5° 余量：弧外的不算
             continue
 
-        if inner <= dist <= outer:
-            # 在扫掠环内 —— 车必然碰上
+        outer_with_slip = outer + slip_allow
+        if inner <= dist <= outer_with_slip:
+            # 在扫掠环内（含打滑漂移余量）—— 车会碰上
             hits += 1
-            near = min(dist - inner, outer - dist)
+            near = min(dist - inner, outer_with_slip - dist)
             conflict = near if conflict is None else min(conflict, near)
         else:
-            gap = min(abs(dist - inner), abs(dist - outer))
+            gap = min(abs(dist - inner), abs(dist - outer_with_slip))
             margin = gap if margin is None else min(margin, gap)
 
     verdict = "unsafe" if hits else "safe"
@@ -162,9 +182,14 @@ def swept_check(scan, steer_rad, speed, seconds, wheelbase=WHEELBASE):
         "annulus": {
             "inner_m": round(inner, 3),
             "outer_m": round(outer, 3),
+            "outer_with_slip_m": round(outer + slip_allow, 3),
+            "slip_allowance_m": round(slip_allow, 3),
             "turn_radius_m": round(turn_radius, 3),
             "sweep_deg": round(sweep_deg, 1),
         },
+        # 提示项：整圈跑完车会偏离起点多少（实测值，非判定依据）
+        "slip_drift_note_m": (round(SLIP_DRIFT_NOTE_M, 2)
+                              if abs(sweep_deg) >= 300 else None),
     }
 
 

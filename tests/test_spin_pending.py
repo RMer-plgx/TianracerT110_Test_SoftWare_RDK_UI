@@ -108,17 +108,30 @@ class _FakeCtx:
         self.spin_verified = False
 
 
+# 真实打滑：四驱同速的阿克曼车转弯时 odom 一定大于 IMU（转 360° 时约 29%）。
+# 夹具用这个比例，否则「打滑率判据」测不出真实行为。
 SPIN_OK = {
     "ok": True, "aborted": False, "reached": True, "anomaly": "",
-    "target_deg": 360, "imu_yaw_deg": 358.2, "odom_yaw_deg": 351.7,
-    "yaw_diff_deg": 6.5, "closure_m": 0.12, "duration": 36.4,
-    "samples": 730, "imu_source": "orientation",
+    "target_deg": 360, "imu_yaw_deg": 360.5, "odom_yaw_deg": 465.0,
+    "yaw_diff_deg": 104.5, "closure_m": 1.12, "duration": 49.8,
+    "samples": 5000, "imu_source": "orientation",
 }
 
 
-def _spin(imu, odom, reached=True, aborted=False):
+def _spin(imu, odom=None, reached=True, aborted=False, slip_pct=29.0):
+    """构造一帧 spin_probe 结果。
+
+    不传 `odom` 时按**理论打滑率**反算 —— 四驱同速的阿克曼车转弯必然
+    打滑（δ=0.35 时约 29%），odom 一定大于 IMU。
+    以前夹具里 odom≈imu 是物理上不可能的值，会让打滑判据测不到真实行为。
+
+    传 `odom` 时按给定值（用于构造异常场景，如打滑远超理论）。
+    """
     data = dict(SPIN_OK)
     data["imu_yaw_deg"] = imu
+    if odom is None:
+        sign = 1.0 if imu >= 0 else -1.0
+        odom = imu * (1.0 + slip_pct / 100.0)
     data["odom_yaw_deg"] = odom
     data["yaw_diff_deg"] = abs(imu - odom)
     data["reached"] = reached
@@ -135,6 +148,8 @@ class TestSpinJudgement:
                 "speed": 0.12, "steer_angle": 0.35, "target_yaw_deg": 360,
                 "max_seconds": 90, "yaw_tolerance_deg": 15,
                 "yaw_warn_deg": 30, "closure_warn_m": 0.30,
+                # 轮距与轴距决定理论打滑率；不给的话打滑判据不生效
+                "track_m": 0.1631, "slip_tolerance_pct": 15.0,
             },
             "safety": {"spin_max_speed_mps": 0.25, "spin_max_seconds": 120},
         }
@@ -149,55 +164,79 @@ class TestSpinJudgement:
         result = CheckResult(number=18, title="运动控制", status=Status.PASS)
         statuses, verified = motion._run_spin(
             ctx, self.BASELINE["motion"]["spin"], result,
-            self.BASELINE["motion"]["safety"])
+            self.BASELINE["motion"]["safety"], wheelbase=0.261)
         return statuses, verified, result, recorder
 
     def test_small_diff_passes_and_verifies(self, monkeypatch):
         statuses, verified, result, _ = self._run(
-            monkeypatch, [_spin(360.0, 355.0), _spin(-360.0, -356.0)])
+            monkeypatch, [_spin(360.0), _spin(-360.0)])
         assert all(s is Status.PASS for s in statuses)
         assert verified is True
 
-    def test_medium_diff_warns_and_stays_unverified(self, monkeypatch):
-        # 差 20° 在 15~30 之间：告警，且不能算验证通过
+    def test_medium_posture_error_warns(self, monkeypatch):
+        """IMU 姿态误差 20° 在 15~30 之间：告警，不算验证通过。
+
+        判据是「IMU 相对目标」，不是「IMU 与 odom 之差」——
+        后者被必然打滑污染，常年 100°+。
+        """
         statuses, verified, _, _ = self._run(
-            monkeypatch, [_spin(360.0, 340.0), _spin(-360.0, -340.0)])
+            monkeypatch, [_spin(380.0), _spin(-380.0)])
         assert any(s is Status.WARN for s in statuses)
         assert verified is False
 
-    def test_large_diff_fails(self, monkeypatch):
+    def test_large_posture_error_fails(self, monkeypatch):
+        """姿态误差 60° 远超容差：失败。"""
         statuses, verified, _, _ = self._run(
-            monkeypatch, [_spin(360.0, 300.0), _spin(-360.0, -300.0)])
+            monkeypatch, [_spin(420.0), _spin(-420.0)])
         assert any(s is Status.FAIL for s in statuses)
         assert verified is False
 
     def test_one_side_bad_blocks_verification(self, monkeypatch):
-        # 左转好、右转差 —— 不能因为一侧通过就放行
+        """左转准、右转差 —— 不能因为一侧通过就放行。"""
         statuses, verified, _, _ = self._run(
-            monkeypatch, [_spin(360.0, 358.0), _spin(-360.0, -300.0)])
+            monkeypatch, [_spin(360.0), _spin(-420.0)])
+        assert verified is False
+
+    def test_expected_slip_passes(self, monkeypatch):
+        """29% 打滑是四驱同速的必然结果，不能因此判失败。
+
+        2026-11-10 实测：IMU 360.68°、odom 463.28°，打滑 28.4%。
+        旧判据拿 102.6° 的差值判 FAIL，等于用物理上达不到的标准判它。
+        """
+        statuses, verified, _, _ = self._run(
+            monkeypatch, [_spin(360.5), _spin(-360.5)])
+        assert all(s is Status.PASS for s in statuses), statuses
+        assert verified is True
+
+    def test_abnormal_slip_is_flagged(self, monkeypatch):
+        """打滑远超理论值说明有异常（轮胎磨损、地面油污、某轮卡死）。"""
+        # imu 准，但 odom 是 3 倍 —— 打滑 200%，远超理论 29%
+        statuses, verified, _, _ = self._run(
+            monkeypatch, [_spin(360.5, 1080.0), _spin(-360.5, -1080.0)])
+        assert any(s is Status.FAIL for s in statuses), statuses
         assert verified is False
 
     def test_unreached_spin_does_not_verify(self, monkeypatch):
         # 没转到 360°（异常提前停）不能算验证过
         statuses, verified, _, _ = self._run(
-            monkeypatch, [_spin(120.0, 118.0, reached=False),
-                          _spin(-360.0, -358.0)])
+            monkeypatch, [_spin(120.0, reached=False),
+                          _spin(-360.0)])
         assert verified is False
 
     def test_aborted_spin_does_not_verify(self, monkeypatch):
         statuses, verified, _, _ = self._run(
-            monkeypatch, [_spin(100.0, 99.0, reached=False, aborted=True),
-                          _spin(-360.0, -358.0)])
+            monkeypatch, [_spin(100.0, reached=False, aborted=True),
+                          _spin(-360.0)])
         assert verified is False
 
     def test_probe_failure_fails(self, monkeypatch):
-        statuses, verified, _, _ = self._run(monkeypatch, [None, _spin(-360, -358)])
+        statuses, verified, _, _ = self._run(monkeypatch, [None, _spin(-360)])
         assert any(s is Status.FAIL for s in statuses)
         assert verified is False
 
     def test_left_and_right_both_probed(self, monkeypatch):
         _, _, _, recorder = self._run(
-            monkeypatch, [_spin(360.0, 358.0), _spin(-360.0, -358.0)])
+            monkeypatch, [_spin(360.0), _spin(-360.0)])
         assert [c[0] for c in recorder.calls] == ["spin_probe", "spin_probe"]
         # 左右的目标角度符号必须相反
         targets = [float(c[1][2]) for c in recorder.calls]
@@ -213,12 +252,12 @@ class TestSpinJudgement:
             }
         }
         from checks import motion
-        recorder = _ProbeRecorder([_spin(360, 358), _spin(-360, -358)])
+        recorder = _ProbeRecorder([_spin(360), _spin(-360)])
         monkeypatch.setattr(motion, "run_probe", recorder)
         ctx = _FakeCtx(baseline, "full")
         result = CheckResult(number=18, title="运动控制", status=Status.PASS)
         motion._run_spin(ctx, baseline["motion"]["spin"], result,
-                         baseline["motion"]["safety"])
+                         baseline["motion"]["safety"], wheelbase=0.261)
         assert float(recorder.calls[0][1][0]) <= 0.25
 
 
@@ -260,7 +299,7 @@ class TestGroundRunsSpin:
         recorder = _ProbeRecorder([
             self._motion(), self._motion(),   # 落地·前进 / 落地·后退
             self._motion(), self._motion(),   # 落地·左转 / 落地·右转
-            _spin(360.0, 358.0), _spin(-360.0, -358.0),
+            _spin(360.0), _spin(-360.0),
         ])
         monkeypatch.setattr(motion, "run_probe", recorder)
         ctx = _FakeCtx(self.BASELINE, "full")

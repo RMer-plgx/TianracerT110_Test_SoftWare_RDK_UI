@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 
-from core.geometry import (correct_for_slip, slip_ratio,
+from core.geometry import (correct_for_slip, expected_slip, slip_ratio,
                            steer_from_measurement, summarize)
 from core.verdict import (CheckResult, Status, judge_all, judge_displacement,
                           judge_distance, judge_max_only, judge_range,
@@ -414,6 +414,22 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0):
     tol = float(spin.get("yaw_tolerance_deg", 15.0))
     warn_at = float(spin.get("yaw_warn_deg", 30.0))
     closure_warn = float(spin.get("closure_warn_m", 0.30))
+    # 打滑率允许偏离理论值的幅度（百分点）。
+    # 四驱同速的阿克曼车转弯必然打滑，理论值由几何算出；
+    # 超出这个带宽才说明轮胎磨损、地面油污或某轮卡死。
+    slip_tol = float(spin.get("slip_tolerance_pct", 15.0))
+    # 轮距（左右轮中心距）。与轴距不同，它主要影响内外轮速差。
+    track = float(spin.get("track_m", 0) or 0)
+
+    # 理论打滑率只看几何，与具体哪一次跑无关，循环外算一次。
+    theory_slip = expected_slip(wheelbase, track, steer) if track > 0 else None
+    if theory_slip:
+        result.add("转向几何", f"理论打滑 {theory_slip['total_pct']:.0f}%", "",
+                   note=(f"轴距 {wheelbase:.3f} m、轮距 {track:.3f} m、"
+                         f"转角 {math.degrees(abs(steer)):.1f}°；"
+                         f"内外轮 {theory_slip['lateral_pct']:.0f}% + "
+                         f"前后轴 {theory_slip['fore_aft_pct']:.0f}%。"
+                         f"四驱同速导致，不是故障"))
 
     hard_speed = float(safety.get("spin_max_speed_mps", 0.25))
     hard_seconds = float(safety.get("spin_max_seconds", 120.0))
@@ -468,6 +484,11 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0):
         closure = data.get("closure_m")
         duration = data.get("duration")
 
+        # 打滑率提前算：主判据与几何反推都要用。
+        # 旧版只在几何反推那段里算，导致判定刚拿不到。
+        slip = slip_ratio(odom_deg, imu_deg) if (odom_deg is not None and imu_deg) else None
+        slip_pct = slip * 100.0 if slip is not None else None
+
         result.add(f"{side}转整圈耗时", f"{duration:.1f}" if duration else "?", "s")
         result.add(f"{side}转 IMU 累积", f"{imu_deg:+.1f}", "°",
                    expected=f"±{target:.0f}°") if imu_deg is not None else \
@@ -476,11 +497,19 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0):
                    expected=f"±{target:.0f}°") if odom_deg is not None else \
             result.add(f"{side}转 odom 累积", "未取得")
 
-        if diff is not None:
-            result.add(f"{side}转航向偏差", f"{diff:.1f}", "°",
-                       expected=f"≤ {tol:.0f}° 合格，> {warn_at:.0f}° 失败",
-                       note="里程计推算航向与 IMU 实测航向之差")
-            st = judge_max_only(diff, tol, warn_at)
+        # ---- 主判据：车体姿态确实转够了 ----
+        # 这是唯一直接测量、不受打滑污染的指标：IMU 测的是车体姿态角。
+        # 旧版拿 IMU 与 odom 的差值判 PASS/FAIL，而四驱同速的阿克曼车
+        # **必然**打滑 29%，差值常年 100°+ —— 等于用一个物理上达不到的
+        # 标准判它失败。2026-11-10 实测：IMU 转 360.68°（过冲 0.68°，准），
+        # 但 odom 463.28°，差 102.6°。
+        if imu_deg is not None:
+            imu_err = abs(abs(imu_deg) - abs(target))
+            result.add(f"{side}转姿态误差", f"{imu_err:.2f}", "°",
+                       expected=f"≤ {tol:.0f}°",
+                       note=(f"IMU 实测 {imu_deg:+.1f}° 相对目标 "
+                             f"{signed_target:+.0f}° 的偏差"))
+            st = judge_max_only(imu_err, tol, warn_at)
             statuses.append(st)
             if st is not Status.PASS:
                 verified_all = False
@@ -488,16 +517,44 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0):
             statuses.append(Status.SKIP)
             verified_all = False
 
+        # ---- 打滑率：与几何理论值对比，不是「越小越好」----
+        # 四驱同速 + 单舵机的结构决定了转弯必然打滑，理论值由
+        # `expected_slip()` 按轴距/轮距/转角算出。偏离过多才说明异常
+        # （轮胎磨损、地面油污、某轮卡死）。
+        if slip_pct is not None and theory_slip is not None:
+            dev = slip_pct - theory_slip["total_pct"]
+            result.add(
+                f"{side}转打滑率", f"{slip_pct:.0f}", "%",
+                expected=f"理论 {theory_slip['total_pct']:.0f}% ± {slip_tol:.0f}",
+                note=(f"内外轮差 {theory_slip['lateral_pct']:.0f}% + "
+                      f"前后轴差 {theory_slip['fore_aft_pct']:.0f}%；"
+                      f"四驱同速导致，不是故障"))
+            st = judge_max_only(abs(dev), slip_tol, slip_tol * 2)
+            statuses.append(st)
+            if st is not Status.PASS:
+                verified_all = False
+        elif slip_pct is not None:
+            # 没有几何参数时只记录，不判定
+            result.add(f"{side}转打滑率", f"{slip_pct:.0f}", "%",
+                       note="缺轴距/轮距参数，无法与理论值对比")
+
+        # ---- 闭合误差：只记录，不判定 ----
+        # 它几乎完全由打滑决定：转 360° 后位置漂移 ≈ R × 打滑率。
+        # 实测 1.12~1.27 m，与「R=0.715 × 29% ≈ 0.21 m」同量级但不相等，
+        # 因为轨迹不是理想圆弧。把它当合格线判会永远 FAIL。
         if closure is not None:
-            result.add(f"{side}转闭合误差", f"{closure:.3f}", "m",
-                       note=f"转完一圈回到起点的距离，> {closure_warn} m 提示打滑")
+            # 只记录不判定。它由打滑与轨迹形变共同决定，没有可靠的解析估计：
+            # 2026-11-10 实测 1.12~1.27 m，而 R×打滑率只给出 0.21 m（差 5 倍），
+            # 因为位移来自转弯中心漂移，不是半径差。留作人工判断与历史对比。
+            result.add(
+                f"{side}转闭合误差", f"{closure:.3f}", "m",
+                note="转完一圈回到起点的距离；四驱同速必打滑，此项不参与判定")
 
         # ---- 几何反推：把「指令转向角」换成「真实转向角」----
         # MCU 不回传舵机角度，只能用 IMU 实测角速度间接反推。
         # 这是在不改固件的前提下唯一能量化「舵机到底差多少」的办法。
         if wheelbase > 0 and duration and duration > 0 and imu_deg:
             omega_deg = abs(imu_deg) / duration
-            slip = slip_ratio(odom_deg, imu_deg) if odom_deg is not None else None
             v_real = correct_for_slip(abs(speed), slip)
             real_steer = steer_from_measurement(wheelbase, v_real, omega_deg)
             theo = summarize(wheelbase, abs(steer), abs(speed), abs(target))
@@ -509,10 +566,6 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0):
                           f"{theo['steer_cmd_deg']:.1f}° 算的理论值"))
             result.add(f"{side}转实测角速度", f"{omega_deg:.2f}", "°/s")
 
-            if slip is not None:
-                result.add(
-                    f"{side}转打滑率", f"{slip * 100:.0f}", "%",
-                    note="轮速推算航向超出 IMU 的比例；越大说明轮胎打滑越重")
             if real_steer is not None:
                 real_deg = math.degrees(real_steer)
                 cmd_deg = math.degrees(abs(steer))
