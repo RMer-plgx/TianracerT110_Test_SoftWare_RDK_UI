@@ -33,3 +33,9 @@ venv/
 .idea/
 *.swp
 .DS_Store
+
+# 转向标定产物：每次跑都不同，属现场数据不入库。
+# 需要留档时另行导出到 test records/ 或 .codewhale/evidence/。
+calib_*.json
+steer_calib.json
+smoke*.json

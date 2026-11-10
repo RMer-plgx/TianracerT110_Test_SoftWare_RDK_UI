@@ -611,3 +611,110 @@ class TestGroundDependentsResolution:
         runner._resolve_ground_dependents(self._ctx(True))
         assert all(r.status is Status.PASS for r in runner.report.results)
 
+
+
+class TestSpinUnitConsistency:
+    """转圈判定与上报必须用同一个单位：度。
+
+    这是实车暴露的真 bug（2026-11-07 23:35 的报告）：
+    `travelled = abs(imu_tracker.total - imu0)` 拿到的是**弧度**，
+    而 `stop_at` 来自命令行 `target_yaw_deg`，是**度**。
+
+    转满一圈只累积 6.28（弧度），阈值写着 360（度），
+    `6.28 >= 360` 永假 —— 探针永远不判 reached，车一直转到 90 秒超时。
+
+    实车表现（raw.log 原文）：
+        spin_left  超时 90s 未达到 360°, imu_yaw_deg=688.4, odom=875.38
+        spin_right 超时 90s 未达到 360°, imu_yaw_deg=-614.61, odom=-857.66
+    车转了两圈多才停，闭合误差 1.39 m。
+
+    原有 TestYawAccumulation 只测了 `YawTracker.degrees`，
+    **没测循环里的比较**，所以这个 bug 溜过去了。
+    """
+
+    @staticmethod
+    def _load():
+        import math
+        import sys
+        import types
+
+        for name in ("rospy", "ackermann_msgs", "ackermann_msgs.msg",
+                     "nav_msgs", "nav_msgs.msg", "sensor_msgs", "sensor_msgs.msg"):
+            sys.modules.setdefault(name, types.ModuleType(name))
+        sys.modules["ackermann_msgs.msg"].AckermannDrive = type("AckermannDrive", (), {})
+        sys.modules["nav_msgs.msg"].Odometry = type("Odometry", (), {})
+        sys.modules["sensor_msgs.msg"].Imu = type("Imu", (), {})
+
+        from core.paths import resource_path
+        src = resource_path("probes/spin_probe.py").read_text(encoding="utf-8")
+        head = src.split("def publish(")[0]
+        ns = {"__name__": "spinmod"}
+        exec(compile(head, "spin_probe", "exec"), ns)
+        return ns["covered_deg"], math
+
+    def test_one_full_turn_is_360_degrees_not_6_28(self):
+        """转满一圈必须给出 360，不是 2π。
+
+        这一条直接复现原 bug：修复前返回 6.28，与阈值 360 比较永假。
+        """
+        covered_deg, math = self._load()
+        value = covered_deg(2 * math.pi, 0.0)
+        assert abs(value - 360.0) < 0.01, (
+            f"转一圈得到 {value}，单位不是度（应当 360）"
+        )
+
+    def test_360_reaches_a_360_target(self):
+        """转满 360° 时，`travelled >= stop_at` 必须成立。
+
+        这是 reached 的判定条件本身，不是推导。
+        """
+        covered_deg, math = self._load()
+        stop_at = 360.0
+        assert covered_deg(2 * math.pi, 0.0) >= stop_at
+
+    def test_real_vehicle_reading_matches_reported_degrees(self):
+        """用实车 raw.log 的弧度值复算，应得到报告里那个度数。
+
+        spin_left 的 imu_yaw_deg 报的是 688.4°，对应弧度差约 12.01。
+        """
+        covered_deg, math = self._load()
+        rad = math.radians(688.4)
+        assert abs(covered_deg(rad, 0.0) - 688.4) < 0.1
+
+    def test_negative_direction_uses_absolute(self):
+        """右转（负方向）也按绝对值比较，与 stop_at 的正数语义一致。"""
+        covered_deg, math = self._load()
+        assert abs(covered_deg(-2 * math.pi, 0.0) - 360.0) < 0.01
+
+    def test_anomaly_threshold_is_reachable(self):
+        """1.3 倍阈值（468°）必须能被达到，否则异常检测永不触发。
+
+        原 bug 下 anomaly_at=468 也永不成立，所以只能超时 ——
+        这正是报告里「超时 90s」而非「已转过 xxx° 判定异常」的原因。
+        """
+        covered_deg, math = self._load()
+        anomaly_at = 360.0 * 1.3
+        assert covered_deg(math.radians(470), 0.0) >= anomaly_at
+
+    def test_base_offset_is_subtracted(self):
+        """起点不是 0 时也要正确：只算相对变化量。"""
+        covered_deg, math = self._load()
+        base = math.radians(-170)
+        now = base + 2 * math.pi
+        assert abs(covered_deg(now, base) - 360.0) < 0.01
+
+    def test_probe_uses_the_shared_function_in_both_places(self):
+        """判定与上报走同一个转换函数。
+
+        单位一旦在两个地方各写一遍，就会再次漂移。
+        这里断言源码里不再出现裸的 `abs(imu_tracker.total - imu0)`
+        直接拿去比较的写法。
+        """
+        from core.paths import resource_path
+        src = resource_path("probes/spin_probe.py").read_text(encoding="utf-8")
+        assert "travelled = covered_deg(" in src, (
+            "循环判定没有用 covered_deg()，单位可能又散了"
+        )
+        assert "travelled = abs(imu_tracker.total - imu0)" not in src, (
+            "出现了裸的弧度比较，会重现永不 reached 的 bug"
+        )

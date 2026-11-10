@@ -63,6 +63,22 @@ def quat_to_yaw(x: float, y: float, z: float, w: float) -> float:
     return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
 
 
+def covered_deg(total_rad: float, base_rad: float) -> float:
+    """已转过的角度，**单位：度**。
+
+    `YawTracker.total` 是弧度（`quat_to_yaw` 用 atan2，再累加 wrap 的弧度差），
+    而目标角度与异常阈值来自命令行参数，是度。两者直接比会永远不成立：
+    转满 360° 只累积 6.28，而阈值写着 360。
+
+    曾经就是这样：探针一直不判 reached，车转到超时才停。
+    实车表现为左右各转 91 秒、累积 600~900°、闭合误差 1.4 m。
+
+    判定（`travelled >= stop_at`）与上报（`imu_yaw_deg`）都走这个函数，
+    单位只在这里定一次。
+    """
+    return math.degrees(abs(total_rad - base_rad))
+
+
 class YawTracker:
     """累积航向变化，正确处理 ±180° 跨越和超过一圈的情况。
 
@@ -222,9 +238,11 @@ def main():
                 aborted = True
                 break
 
-            travelled = abs(imu_tracker.total - imu0)
+            # 单位统一由 covered_deg() 负责（弧度 → 度）。
+            # `stop_at` / `anomaly_at` 是度，这里必须是度才能比较。
+            travelled = covered_deg(imu_tracker.total, imu0)
             if travelled >= anomaly_at:
-                anomaly = (f"已转过 {math.degrees(travelled):.0f}°，"
+                anomaly = (f"已转过 {travelled:.0f}°，"
                            f"超出目标 {stop_at:.0f}° 的 30%，判定异常")
                 break
             if travelled >= stop_at:

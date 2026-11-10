@@ -17,6 +17,10 @@
 
 from __future__ import annotations
 
+import math
+
+from core.geometry import (correct_for_slip, slip_ratio,
+                           steer_from_measurement, summarize)
 from core.verdict import (CheckResult, Status, judge_all, judge_displacement,
                           judge_distance, judge_max_only, judge_range,
                           judge_repeats)
@@ -182,7 +186,8 @@ def run(ctx) -> CheckResult:
     ground_cfg = cfg.get("ground", {})
     ground_statuses, spin_ok = _run_ground(
         ctx, ground_cfg, result, max_speed, max_dur, safety,
-        spin_cfg=cfg.get("spin", {}))
+        spin_cfg=cfg.get("spin", {}),
+        wheelbase=float(cfg.get("wheelbase_m", 0) or 0))
     sub_statuses.extend(ground_statuses)
 
     # 把「转向互校是否验证过」传给上层：IMU / 里程计这两项
@@ -305,7 +310,7 @@ def _run_bench(ctx, cfg, result, max_speed, max_dur):
 
 
 def _run_ground(ctx, cfg, result, max_speed, max_dur, safety=None,
-                spin_cfg=None):
+                spin_cfg=None, wheelbase=0.0):
     """落地段：真实行驶，校验距离、转向弧度、航向互校。
 
     cfg 是 baseline 的 motion.ground 段；spin_cfg 是 motion.spin 段。
@@ -381,16 +386,18 @@ def _run_ground(ctx, cfg, result, max_speed, max_dur, safety=None,
     statuses.append(judge_repeats(magnitudes, low, high))
 
     # ---- 转向互校：左右各转一整圈，比对 odom 与 IMU 的航向 ----
-    spin_statuses, spin_ok = _run_spin(ctx, spin_cfg, result, safety)
+    spin_statuses, spin_ok = _run_spin(ctx, spin_cfg, result, safety,
+                                       wheelbase=wheelbase)
     statuses.extend(spin_statuses)
 
     return statuses, spin_ok
 
 
-def _run_spin(ctx, spin_cfg, result, safety):
+def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0):
     """转整圈做航向互校。返回 (statuses, verified)。
 
     spin_cfg 是 baseline 的 motion.spin 段本身（不是整个 motion）。
+    wheelbase 为轴距（米），大于 0 时额外算理论角速度、打滑率与反推转角。
     verified 只在左右两圈都真的转成功、且偏差合格时为 True。
     这个值决定 IMU / 里程计这两项能不能从「待落地验证」转 PASS。
     """
@@ -484,6 +491,37 @@ def _run_spin(ctx, spin_cfg, result, safety):
         if closure is not None:
             result.add(f"{side}转闭合误差", f"{closure:.3f}", "m",
                        note=f"转完一圈回到起点的距离，> {closure_warn} m 提示打滑")
+
+        # ---- 几何反推：把「指令转向角」换成「真实转向角」----
+        # MCU 不回传舵机角度，只能用 IMU 实测角速度间接反推。
+        # 这是在不改固件的前提下唯一能量化「舵机到底差多少」的办法。
+        if wheelbase > 0 and duration and duration > 0 and imu_deg:
+            omega_deg = abs(imu_deg) / duration
+            slip = slip_ratio(odom_deg, imu_deg) if odom_deg is not None else None
+            v_real = correct_for_slip(abs(speed), slip)
+            real_steer = steer_from_measurement(wheelbase, v_real, omega_deg)
+            theo = summarize(wheelbase, abs(steer), abs(speed), abs(target))
+
+            if theo.get("yaw_rate_deg_s"):
+                result.add(
+                    f"{side}转理论角速度", f"{theo['yaw_rate_deg_s']:.2f}", "°/s",
+                    note=(f"按轴距 {wheelbase:.3f} m、转角 "
+                          f"{theo['steer_cmd_deg']:.1f}° 算的理论值"))
+            result.add(f"{side}转实测角速度", f"{omega_deg:.2f}", "°/s")
+
+            if slip is not None:
+                result.add(
+                    f"{side}转打滑率", f"{slip * 100:.0f}", "%",
+                    note="轮速推算航向超出 IMU 的比例；越大说明轮胎打滑越重")
+            if real_steer is not None:
+                real_deg = math.degrees(real_steer)
+                cmd_deg = math.degrees(abs(steer))
+                result.add(
+                    f"{side}转反推转角", f"{real_deg:.2f}", "°",
+                    expected=f"指令 {cmd_deg:.2f}°",
+                    note="由实测角速度与打滑修正反推，不是直接测量")
+                # 不参与判定：打滑修正是一阶近似，且可能受 odom yaw 来源影响。
+                # 先公布在报告里积累数据，确认阈值后再决定是否计入。
 
         # 没转够一圈（异常提前停）不能算验证过。
         #
