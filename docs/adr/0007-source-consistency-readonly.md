@@ -77,7 +77,7 @@ fetch 后起 bringup：7 节点全部就绪，waited 12.8s
 | 仓库 | remote URL | 实际情况 |
 | --- | --- | --- |
 | tianracer | `https://gitee.com/tianbot/tianracer.git` | **Gitee**，不是 GitHub |
-| tianbot_core | `https:///gh-proxy.com/https://github.com/tianbot/tianbot_core.git` | 三斜杠坏地址 + gh-proxy 镜像 |
+| tianbot_core | `https:///gh-proxy.com/https://github.com/tianbot/tianbot_core.git` | 三斜杠写法 + gh-proxy 镜像（实测 git 可归一化，能用） |
 | webrtc_ros_bridge | `git@github.com:tianbot/webrtc_ros_bridge.git` | SSH，车上无 host key，报 `Host key verification failed` |
 
 `webrtc_ros_bridge` 因此**从来没能从车上成功 fetch 过**，
@@ -132,19 +132,57 @@ fetch 后起 bringup：7 节点全部就绪，waited 12.8s
 ### 1. 三斜杠诊断曾被 `continue` 变成死代码
 
 旧顺序是先 `ls-remote`，失败就 `continue`，而 `git remote get-url` 的检查在
-`continue` **之后**。三斜杠地址必然让 `ls-remote` 失败，于是这条唯一的根因
-诊断永远打不出来 —— 而本项目的 `tianbot_core` 恰好就是三斜杠。
+`continue` **之后** —— 一旦比对失败，地址信息就永远打不出来。
 
-现在 URL 在 `ls-remote` **之前**取，且失败时在 note 里追加
-「地址三斜杠，需先修 remote URL」。实车可见：
+现在 URL 在 `ls-remote` **之前**取，无论成功失败都能看到 remote 配成了什么。
+
+### 1b. ★ 更正：「三斜杠必然失败」是错的（2026-11-11 实测）
+
+Round 14 审查当时断言「三斜杠地址必然让 `ls-remote` 失败」，我把这个结论
+写进了代码注释、note 文案、本 ADR 和测试。**它是错的。**
+
+当时那条证据是：
+
+```
+$ git ls-remote --heads "https:///github.com/tianbot/x" refs/heads/feature
+fatal: repository 'https://github.com/tianbot/x/' not found     (exit 128)
+```
+
+注意输出里的地址已经是 **两斜杠** —— git 自己归一化了。那次失败的真实原因是
+**仓库不存在**，不是 URL 格式。把「仓库不存在」误读成了「格式错误」。
+
+用真实存在的仓库复测（git 2.56.0）：
+
+```
+$ git ls-remote --heads "https:///gh-proxy.com/https://github.com/tianbot/tianbot_core.git"
+warning: redirecting to https://gh-proxy.com/https://github.com/tianbot/tianbot_core.git/
+8912ccec563bbfa9844ed14336aead1f80c28083    refs/heads/amp
+59bd6c89f994f15d45298d59a38fcadd074e8ac1    refs/heads/codex/fix-serial-raw-mode
+c47921d4f4547b4f9153a047d26a181a0546e7a3    refs/heads/dev
+...                                            exit=0
+```
+
+**三斜杠能被 git 归一化成两斜杠 + 重定向，`ls-remote` 正常工作。**
+
+而且自相矛盾早在实车数据里就露了：报告判「本地分支未推送」，
+而这条路径要求 `ls-remote` **成功**才能走到。同一份报告里不可能既
+「未推送」又「必然失败」。我当时没做这个交叉核对。
+
+现在的文案：
 
 ```
 tianbot_core remote 地址: https:///gh-proxy.com/https://github.com/tianbot/...
-                          // 格式异常（三斜杠），ls-remote/fetch 必然失败
+                          // 地址是三斜杠写法（不规范）；git 通常会自动归一化
+                          // 并重定向，实测可用。若下方比对失败再考虑修 URL
 ```
 
-配套测试原本是**假绿**：构造了「ls-remote 成功 + URL 三斜杠」这种现实中
-互斥的组合。已改为「ls-remote 失败 + URL 三斜杠」。
+从「格式错误，必然失败」降为「写法不规范，通常可用」—— 后者才是事实。
+只在比对真的失败时，把它作为可疑点列出，而不是当作原因。
+
+测试也跟着改：新增两条锁住「三斜杠 + `ls-remote` 成功」这个**真实组合**
+不得出现「必然失败」字样，且 note 要说明会被归一化。
+（Round 14 当时说这条组合「现实中互斥，已删」，也是错的 —— 它恰好是
+实车上的真实状态。）
 
 ### 2. SSH 故障曾被归因成「落后（本地未 fetch）」
 

@@ -25,6 +25,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from checks import source as source_check  # noqa: E402
@@ -91,6 +93,9 @@ _LOCAL_DETACHED = (
     "---STATUS---\n"
 )
 _URL_OK = "https://github.com/tianbot/x.git\nRC=0\n"
+# 三斜杠（实车 tianbot_core 就是这个写法）。注意：git 会把它归一化成
+# 两斜杠并重定向，**不是**「必然失败」—— 2026-11-11 实测 ls-remote exit=0。
+# 上一轮曾断言「必然失败」，是误把「仓库不存在」读成了「URL 格式错误」。
 _URL_BAD = "https:///gh-proxy.com/https://github.com/tianbot/x.git\nRC=0\n"
 
 _PROBE = "git status --short"      # _probe_script 里唯一可辨识的片段
@@ -190,7 +195,17 @@ class TestRemoteComparison:
 
 
 class TestTripleSlashDiagnosis:
-    """R14-1：三斜杠地址必然让 ls-remote 失败，诊断不能被 continue 吞掉。"""
+    """三斜杠地址的写法诊断。
+
+    2026-11-11 实测更正：三斜杠**不是**「必然失败」。git 会把它归一化成
+    两斜杠并 `warning: redirecting to ...` 重定向，ls-remote 正常返回：
+
+        $ git ls-remote --heads "https:///gh-proxy.com/https://.../tianbot_core.git"
+        warning: redirecting to https://gh-proxy.com/https://.../
+        8912ccec...  refs/heads/amp          exit=0
+
+    所以它只是「写法不规范，通常可用」，本组测试锁住这个事实。
+    """
 
     def test_bad_url_reported_alongside_unreachable(self):
         res, _ = _run([
@@ -210,6 +225,32 @@ class TestTripleSlashDiagnosis:
         ])
         notes = " ".join(m.note for m in res.measurements)
         assert "三斜杠" in notes
+
+    def test_three_slash_plus_success_is_not_called_inevitable_failure(self):
+        """三斜杠 + ls-remote 成功（实车真实组合）不应出现「必然失败」。
+
+        这条防的是把错误断言写进报告：git 会归一化三斜杠，
+        所以「必然失败」不成立。上一轮曾这么写，与自家报告的
+        「未推送」（要求 ls-remote 成功）自相矛盾。
+        """
+        res, _ = _run([
+            ("git remote get-url", _Result(_URL_BAD)),
+            ("git ls-remote", _Result(
+                "warning: redirecting to https://gh-proxy.com/x/\n"
+                + HEAD_A + "\trefs/heads/feature\n")),
+        ])
+        text = res.summary + " ".join(m.note for m in res.measurements)
+        assert "必然失败" not in text, text
+        assert res.status is Status.PASS
+
+    def test_three_slash_note_says_normalised(self):
+        """note 应说明「通常会被归一化」，而不是断言失败。"""
+        res, _ = _run([
+            ("git remote get-url", _Result(_URL_BAD)),
+            ("git ls-remote", _Result(HEAD_A + "\trefs/heads/feature\n")),
+        ])
+        notes = " ".join(m.note for m in res.measurements)
+        assert "归一化" in notes or "重定向" in notes, notes
 
     def test_url_fetched_even_when_ls_remote_fails(self):
         """顺序保证：URL 必须在 ls-remote 之前取。"""
@@ -671,3 +712,147 @@ class _RealShapeRemote:
             ok = "fatal" not in sc["ls"]
             return _Result(sc["ls"], ok=ok)
         return _Result("", ok=False)
+
+
+class TestAllowedBranchesValidation:
+    """R16-2：白名单声明错了要当场报错，不能静默失效。
+
+    这行配置直接决定第 7 项判 FAIL 还是 WARN。静默把 None/123/[a,b]
+    转成字符串，会让用户以为声明生效了而实际匹配不上。
+    最常见的错误就是在 YAML 里写了仓库名忘了写分支名。
+    """
+
+    def _parse(self, raw):
+        from core.profile import _build_allowed_branches
+        return _build_allowed_branches(raw, "test")
+
+    def test_normal_mapping_is_accepted(self):
+        assert self._parse({"tianbot_core": "feat/x"}) == {
+            "tianbot_core": "feat/x"}
+
+    def test_none_value_raises(self):
+        from core.profile import ProfileError
+        with pytest.raises(ProfileError):
+            self._parse({"tianbot_core": None})
+
+    def test_int_value_raises(self):
+        from core.profile import ProfileError
+        with pytest.raises(ProfileError):
+            self._parse({"tianbot_core": 123})
+
+    def test_list_value_raises(self):
+        from core.profile import ProfileError
+        with pytest.raises(ProfileError):
+            self._parse({"tianbot_core": ["a", "b"]})
+
+    def test_empty_string_raises(self):
+        from core.profile import ProfileError
+        with pytest.raises(ProfileError):
+            self._parse({"tianbot_core": "   "})
+
+    def test_non_mapping_raises(self):
+        from core.profile import ProfileError
+        with pytest.raises(ProfileError):
+            self._parse(["tianbot_core"])
+
+    def test_absent_section_is_empty(self):
+        """没写这段是合法的：默认不认可任何本地分支。"""
+        assert self._parse(None) == {}
+
+    def test_error_message_mentions_forgot_value(self):
+        """报错要指向「忘写分支名」这个最常见的写法。"""
+        from core.profile import ProfileError
+        with pytest.raises(ProfileError) as exc:
+            self._parse({"tianbot_core": None})
+        assert "忘了写" in str(exc.value) or "忘" in str(exc.value)
+
+    def test_real_profile_loads(self):
+        """T110 的真实配置必须能过校验。"""
+        allowed = _fixtures.get_profile().ros.allowed_local_branches
+        assert allowed == {"tianbot_core": "feat/serial-tap-recording"}
+
+
+class TestFieldRequirementConsistent:
+    """场地要求必须在 UI、README、baseline 三处一致。
+
+    2026-11-11 发现两处 UI 文案仍是 2.5 m，而落地对话框与 baseline
+    已经是 4 m。用户按 2.5 m 准备场地会撞车——实测转一圈漂移 1.1~1.3 m，
+    纯圆弧算出来的 1.8 m 根本不够。
+    """
+
+    _ROOT = Path(__file__).resolve().parent.parent
+
+    def test_ui_does_not_say_2_5m(self):
+        src = (self._ROOT / "ui" / "main_window.py").read_text(encoding="utf-8")
+        assert "2.5 m × 2.5 m" not in src, "UI 里还有 2.5 m 的旧场地要求"
+
+    def test_readme_does_not_say_2_5m(self):
+        src = (self._ROOT / "README.md").read_text(encoding="utf-8")
+        assert "2.5 m × 2.5 m" not in src
+
+    def test_baseline_note_says_4m(self):
+        note = _fixtures.baseline()["motion"]["spin"]["note"]
+        assert "4m" in note.replace(" ", ""), note
+
+    def test_ui_landing_dialog_says_4m(self):
+        src = (self._ROOT / "ui" / "main_window.py").read_text(encoding="utf-8")
+        assert "4 m × 4 m" in src
+
+
+class TestReadmeMatchesConfig:
+    """README 第一屏不能与产品配置相反（R16-3）。"""
+
+    _ROOT = Path(__file__).resolve().parent.parent
+
+    def test_readme_says_tap_enabled_for_t110(self):
+        src = (self._ROOT / "README.md").read_text(encoding="utf-8")
+        assert "enabled: true" in src
+        assert "默认关闭（`ros.tap.enabled: false`）" not in src
+
+    def test_readme_prefers_embedded_recording(self):
+        """首选是车端内嵌录音，桥接只是备选。"""
+        src = (self._ROOT / "README.md").read_text(encoding="utf-8")
+        assert "内嵌录音" in src
+        assert "备选" in src
+
+    def test_t110_profile_actually_enables_tap(self):
+        assert _fixtures.get_profile().ros.tap.enabled is True
+
+
+class TestRefspecFiltering:
+    """ls-remote 返回了别的分支时，不能拿它的 SHA 当目标分支。
+
+    2026-11-11 发现：refspec 正常情况下已由 git 过滤，但若没生效
+    （远端返回全部分支），旧代码取「第一个 SHA 行」就会静默得出
+    错误的「领先/落后」结论。这比报「无法比对」危险得多。
+    """
+
+    def test_other_branch_sha_is_not_taken(self):
+        res, _ = _run([
+            ("git remote get-url", _Result(_URL_OK)),
+            ("git ls-remote", _Result(
+                HEAD_B + "\trefs/heads/amp\n"
+                + HEAD_B + "\trefs/heads/dev\n")),
+        ])
+        # 远端没有 feature，只有 amp/dev → 必须判「未推送」而不是「落后」
+        assert res.status is Status.FAIL, res.summary
+        assert "未推送" in res.summary
+        assert "落后" not in res.summary
+
+    def test_correct_branch_among_others_is_found(self):
+        res, _ = _run([
+            ("git remote get-url", _Result(_URL_OK)),
+            ("git ls-remote", _Result(
+                HEAD_B + "\trefs/heads/amp\n"
+                + HEAD_A + "\trefs/heads/feature\n")),
+        ])
+        # 匹配到 feature（== 本地 HEAD）→ 同步
+        assert res.status is Status.PASS, res.summary
+
+    def test_ref_prefix_is_not_a_match(self):
+        """refs/heads/feature-x 不算 refs/heads/feature。"""
+        res, _ = _run([
+            ("git remote get-url", _Result(_URL_OK)),
+            ("git ls-remote", _Result(HEAD_B + "\trefs/heads/feature-x\n")),
+        ])
+        assert "未推送" in res.summary, res.summary

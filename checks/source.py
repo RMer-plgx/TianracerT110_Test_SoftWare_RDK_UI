@@ -52,7 +52,7 @@ _DIVERGED = "分叉"
 _UNKNOWN = "读取失败"
 
 # ls-remote 的 SHA 行：<40 位十六进制>\t<ref>
-_SHA_LINE = re.compile(r"^([0-9a-f]{7,40})\s+\S")
+_SHA_LINE = re.compile(r"^([0-9a-f]{7,40})\s+(\S+)")
 # 输出里出现这些词说明远端真的报错了（不是「分支不存在」）
 _FAIL_HINTS = ("fatal:", "error:", "permission denied",
                "could not read", "authentication failed")
@@ -169,9 +169,13 @@ def _remote_head(remote_runner, path: str, remote: str, branch: str):
     # 不能只看第一行：git 会把 `warning: redirecting to ...` 打到 stderr，
     # 而这里用了 2>&1（否则 SSH 报错就看不到）。gh-proxy 镜像地址必带这条
     # warning，实车上就因此把「未推送分支」误报成「输出无法解析」。
+    # 每行还要核对 ref 名：refspec 正常情况下已由 git 过滤，但万一没生效
+    # （远端返回了全部分支），拿第一个 SHA 当目标分支就会静默得出错误的
+    # 「领先/落后」结论。宁可不认，也不能认错。
+    want = "refs/heads/" + branch
     for line in text.splitlines():
         m = _SHA_LINE.match(line.strip())
-        if m:
+        if m and m.group(2) == want:
             return m.group(1), "ok", ""
 
     # 没有任何 SHA 行。git 退出码为 0，所以不是「命令失败」，
@@ -342,14 +346,24 @@ def run(ctx) -> CheckResult:
             remote, ubranch = "origin", (branch if branch != "?" else "")
             guessed = True
 
-        # 先取地址再问远端。顺序不能反：三斜杠地址必然让 ls-remote 失败，
-        # 若在失败分支直接 continue，这条唯一的根因诊断就永远打不出来
-        # （2026-11-10 Round 14 审查指出，旧顺序把它变成了死代码）。
+        # 先取地址再问远端。顺序不能反：比对失败时若还没取过地址，
+        # 报告就只剩「远端不可达」，看不出 remote 到底配成了什么
+        # （2026-11-10 Round 14 审查指出，旧顺序把这条诊断变成了死代码）。
+        #
+        # 注意：三斜杠**不是**「必然失败」。2026-11-11 实测：
+        #   git ls-remote --heads "https:///gh-proxy.com/https://..."
+        #   warning: redirecting to https://gh-proxy.com/https://.../
+        #   8912ccec...  refs/heads/amp          exit=0
+        # git 会把三斜杠归一化成两斜杠并重定向，能正常工作。
+        # 上一版写的「必然失败」是错误断言，且与自己报告的「未推送」
+        # （要求 ls-remote 成功才能判）自相矛盾。现在降级为「写法不规范，
+        # 通常可用」，只在真的比对失败时提示去检查。
         url, url_state = _remote_url(r, path, remote)
         bad_url = bool(url and re.search(r"https:///", url))
         if bad_url:
             result.add(f"{repo} remote 地址", url,
-                       note="格式异常（三斜杠），ls-remote/fetch 必然失败")
+                       note="地址是三斜杠写法（不规范）；git 通常会自动归一化"
+                            "并重定向，实测可用。若下方比对失败再考虑修 URL")
         elif url_state == "missing":
             # 「没配 origin」和「网络不通」是两件事：前者该去看 git remote -v，
             # 后者该去查网络。旧版把两者都报成「远端不可达」。
@@ -386,7 +400,9 @@ def run(ctx) -> CheckResult:
         if kind != "ok":
             note = f"{remote}/{ubranch or '?'}：{msg}" + guess_hint
             if bad_url:
-                note += "；地址三斜杠，需先修 remote URL"
+                # 三斜杠能被归一化，所以它只是「可疑点」而不是原因。
+                note += ("；地址三斜杠虽能被 git 归一化，但此处比对仍失败，"
+                         "建议核对 git remote -v")
             result.add(f"{repo} 远端比对", "无法比对", note=note)
             unresolved.append(repo)
             continue

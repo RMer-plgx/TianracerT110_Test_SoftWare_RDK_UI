@@ -285,8 +285,10 @@ def _build_allowed_branches(raw: Any, where: str) -> Dict[str, str]:
     形如 {tianbot_core: feat/serial-tap-recording}。缺省为空，
     即「本产品不预先认可任何本地分支」—— 默认从严。
 
-    写错类型就报错，不静默忽略：这个白名单直接影响第 7 项判 FAIL
-    还是 WARN，静默失效会让用户以为声明了而实际没生效。
+    **严格校验类型**：这行配置直接决定第 7 项判 FAIL 还是 WARN。
+    静默把 `None` / `123` / `[a, b]` 转成字符串会让用户以为声明生效了，
+    而实际匹配不上（然后看见一句莫名其妙的「声明的是 `None`，不生效」）。
+    最常见的写法错误就是在 YAML 里写了键忘了写值 —— 必须当场报错。
     """
     if raw is None:
         return {}
@@ -297,12 +299,22 @@ def _build_allowed_branches(raw: Any, where: str) -> Dict[str, str]:
         )
     out: Dict[str, str] = {}
     for repo, branch in raw.items():
-        repo_s, branch_s = str(repo), str(branch)
-        if not repo_s or not branch_s:
+        if not isinstance(repo, str) or not repo.strip():
             raise ProfileError(
-                f"{where} 的 allowed_local_branches 里 `{repo}` 的值不能为空"
+                f"{where} 的 allowed_local_branches 里有一个键不是非空字符串："
+                f"{repo!r}"
             )
-        out[repo_s] = branch_s
+        if not isinstance(branch, str):
+            raise ProfileError(
+                f"{where} 的 allowed_local_branches 里 `{repo}` 的值应为分支名"
+                f"字符串，实际是 {type(branch).__name__}（{branch!r}）。\n"
+                f"常见原因：YAML 里写了仓库名但忘了写分支名。"
+            )
+        if not branch.strip():
+            raise ProfileError(
+                f"{where} 的 allowed_local_branches 里 `{repo}` 的分支名为空"
+            )
+        out[repo] = branch.strip()
     return out
 
 

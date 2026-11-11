@@ -604,7 +604,7 @@ class MainWindow(QMainWindow):
         hint = QLabel(
             "不勾选微动则第 18 项记为未验证。\n"
             "完整运动测试的落地段会让车左转、右转各一整圈，\n"
-            "需要约 2.5 m × 2.5 m 开阔平地。"
+            "需要约 4 m × 4 m 开阔平地。"
         )
         hint.setObjectName("HeaderSub")
         hint.setWordWrap(True)
@@ -966,7 +966,7 @@ class MainWindow(QMainWindow):
                 "  · 遥控器在手，可随时接管\n"
                 "  · 车轮已离地（若只做微脉冲可架空）\n"
                 + ("  · 落地段会让车左转、右转各一整圈，\n"
-                   "    需要约 2.5 m × 2.5 m 开阔平地，周围无人无障碍\n"
+                   "    需要约 4 m × 4 m 开阔平地（含滑移余量），周围无人无障碍\n"
                    if full_motion else
                    "  · 车辆周围 1 米内无人、无障碍\n")
                 + "\n确认继续？",
