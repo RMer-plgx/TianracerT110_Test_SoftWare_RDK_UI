@@ -88,6 +88,19 @@ class RosConfig:
     maps_dir: str = ""
     # 参与「源码一致性」检查的仓库目录名（相对 <workspace>/src）
     repos: List[str] = field(default_factory=list)
+    # 交付镜像自带的车端改动所在分支。{仓库名: 分支名}。
+    #
+    # 背景：第 7 项把「本地分支未推送」判 FAIL，因为换一台车就复现不出来。
+    # 但车端补丁（串口录音）本身就是装在本地分支上的，这类分支在每个
+    # 已装补丁的车上都未推送 —— 全判 FAIL 会让整条产品线永远不可交付，
+    # 第 7 项也就没人看了。
+    #
+    # 所以：声明过的分支单列一行、判 WARN（可见但不阻断）；
+    # 没声明的分支仍判 FAIL。可复现的要求还在，只是把「已知的交付内容」
+    # 与「随手改的本地分支」区分开。
+    #
+    # 写错仓库名不生效，会回到 FAIL —— 不做事后猜测。
+    allowed_local_branches: Dict[str, str] = field(default_factory=dict)
     # 报告里要额外展示父节点的 frame（可选）。
     # 这些是「看着有用」而非「必需」的，缺了不报错，只是不显示。
     display_frames: List[str] = field(default_factory=list)
@@ -264,6 +277,33 @@ def _resolve_env_prefix(ros_data: Dict[str, Any],
             "请在 profile.yaml 显式写 ros.env_prefix。"
         )
     return common
+
+
+def _build_allowed_branches(raw: Any, where: str) -> Dict[str, str]:
+    """解析 ros.allowed_local_branches：交付镜像自带的车端改动。
+
+    形如 {tianbot_core: feat/serial-tap-recording}。缺省为空，
+    即「本产品不预先认可任何本地分支」—— 默认从严。
+
+    写错类型就报错，不静默忽略：这个白名单直接影响第 7 项判 FAIL
+    还是 WARN，静默失效会让用户以为声明了而实际没生效。
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ProfileError(
+            f"{where} 的 allowed_local_branches 应为映射（仓库名: 分支名），"
+            f"实际是 {type(raw).__name__}"
+        )
+    out: Dict[str, str] = {}
+    for repo, branch in raw.items():
+        repo_s, branch_s = str(repo), str(branch)
+        if not repo_s or not branch_s:
+            raise ProfileError(
+                f"{where} 的 allowed_local_branches 里 `{repo}` 的值不能为空"
+            )
+        out[repo_s] = branch_s
+    return out
 
 
 def _build_tap(raw: Any, where: str) -> TapConfig:
@@ -590,6 +630,8 @@ def load(profile_id: Optional[str] = None) -> Profile:
         slam_file=str(slam.get("file", "")),
         maps_dir=str(ros_data.get("maps_dir", "")),
         repos=[str(r) for r in (ros_data.get("repos") or [])],
+        allowed_local_branches=_build_allowed_branches(
+            ros_data.get("allowed_local_branches"), ros_where),
         env_prefix=_resolve_env_prefix(ros_data, overrides),
         env_hook_file=str(ros_data.get("env_hook_file", "")),
         display_frames=[str(f) for f in (ros_data.get("display_frames") or [])],

@@ -108,16 +108,43 @@ def _int(text: str) -> int:
         return 0
 
 
-def _remote_url(remote_runner, path: str, remote: str) -> str:
-    """取 remote 地址。读不到返回空串。"""
+def _remote_url(remote_runner, path: str, remote: str):
+    """取 remote 地址。返回 (url, 状态)。
+
+    状态分三种，因为含义完全不同：
+      ok      取到了
+      missing 这个 remote 名根本没配（车上用的可能是别的名字）
+      failed  命令本身没跑成（仓库读不到、git 异常）
+
+    旧版把后两种都返回空串，于是「没配 origin」被报成「远端不可达」——
+    用户会去查网络，而实际该做的是看 `git remote -v`。
+    """
     res = remote_runner.run(
-        "cd " + _remote_path(path) + " 2>/dev/null && "
-        f"git remote get-url {shquote(remote)} 2>&1",
+        "cd " + _remote_path(path) + " 2>/dev/null || exit 3\n"
+        f"git remote get-url {shquote(remote)} 2>&1\n"
+        "echo RC=$?",
         timeout=15, record=False,
     )
-    if not res.ok:
-        return ""
-    return (res.stdout or "").strip()
+    text = (res.stdout or "").strip()
+    m = re.search(r"RC=(\d+)", text)
+    body = re.sub(r"RC=\d+$", "", text).strip()
+    if not m:
+        return "", "failed"
+    rc = int(m.group(1))
+    if rc == 0 and body:
+        return body.splitlines()[0].strip(), "ok"
+    if rc != 0 and not body:
+        # get-url 对不存在的 remote 报「No such remote」并返回 2；
+        # 但 2>&1 后 body 里会有这句话，所以空 body + 非 0 才是「完全没有」。
+        return "", "failed"
+    if "no such remote" in body.lower():
+        return "", "missing"
+    return "", "failed"
+
+
+def _known_head(head: str) -> str:
+    """把本地 HEAD 限制成 SHA 才能拼进 rev-list 的范围。"""
+    return head if re.fullmatch(r"[0-9a-f]{7,40}", head or "") else ""
 
 
 def _remote_head(remote_runner, path: str, remote: str, branch: str):
@@ -159,21 +186,27 @@ def _remote_head(remote_runner, path: str, remote: str, branch: str):
 def _has_commit(remote_runner, path: str, sha: str):
     """本地是否已有该提交对象。True / False / None（读不到）。
 
-    用 HAVE/MISS 显式标记而不是依赖 `cat-file -e` 的退出码：
-    后者对「对象不存在」和「SSH 中途断了」都返回非 0，无法区分。
+    用 HAVE/MISS 显式标记而不是依赖 `cat-file -e` 的退出码，
+    并把「缺失」与「出错」分开：
+      cat-file 对存在的对象返回 0
+      对不存在的对象返回 128
+    其它退出码（git 本身不存在、仓库损坏）不是「缺失」，是「读不到」。
     分不清的后果是把传输故障报成「本地未 fetch」，维修人员会去 fetch
     而不是去查网络。
     """
     res = remote_runner.run(
         "cd " + _remote_path(path) + " 2>/dev/null || exit 3\n"
-        "if git cat-file -e " + shquote(sha) + "^{commit} 2>/dev/null; "
-        "then echo HAVE; else echo MISS; fi",
+        "git cat-file -e " + shquote(sha) + "^{commit} 2>/dev/null\n"
+        "echo RC=$?",
         timeout=15, record=False,
     )
-    text = (res.stdout or "").strip()
-    if "HAVE" in text:
+    m = re.search(r"RC=(\d+)", res.stdout or "")
+    if not m:
+        return None
+    rc = int(m.group(1))
+    if rc == 0:
         return True
-    if "MISS" in text:
+    if rc == 128:
         return False
     return None
 
@@ -211,7 +244,14 @@ def _count(remote_runner, path: str, rng: str) -> int:
 
 
 def _compare(remote_runner, path: str, head: str, remote_sha: str):
-    """判断本地相对远端的关系。返回 (关系, 相差提交数)。"""
+    """判断本地相对远端的关系。返回 (关系, 相差提交数)。
+
+    head 与 remote_sha 都必须先过 SHA 白名单才能拼进 rev-list 的范围：
+    `git rev-list --count A..B` 的两个参数在这里是裸拼的（不能转义，
+    引号会把范围变成单个参数），所以只能靠格式校验来保证安全。
+    """
+    head = _known_head(head)
+    remote_sha = _known_head(remote_sha)
     if not remote_sha or not head:
         return _UNKNOWN, 0
     if remote_sha == head:
@@ -253,8 +293,11 @@ def run(ctx) -> CheckResult:
     dirty_total = 0
     problems = []      # 读不到 git 信息
     unresolved = []    # 读到了，但远端比不了
-    unpushed = []      # 本地分支远端不存在 —— 出厂风险，判 FAIL
+    unpushed = []      # 本地分支远端不存在，且未在配置里声明 —— 判 FAIL
+    declared = []      # 本地分支未推送，但配置里已声明是交付镜像自带
     drift = []         # 与远端不一致
+
+    allowed = getattr(ctx.profile.ros, "allowed_local_branches", {}) or {}
 
     for repo in repos:
         path = f"{ws}/src/{repo}"
@@ -271,32 +314,77 @@ def run(ctx) -> CheckResult:
         upstream = vals.get("UP") or ""
 
         dirty_total += len(changes)
+
+        # detached HEAD：`git rev-parse --abbrev-ref HEAD` 成功返回字面量
+        # "HEAD"（不是失败），而上游查询会报错被 2>/dev/null 吞掉。
+        # 若照常当成分支名去猜 origin/HEAD，必然查不到 —— 会被判成
+        # 「本地分支未推送」→ FAIL，而车上根本没有名为 HEAD 的分支。
+        # 现场用 `git checkout <tag>` 核对版本就会进这个状态，
+        # 这是正常动作，不能把整车判成不合格。
+        if branch == "HEAD":
+            result.add(f"{repo} 分支/HEAD", f"detached @ {short}",
+                       note="不在任何分支上（可能 checkout 到了 tag 或某个提交），"
+                            "没有可对比的远端分支")
+            result.add(f"{repo} 未提交", len(changes), "项", expected="0")
+            unresolved.append(f"{repo}（detached）")
+            continue
+
         result.add(f"{repo} 分支/HEAD", f"{branch} @ {short}")
         result.add(f"{repo} 未提交", len(changes), "项", expected="0")
 
-        # upstream 形如 origin/dev；没有 upstream 就按同名远端分支猜
+        # upstream 形如 origin/dev；没有 upstream 就按同名远端分支猜。
+        # 猜出来的关系要在 note 里标明「无 upstream」，否则读者会以为
+        # 这个结论是 git 自己算的。
         if "/" in upstream:
             remote, _, ubranch = upstream.partition("/")
+            guessed = False
         else:
             remote, ubranch = "origin", (branch if branch != "?" else "")
+            guessed = True
 
         # 先取地址再问远端。顺序不能反：三斜杠地址必然让 ls-remote 失败，
         # 若在失败分支直接 continue，这条唯一的根因诊断就永远打不出来
         # （2026-11-10 Round 14 审查指出，旧顺序把它变成了死代码）。
-        url = _remote_url(r, path, remote)
+        url, url_state = _remote_url(r, path, remote)
         bad_url = bool(url and re.search(r"https:///", url))
         if bad_url:
             result.add(f"{repo} remote 地址", url,
                        note="格式异常（三斜杠），ls-remote/fetch 必然失败")
+        elif url_state == "missing":
+            # 「没配 origin」和「网络不通」是两件事：前者该去看 git remote -v，
+            # 后者该去查网络。旧版把两者都报成「远端不可达」。
+            result.add(f"{repo} remote 地址", f"没有名为 {remote} 的 remote",
+                       note=f"车上实际配置的 remote 需用 git remote -v 查看；"
+                            f"本项按 {remote} 比对，配置不符时无法得出结论")
+            unresolved.append(f"{repo}（无 {remote} remote）")
+            continue
 
         remote_sha, kind, msg = _remote_head(r, path, remote, ubranch)
+        # 无 upstream 时分支名是猜的，「未推送」这个结论也建立在猜测上，
+        # 必须写出来，否则读者会以为这是 git 自己算的。
+        guess_hint = "；无 upstream，按同名分支比对" if guessed else ""
         if kind == "unpushed":
-            result.add(f"{repo} 相对远端", "未推送", expected="已推送",
-                       note=f"{remote}/{ubranch}：{msg}。换一台车无法复现这批改动")
-            unpushed.append(f"{repo}（{branch}）")
+            if allowed.get(repo) == branch:
+                # 已声明：交付镜像自带的改动，可复现的责任在仓库侧而不是这台车。
+                result.add(f"{repo} 相对远端", "已声明的本地分支",
+                           note=(f"{remote}/{ubranch} 不存在，但 profile 的 "
+                                 f"allowed_local_branches 声明了它；"
+                                 f"仍记录下来供人工核对{guess_hint}"))
+                declared.append(f"{repo}（{branch}）")
+            elif allowed.get(repo):
+                result.add(f"{repo} 相对远端", "未推送", expected="已推送",
+                           note=(f"{remote}/{ubranch}：{msg}。配置里声明的是 "
+                                 f"`{allowed.get(repo)}`，与当前分支 `{branch}` "
+                                 f"不符 —— 不生效{guess_hint}"))
+                unpushed.append(f"{repo}（{branch}）")
+            else:
+                result.add(f"{repo} 相对远端", "未推送", expected="已推送",
+                           note=(f"{remote}/{ubranch}：{msg}。"
+                                 f"换一台车无法复现这批改动{guess_hint}"))
+                unpushed.append(f"{repo}（{branch}）")
             continue
         if kind != "ok":
-            note = f"{remote}/{ubranch or '?'}：{msg}"
+            note = f"{remote}/{ubranch or '?'}：{msg}" + guess_hint
             if bad_url:
                 note += "；地址三斜杠，需先修 remote URL"
             result.add(f"{repo} 远端比对", "无法比对", note=note)
@@ -313,9 +401,11 @@ def run(ctx) -> CheckResult:
             unresolved.append(repo)
             continue
         shown = f"{rel}" + (f" {cnt} 个提交" if cnt else "")
+        tail = "（ls-remote，未改动本地）"
+        if guessed:
+            tail = guess_hint + tail
         result.add(f"{repo} 相对远端", shown, expected=_SYNC,
-                   note=(f"比对 {remote}/{ubranch} @ {remote_sha[:8]}"
-                         f"（ls-remote，未改动本地）"))
+                   note=f"比对 {remote}/{ubranch} @ {remote_sha[:8]}{tail}")
         if rel != _SYNC:
             drift.append(f"{repo} {rel}" + (f" {cnt} 个提交" if cnt else ""))
 
@@ -324,6 +414,8 @@ def run(ctx) -> CheckResult:
     parts = []
     if unpushed:
         parts.append("本地分支未推送：" + "、".join(unpushed))
+    if declared:
+        parts.append("已声明的本地分支：" + "、".join(declared))
     if drift:
         parts.append("与远端不一致：" + "、".join(drift))
     if unresolved:
@@ -340,7 +432,10 @@ def run(ctx) -> CheckResult:
         result.detail = (
             "「本地分支未推送」判失败：这批提交换一台车就复现不出来，\n"
             "出厂后维修点无法还原车上到底装了什么。\n"
-            "处理方式：把该分支推到远端（或改到已推送的分支上），再复测本项。\n\n"
+            "处理方式（选一）：把该分支推到远端；或改到已推送的分支上；\n"
+            "或如果它是交付镜像自带的车端改动，在 profile.yaml 的\n"
+            "`ros.allowed_local_branches` 里声明（仓库名: 分支名），\n"
+            "声明后本项降为可确认的告警。\n\n"
             "其余说明：「落后」= 车上代码比远端旧，可能缺修复；\n"
             "「领先」= 含远端没有的提交；「无法比对」= 远端不可达或无权限，\n"
             "与车况无关，需修 remote 配置。\n\n"
@@ -352,12 +447,13 @@ def run(ctx) -> CheckResult:
     if parts:
         result.status = Status.WARN
         result.summary = "；".join(parts)
-        if drift or unresolved or problems:
+        if drift or unresolved or problems or declared:
             result.detail = (
+                "「已声明的本地分支」= 交付镜像自带的改动，已在 profile 里登记；\n"
+                "它不可从远端复现，所以仍要人工看一眼，但不算失败。\n"
                 "「落后」= 车上代码比远端旧，可能缺修复；「领先」= 含远端没有的"
-                "提交（例如本项目的串口采集补丁），这类提交若未推送，换一台车就"
-                "复现不出来。\n"
-                "「无法比对」= 远端不可达或无权限，与车况无关。\n"
+                "提交；「无法比对」= 远端不可达、无权限或 detached HEAD，\n"
+                "与车况无关。\n"
                 "未提交改动不影响车能不能跑，影响的是买家拿到的代码版本。\n"
                 "本项用 git ls-remote 只读比对，没有执行 fetch/pull，"
                 "车上的工作区与正在运行的节点都不受影响。"

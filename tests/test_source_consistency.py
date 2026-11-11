@@ -62,12 +62,13 @@ class _ScriptedRemote:
 
 
 class _Ctx:
-    """最小 profile 替身：只有本项用到的 ros.repos / ros.workspace。"""
+    """最小 profile 替身：只有本项用到的字段。"""
 
-    def __init__(self, remote, repos, workspace="~/ws"):
+    def __init__(self, remote, repos, workspace="~/ws", allowed=None):
         self.profile = type("P", (), {
             "ros": type("R", (), {"repos": list(repos),
-                                  "workspace": workspace})(),
+                                  "workspace": workspace,
+                                  "allowed_local_branches": dict(allowed or {})})(),
         })()
         self.remote = remote
 
@@ -80,15 +81,27 @@ _LOCAL_OK = (
     "---STATUS---\n"
 )
 _LOCAL_DIRTY = _LOCAL_OK + " M CMakeLists.txt\n?? notes.txt\n"
-_URL_OK = "https://github.com/tianbot/x.git\n"
-_URL_BAD = "https:///gh-proxy.com/https://github.com/tianbot/x.git\n"
+# `git rev-parse --abbrev-ref HEAD` 在 detached 状态下成功返回字面量 HEAD，
+# 上游查询则报错被 2>/dev/null 吞掉。这正是 R15-1 的触发条件。
+_LOCAL_DETACHED = (
+    "BRANCH=HEAD\n"
+    "HEAD=" + HEAD_A + "\n"
+    "SHORT=aaaaaaa 2026-11-10\n"
+    "UP=\n"
+    "---STATUS---\n"
+)
+_URL_OK = "https://github.com/tianbot/x.git\nRC=0\n"
+_URL_BAD = "https:///gh-proxy.com/https://github.com/tianbot/x.git\nRC=0\n"
 
 _PROBE = "git status --short"      # _probe_script 里唯一可辨识的片段
 
 
-def _run(table, local=_LOCAL_OK, repos=("tianracer",), workspace="~/ws"):
+def _run(table, local=_LOCAL_OK, repos=("tianracer",), workspace="~/ws",
+         allowed=None):
     remote = _ScriptedRemote([(_PROBE, _Result(local))] + list(table))
-    return source_check.run(_Ctx(remote, repos=repos, workspace=workspace)), remote
+    res = source_check.run(
+        _Ctx(remote, repos=repos, workspace=workspace, allowed=allowed))
+    return res, remote
 
 
 def _rows(result):
@@ -109,7 +122,7 @@ class TestRemoteComparison:
         res, _ = _run([
             ("git remote get-url", _Result(_URL_OK)),
             ("git ls-remote", _Result(HEAD_B + "\trefs/heads/feature\n")),
-            ("cat-file", _Result("HAVE\n")),
+            ("cat-file", _Result("RC=0\n")),
             ("merge-base", _Result("RC=1\n")),      # b 不是 a 的祖先
             ("merge-base", _Result("RC=0\n")),      # a 是 b 的祖先 → 落后
             ("rev-list", _Result("7\n")),
@@ -122,7 +135,7 @@ class TestRemoteComparison:
         res, _ = _run([
             ("git remote get-url", _Result(_URL_OK)),
             ("git ls-remote", _Result(HEAD_B + "\trefs/heads/feature\n")),
-            ("cat-file", _Result("HAVE\n")),
+            ("cat-file", _Result("RC=0\n")),
             ("merge-base", _Result("RC=0\n")),      # b 是 a 的祖先 → 领先
             ("rev-list", _Result("3\n")),
         ])
@@ -133,7 +146,7 @@ class TestRemoteComparison:
         res, _ = _run([
             ("git remote get-url", _Result(_URL_OK)),
             ("git ls-remote", _Result(HEAD_B + "\trefs/heads/feature\n")),
-            ("cat-file", _Result("HAVE\n")),
+            ("cat-file", _Result("RC=0\n")),
             ("merge-base", _Result("RC=1\n")),
             ("merge-base", _Result("RC=1\n")),
             ("rev-list", _Result("2\n")),
@@ -146,7 +159,7 @@ class TestRemoteComparison:
         res, _ = _run([
             ("git remote get-url", _Result(_URL_OK)),
             ("git ls-remote", _Result(HEAD_B + "\trefs/heads/feature\n")),
-            ("cat-file", _Result("MISS\n")),
+            ("cat-file", _Result("RC=128\n")),
         ])
         assert res.status is Status.WARN
         assert "未 fetch" in res.summary
@@ -269,7 +282,7 @@ class TestReadOnly:
         _, remote = _run([
             ("git remote get-url", _Result(_URL_OK)),
             ("git ls-remote", _Result(HEAD_B + "\trefs/heads/feature\n")),
-            ("cat-file", _Result("HAVE\n")),
+            ("cat-file", _Result("RC=0\n")),
             ("merge-base", _Result("RC=0\n")),
             ("rev-list", _Result("0\n")),
         ])
@@ -336,7 +349,7 @@ class TestMultipleRepos:
             (_PROBE, _Result(_LOCAL_OK)),
             ("git remote get-url", _Result(_URL_OK)),
             ("git ls-remote", _Result(HEAD_B + "\trefs/heads/feature\n")),
-            ("cat-file", _Result("HAVE\n")),
+            ("cat-file", _Result("RC=0\n")),
             ("merge-base", _Result("RC=1\n")),
             ("merge-base", _Result("RC=0\n")),
             ("rev-list", _Result("4\n")),
@@ -406,3 +419,255 @@ class TestManualButtonRemoved:
         tpl = (Path(__file__).resolve().parent.parent
                / "report" / "html.j2").read_text(encoding="utf-8")
         assert 'id="manual"' in tpl
+
+
+class TestDetachedHead:
+    """R15-1：detached HEAD 是正常动作，不能把整车判成不合格。
+
+    `git rev-parse --abbrev-ref HEAD` 在 detached 状态下**成功**返回
+    字面量 HEAD（不是失败），于是旧代码拿它当分支名去猜 origin/HEAD，
+    查不到就判「本地分支未推送」→ FAIL。
+    现场 `git checkout <tag>` 核对版本就会进这个状态。
+    """
+
+    def test_detached_head_is_warn_not_fail(self):
+        res, _ = _run(
+            [
+                ("git remote get-url", _Result(_URL_OK)),
+                ("git ls-remote", _Result("")),      # origin/HEAD 查不到
+            ],
+            local=_LOCAL_DETACHED,
+        )
+        assert res.status is Status.WARN, res.summary
+        assert "未推送" not in res.summary, res.summary
+
+    def test_detached_head_is_reported_as_detached(self):
+        res, _ = _run(
+            [
+                ("git remote get-url", _Result(_URL_OK)),
+                ("git ls-remote", _Result("")),
+            ],
+            local=_LOCAL_DETACHED,
+        )
+        rows = _rows(res)
+        assert any("detached" in str(v) for v in rows.values()), rows
+
+    def test_detached_head_does_not_query_origin_head(self):
+        """不能拿字面量 HEAD 去当分支名查远端。"""
+        _, remote = _run(
+            [
+                ("git remote get-url", _Result(_URL_OK)),
+                ("git ls-remote", _Result("")),
+            ],
+            local=_LOCAL_DETACHED,
+        )
+        joined = " ".join(remote.commands)
+        assert "refs/heads/'HEAD'" not in joined, joined
+
+    def test_detached_head_still_counts_dirty(self):
+        local = _LOCAL_DETACHED.replace("---STATUS---\n", "---STATUS---\n M x.txt\n")
+        res, _ = _run([], local=local)
+        assert "未提交" in res.summary
+
+
+class TestAllowedLocalBranches:
+    """R15-2：交付镜像自带的分支声明后走 WARN，未声明仍 FAIL。"""
+
+    def test_declared_branch_is_warn(self):
+        res, _ = _run(
+            [
+                ("git remote get-url", _Result(_URL_OK)),
+                ("git ls-remote", _Result("")),
+            ],
+            allowed={"tianracer": "feature"},
+        )
+        assert res.status is Status.WARN, res.summary
+        assert "已声明" in res.summary
+
+    def test_declared_branch_still_visible(self):
+        """声明了也要单列一行，不能藏起来。"""
+        res, _ = _run(
+            [
+                ("git remote get-url", _Result(_URL_OK)),
+                ("git ls-remote", _Result("")),
+            ],
+            allowed={"tianracer": "feature"},
+        )
+        rows = _rows(res)
+        assert any("已声明" in str(v) for v in rows.values()), rows
+
+    def test_undeclared_branch_still_fails(self):
+        res, _ = _run(
+            [
+                ("git remote get-url", _Result(_URL_OK)),
+                ("git ls-remote", _Result("")),
+            ],
+            allowed={"tianbot_core": "feat/x"},   # 声明的是别的仓库
+        )
+        assert res.status is Status.FAIL, res.summary
+
+    def test_declared_but_different_branch_fails(self):
+        """声明了仓库但分支名对不上，仍判失败，并说明不生效。"""
+        res, _ = _run(
+            [
+                ("git remote get-url", _Result(_URL_OK)),
+                ("git ls-remote", _Result("")),
+            ],
+            allowed={"tianracer": "other-branch"},
+        )
+        assert res.status is Status.FAIL, res.summary
+        notes = " ".join(m.note for m in res.measurements)
+        assert "不符" in notes, notes
+
+    def test_declared_does_not_hide_real_unpushed(self):
+        """多仓库：一个已声明、一个没声明 → 仍 FAIL。"""
+        remote = _ScriptedRemote([
+            (_PROBE, _Result(_LOCAL_OK)),
+            (_PROBE, _Result(_LOCAL_OK)),
+            ("git remote get-url", _Result(_URL_OK)),
+            ("git ls-remote", _Result("")),
+            ("git remote get-url", _Result(_URL_OK)),
+            ("git ls-remote", _Result("")),
+        ])
+        res = source_check.run(_Ctx(
+            remote, repos=["a", "b"], allowed={"a": "feature"}))
+        assert res.status is Status.FAIL, res.summary
+        assert "已声明" in res.summary and "未推送" in res.summary
+
+
+class TestRemoteName:
+    """R15-4：「没配 remote」与「远端不可达」要分开。"""
+
+    def test_missing_remote_is_reported_as_missing(self):
+        res, _ = _run([
+            ("git remote get-url",
+             _Result("error: No such remote 'origin'\nRC=2\n", ok=False)),
+        ])
+        assert res.status is Status.WARN
+        assert "没有名为" in res.summary or "remote" in res.summary
+
+    def test_missing_remote_does_not_query_ls_remote(self):
+        _, remote = _run([
+            ("git remote get-url",
+             _Result("error: No such remote 'origin'\nRC=2\n", ok=False)),
+        ])
+        assert not any("ls-remote" in c for c in remote.commands)
+
+
+class TestNoUpstream:
+    """无 upstream 时按同名分支猜，必须在 note 里标明。"""
+
+    def test_guess_disclosed_on_unpushed(self):
+        """猜出来的分支名判定「未推送」，也必须标明是猜的。"""
+        local = _LOCAL_OK.replace("UP=origin/feature\n", "UP=\n")
+        res, _ = _run(
+            [
+                ("git remote get-url", _Result(_URL_OK)),
+                ("git ls-remote", _Result("")),
+            ],
+            local=local,
+        )
+        assert res.status is Status.FAIL
+        notes = " ".join(m.note for m in res.measurements)
+        assert "无 upstream" in notes, notes
+
+    def test_guessed_upstream_is_disclosed(self):
+        local = _LOCAL_OK.replace("UP=origin/feature\n", "UP=\n")
+        res, _ = _run(
+            [
+                ("git remote get-url", _Result(_URL_OK)),
+                ("git ls-remote", _Result(HEAD_A + "\trefs/heads/feature\n")),
+            ],
+            local=local,
+        )
+        notes = " ".join(m.note for m in res.measurements)
+        assert "无 upstream" in notes, notes
+
+
+class TestRealVehicleShape:
+    """端到端：用 2026-11-10 实车抓到的真实输出格式复刻三个仓库。
+
+    这个场景比单个用例更接近现场，它同时覆盖：
+      - tianracer 走 Gitee，正常同步
+      - tianbot_core 走 gh-proxy 三斜杠地址 + warning 行 + 本地分支 + 已声明
+      - webrtc_ros_bridge 走 SSH，无 host key
+    """
+
+    _SCRIPTS = {
+        "tianracer": {
+            "probe": ("BRANCH=formula-mini\nHEAD=" + HEAD_A + "\n"
+                      "SHORT=ff48b1e 2026-01-07\nUP=origin/formula-mini\n"
+                      "---STATUS---\n M a.txt\n"),
+            "url": "https://gitee.com/tianbot/tianracer.git\nRC=0\n",
+            "ls": HEAD_A + "\trefs/heads/formula-mini\n",
+        },
+        "tianbot_core": {
+            "probe": ("BRANCH=feat/serial-tap-recording\nHEAD=" + HEAD_B + "\n"
+                      "SHORT=8c502d6 2026-11-07\nUP=\n"
+                      "---STATUS---\n M CMakeLists.txt\n"),
+            # 三斜杠 + gh-proxy：ls-remote 只吐 warning，没有 SHA
+            "url": "https:///gh-proxy.com/https://github.com/tianbot/x.git\nRC=0\n",
+            "ls": "warning: redirecting to https://gh-proxy.com/x/\n",
+        },
+        "webrtc_ros_bridge": {
+            "probe": ("BRANCH=main\nHEAD=" + HEAD_A + "\n"
+                      "SHORT=d917659 2026-01-15\nUP=origin/main\n"
+                      "---STATUS---\n"),
+            "url": "git@github.com:tianbot/y.git\nRC=0\n",
+            "ls": ("Host key verification failed.\n"
+                   "fatal: Could not read from remote repository.\n"),
+        },
+    }
+
+    def _run_real(self, allowed):
+        remote = _RealShapeRemote(self._SCRIPTS)
+        return source_check.run(_Ctx(
+            remote, repos=list(self._SCRIPTS), allowed=allowed)), remote
+
+    def test_declared_patch_branch_yields_warn(self):
+        res, _ = self._run_real({"tianbot_core": "feat/serial-tap-recording"})
+        assert res.status is Status.WARN, res.summary
+        assert "已声明" in res.summary
+        assert "未推送" not in res.summary
+
+    def test_undeclared_patch_branch_yields_fail(self):
+        res, _ = self._run_real({})
+        assert res.status is Status.FAIL, res.summary
+        assert "未推送" in res.summary
+
+    def test_triple_slash_is_still_diagnosed(self):
+        res, _ = self._run_real({"tianbot_core": "feat/serial-tap-recording"})
+        notes = " ".join(m.note for m in res.measurements)
+        assert "三斜杠" in notes, notes
+
+    def test_gitee_repo_reported_in_sync(self):
+        res, _ = self._run_real({"tianbot_core": "feat/serial-tap-recording"})
+        rows = _rows(res)
+        assert rows.get("tianracer 相对远端") == "同步", rows
+
+    def test_ssh_repo_unresolved(self):
+        res, _ = self._run_real({"tianbot_core": "feat/serial-tap-recording"})
+        assert "webrtc_ros_bridge" in res.summary
+
+
+class _RealShapeRemote:
+    """按 (仓库, 命令类型) 分发，模拟三个真实仓库各自的响应形状。"""
+
+    def __init__(self, scripts):
+        self.scripts = scripts
+        self.commands = []
+
+    def run(self, cmd, timeout=30, record=True):
+        self.commands.append(cmd)
+        repo = next((r for r in self.scripts if f"src/{r}'" in cmd), None)
+        if repo is None:
+            return _Result("", ok=False)
+        sc = self.scripts[repo]
+        if "git status --short" in cmd:
+            return _Result(sc["probe"])
+        if "git remote get-url" in cmd:
+            return _Result(sc["url"])
+        if "git ls-remote" in cmd:
+            ok = "fatal" not in sc["ls"]
+            return _Result(sc["ls"], ok=ok)
+        return _Result("", ok=False)

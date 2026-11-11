@@ -109,6 +109,18 @@ ros:
     - tianbot_core
     - webrtc_ros_bridge
 
+  # 交付镜像自带的车端改动所在分支。{仓库名: 分支名}
+  #
+  # 为什么需要：第 7 项把「本地分支未推送」判 FAIL，因为换一台车就复现
+  # 不出来。但串口录音补丁本身就在 tianbot_core 的本地分支上，这类分支
+  # 在每台装了补丁的车上都未推送 —— 全判 FAIL 会让整条产品线永远不可交付，
+  # 于是没人再看第 7 项。
+  #
+  # 声明过的：单列一行「已声明的本地分支」，判 WARN（可见、可确认，不阻断）。
+  # 没声明的：仍判 FAIL。写错仓库名不生效，不做事后猜测。
+  allowed_local_branches:
+    tianbot_core: feat/serial-tap-recording
+
   # bringup 后必须出现的节点。缺任何一个都判为启动失败。
   nodes:
     required:

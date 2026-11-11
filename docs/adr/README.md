@@ -53,6 +53,10 @@
   fetch 本身安全（实测不影响 bringup 与采集），但它会改变被测对象的状态，
   同一车连测两次结果会变。**本地分支未推送判 FAIL**（换台车复现不出来），
   滞后/超前/无法比对判 WARN；四类问题一次列全，不 early return。
+  **交付镜像自带的车端改动可经 `ros.allowed_local_branches` 声明**，
+  声明后降为 WARN（否则装了串口补丁的每台车都永久 FAIL，第 7 项就没人看了）。
+  **detached HEAD 归 WARN**：`git checkout <tag>` 核对版本是正常动作，
+  不能因此判整车不合格。
   见[源码一致性只读比对](0007-source-consistency-readonly.md)。
 
 - 当前自动判定保留 FAIL、致命项 PENDING 和未验证比例等规则。
@@ -83,6 +87,6 @@
 | [0004](0004-protocol-observation.md) | 底盘协议观测 | Proposed | 车端内嵌录音已实现并在实车验证（3571 帧零错）；代理桥接降为备选；未接入正式流程 |
 | [0005](0005-steering-calibration.md) | 转向角间接测量与标定 | Accepted | 标定完成且**判据已按物理约束重写**：打滑率 29% 是四驱同速的几何必然，姿态误差才是主判据 |
 | [0006](0006-mygo-plugin-platform.md) | MyGo 桌面壳与多机器人产品插件 | Accepted | P0 探针已实现（包校验/schema/沙箱/探针/界面 spike）；运行时会话、设备能力、正式 UI 未实现 |
-| [0007](0007-source-consistency-readonly.md) | 源码一致性只读比对远端 | Accepted | 已实现并在实车跑通；未推送分支判 FAIL；`webrtc_ros_bridge` 因 SSH 无 key 无法比对 |
+| [0007](0007-source-consistency-readonly.md) | 源码一致性只读比对远端 | Accepted | 已实现；未推送分支判 FAIL，交付镜像自带分支可经 `allowed_local_branches` 白名单降为 WARN；detached HEAD 归 WARN |
 
 记录约定：每项可独立取舍的架构决策使用独立文件，记录状态、背景、决策、替代方案和影响。`Accepted` 表示决策已确认，不代表实现或验收完成；`Proposed` 表示方案待确认。实现变化时同步更新本总览；被替代的决策保留记录并注明后续决策。
