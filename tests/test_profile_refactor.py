@@ -144,6 +144,8 @@ class TestBaselineUnchanged:
             "frequency", "radar", "imu", "odom", "voltage", "health",
             "traces", "motion", "envvars", "envvars_known_deviations",
             "hardware", "network", "camera", "tf", "mapping",
+            # 2026-11-13：第 3 项自动修复的开关（ADR-0011 / R17-8）
+            "rustdesk",
         }
         assert set(prof.baseline) == expected
 
@@ -470,3 +472,81 @@ class TestTapEnvInjection:
         assert tap.dir_env == "TIANBOT_TAP_DIR", (
             "环境变量名要与车端补丁 getenv 的参数一致"
         )
+
+
+class TestNoHardcodedNumbers:
+    """编号只能有一个来源：profile.yaml。
+
+    2026-11-13 重编号时（ADR-0009），runner.py 里 4 处硬编码编号没跟着改：
+      - `r.number == 19` 找「使用痕迹」，而 19 变成了里程计
+        → 清理结果写进里程计，甚至能把致命项改成 WARN
+      - 两处 `number=8, title="IMU"`，而 8 变成了雷达以太网
+        → 报告里出现两个第 8 项，且编号倒退
+    这一组测试用 AST 扫，防止同类问题再犯。
+    """
+
+    def test_runner_has_no_literal_number_in_checkresult(self):
+        import ast
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent
+               / "core" / "runner.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        bad = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name != "CheckResult":
+                continue
+            # 唯一豁免：profile 还没加载成功时的「加载产品配置」入口错误。
+            # 那种情况查不到 spec，只能是字面量 1。
+            titles = {kw.arg: kw.value for kw in node.keywords}
+            title_node = titles.get("title")
+            exempt = (isinstance(title_node, ast.Constant)
+                      and title_node.value == "加载产品配置")
+            if exempt:
+                continue
+            for kw in node.keywords:
+                if kw.arg == "number" and isinstance(kw.value, ast.Constant):
+                    if isinstance(kw.value.value, int):
+                        bad.append(f"line {node.lineno}: number={kw.value.value}")
+        assert not bad, (
+            "core/runner.py 里出现字面量编号，重编号时会漏改：\n"
+            + "\n".join(bad)
+            + "\n改用 self._spec_of('<module>').number"
+        )
+
+    def test_runner_does_not_compare_number_to_literal(self):
+        """`r.number == <字面量>` 也是硬编码，同样会漏改。"""
+        import ast
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent
+               / "core" / "runner.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        bad = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            left = node.left
+            if not (isinstance(left, ast.Attribute) and left.attr == "number"):
+                continue
+            for comp in node.comparators:
+                if isinstance(comp, ast.Constant) and isinstance(comp.value, int):
+                    bad.append(f"line {node.lineno}: .number == {comp.value}")
+        assert not bad, (
+            "core/runner.py 里按字面量编号查找检测项：\n" + "\n".join(bad)
+        )
+
+    def test_spec_of_resolves_by_module(self):
+        """self._spec_of('traces') 必须返回使用痕迹那一条。"""
+        from core.profile import load
+        prof = load("tianracer_t110_rdk")
+        spec = next((s for s in prof.checks if s.module == "traces"), None)
+        assert spec is not None
+        assert spec.title == "使用痕迹"
+        # 使用痕迹现在是 11，不是 19
+        assert spec.number == 11, spec.number
+        # 19 应该是里程计
+        odom = next(s for s in prof.checks if s.module == "odom")
+        assert odom.number == 19

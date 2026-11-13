@@ -137,7 +137,7 @@ def run(ctx) -> CheckResult:
     stop_below = float(cfg.get("stop_test_below_v", 11.0))
     if volts < stop_below:
         result.detail = (f"电压低于 {stop_below} V。按文档 7.7，"
-                         f"此状态下不得继续带载测试。\n程序会跳过第 18 项运动控制。")
+                         f"此状态下不得继续带载测试。\n程序会跳过第 20 项运动控制。")
     return result
 
 

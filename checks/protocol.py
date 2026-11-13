@@ -116,7 +116,7 @@ def _fetch(ctx, path: str):
 def _tap_config(ctx) -> TapConfig:
     """取本产品的 tap 配置。拿不到就当成未启用。
 
-    不抛异常：第 20 项是可选项，不能因为配置缺失把整个检测拖垮。
+    不抛异常：第 12 项是可选项，不能因为配置缺失把整个检测拖垮。
     但也不能猜 —— 拿到 None 一律视为未启用，宁可 SKIP 也不能伪 PASS。
     """
     profile = getattr(ctx, "profile", None)
@@ -142,7 +142,7 @@ def run(ctx) -> CheckResult:
     result = CheckResult(number=12, title="通讯链路（协议层）", status=Status.PASS)
 
     # ---- 先看开关 ----
-    # 第 20 项读的是车上的原始日志文件，而文件**存在不代表本次采过**：
+    # 第 12 项读的是车上的原始日志文件，而文件**存在不代表本次采过**：
     # tap_probe 只在采集开始前清目录，如果清理没做到位（手动跑过、
     # 中途异常退出），上一次的数据会一直留在那里。
     # 没有开关就无法区分「本次采集」与「上次残留」，会把旧数据当本次
@@ -231,7 +231,7 @@ def run(ctx) -> CheckResult:
     up_parser.feed(to_mcu)
 
     # 上行空白但下行有数据：底盘节点可能根本没连上 pty，
-    # 也可能用的是别的设备。其它项会报错，但单看第 20 项会误导。
+    # 也可能用的是别的设备。其它项会报错，但单看第 12 项会误导。
     if not to_mcu:
         result.add("上行告警", "上位机未发出任何帧",
                    note="底盘节点可能未连到 pty，或设备路径不对")

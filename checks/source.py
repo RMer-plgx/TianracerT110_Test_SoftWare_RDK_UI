@@ -313,6 +313,13 @@ def _check_known_divergence(remote_runner, path: str, head: str,
     """
     if not declared:
         return None
+    # R17-6：与 _compare 保持一致，拼进 rev-list 前先过 SHA 白名单。
+    # `head` 来自 `git rev-parse HEAD`，理论上一定是 SHA，
+    # 但同一文件里两种标准并存，下一次改动很容易踩到。
+    head = _known_head(head)
+    remote_sha = _known_head(remote_sha)
+    if not head or not remote_sha:
+        return None
     allowed_local = declared.get("local_commits") or set()
     allowed_remote = declared.get("remote_commits") or set()
     if not allowed_local and not allowed_remote:

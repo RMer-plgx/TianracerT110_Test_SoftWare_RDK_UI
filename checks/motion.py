@@ -45,7 +45,7 @@ def run(ctx) -> CheckResult:
         result.summary = "电压未知，按安全规则跳过全部运动测试"
         result.detail = (
             "无法确认电池电压时不应驱动车辆。\n"
-            "请查看第 14 项电压检测的失败原因，或加 --force-motion 显式覆盖（会写进报告）。"
+            "请查看第 16 项电压检测的失败原因，或加 --force-motion 显式覆盖（会写进报告）。"
         )
         return result
 
@@ -127,7 +127,7 @@ def run(ctx) -> CheckResult:
             "  - 前进/后退的方向与距离准确\n"
             "  - 左右转向都能动且方向正确\n"
             "  - 左右轮转速差符合转向几何\n\n"
-            "要让第 18 项判 PASS，必须选择完整运动测试（架空段或架空+落地）。"
+            "要让第 20 项判 PASS，必须选择完整运动测试（架空段或架空+落地）。"
         )
         return result
 
@@ -532,7 +532,7 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0, track=0.0):
         # 两者绑在同一个结论里，等于让地面决定一台车能不能交付。
         # 实测：姿态误差 0.42~0.96°（容差 3°）、IMU ±360.8~361.0°，
         # 车确实转满了，但打滑率 45~52% 超理论值 → 连带 IMU/里程计 PENDING。
-        # 现在打滑率仍判 WARN（保留在 statuses 里影响第 18 项整体状态），
+        # 现在打滑率仍判 WARN（保留在 statuses 里影响第 20 项整体状态），
         # 但不影响 verified。
         if slip_pct is not None and theory_slip is not None:
             dev = slip_pct - theory_slip["total_pct"]
@@ -607,7 +607,7 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0, track=0.0):
             verified_all = False
 
     # 返回值的两个用途：
-    #   statuses → judge_all(statuses) 决定第 18 项整体状态（打滑率 WARN 会体现在这里）
+    #   statuses → judge_all(statuses) 决定第 20 项整体状态（打滑率 WARN 会体现在这里）
     #   第二项   → 决定 IMU/里程计能否从 PENDING 转 PASS
     #
     # 第二项**只看 verified_all**，不再要求所有 status 都是 PASS。

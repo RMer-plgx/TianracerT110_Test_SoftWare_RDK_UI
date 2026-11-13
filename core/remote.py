@@ -69,7 +69,8 @@ class EnvVarDiff:
         return self.actual == self.expected
 
 
-def read_bashrc_exports(remote: Remote, prefixes) -> Dict[str, str]:
+def read_bashrc_exports(remote: Remote, prefixes):
+    """返回 {变量名: 值}；读不到返回 None（三态：有 / 空 / 读不到）。"""
     """读 `~/.bashrc` 里显式声明的产品环境变量。
 
     为什么不能直接读进程环境（read_env_vars）
@@ -108,9 +109,20 @@ def read_bashrc_exports(remote: Remote, prefixes) -> Dict[str, str]:
     if not pattern:
         return {}
     result = remote.run(
-        f"grep -E '^export ({pattern})[A-Z0-9_]*=' ~/.bashrc 2>/dev/null",
+        f"test -f ~/.bashrc && "
+        f"grep -E '^export ({pattern})[A-Z0-9_]*=' ~/.bashrc 2>/dev/null; "
+        f"echo RC=$?",
         record=False,
     )
+    # 三态：读不到 ≠ 没声明。
+    # grep 在「一行都没匹配」时返回 1，这是正常的（车辆没声明）；
+    # 但 `test -f` 失败（.bashrc 不存在）或 SSH 中断时也返回非 0，
+    # 两者不分就会把「读不到」写成「车辆没声明任何变量」。
+    text = result.stdout or ""
+    if not result.ok or "RC=" not in text:
+        return None            # 读不到，调用方应判 WARN 而不是下结论
+    if "RC=2" in text:
+        return None            # grep 出错
     vars_: Dict[str, str] = {}
     for line in result.stdout.splitlines():
         line = line.strip()

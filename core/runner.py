@@ -296,6 +296,9 @@ class Runner:
         except product_profile.ProfileError as exc:
             # 配置读不到时也要给出可读错误并生成报告，
             # 不能只抛一个 KeyError 就没了（审查发现）
+            # 这里 profile 还没加载成功，查不到 spec —— 只能用字面量 1。
+            # 它是「入口错误」不是真实检测项，profile 挂了就无从谈编号。
+            # 测试 TestNoHardcodedNumbers 对 title="加载产品配置" 豁免。
             self.report.add(CheckResult(
                 number=1, title="加载产品配置", status=Status.FAIL,
                 summary=f"产品配置有问题：{exc}", fatal=True,
@@ -317,8 +320,11 @@ class Runner:
             self._remote = Remote(self.host, self.user, self._password)
             self._remote.connect()
         except SSHError as exc:
+            net_spec = self._spec_of("network")
             result = CheckResult(
-                number=1, title="网络连通性", status=Status.FAIL,
+                number=net_spec.number if net_spec else 1,
+                title=net_spec.title if net_spec else "网络连通性",
+                status=Status.FAIL,
                 summary=str(exc), fatal=True,
             )
             self.report.add(result)
@@ -356,9 +362,9 @@ class Runner:
             ctx.remote.run(f"rm -f {shquote(ros_remote.VOLTAGE_TAP_PATH)}",
                            record=False)
 
-            # 同理清掉串口桥接的日志目录（第 20 项）。
+            # 同理清掉串口桥接的日志目录（第 12 项）。
             # 不清的话，只要现场手工跑过一次 tap_probe，之后每次检测
-            # 第 20 项都会把那份旧数据当成本次结果判 PASS
+            # 第 12 项都会把那份旧数据当成本次结果判 PASS
             # —— 报告会写「链路正常」并附上一排陈旧电压值。
             # 这是 Round 10 审查发现的伪验证，比单纯 SKIP 更危险。
             # 无条件清（不看开关）：残留本身就是垃圾，清掉最安全。
@@ -422,8 +428,21 @@ class Runner:
 
             self._remote.close()
 
+    def _spec_of(self, module: str):
+        """按 module 名查检测项定义（number/title）。
+
+        为什么不用字面量编号：2026-11-13 重编号（ADR-0009）时，
+        代码里散落的 `number=19` / `number == 19` 没跟着改，
+        导致「使用痕迹」的清理结果写进了**里程计**、
+        bringup 失败记录被标成「第 8 项 IMU」而 8 是雷达以太网。
+        编号只能有一个来源：profile.yaml。
+        """
+        if self.profile is None:
+            return None
+        return next((s for s in self.profile.checks if s.module == module), None)
+
     def _cleanup_traces(self, ctx: Context) -> None:
-        """测试结束后按配置清理车上使用痕迹，并把结果写回第 19 项。
+        """测试结束后按配置清理车上使用痕迹，并把结果写回「使用痕迹」项。
 
         默认 **不清理**（`traces.auto_cleanup: false`）。
         原因：清理会删 `$HOME` 下的持久文件，属于「修改车辆状态」，
@@ -433,7 +452,11 @@ class Runner:
         即使开启 auto_cleanup，也会保留 .bash_history
         （`keep_bash_history: true`）—— 命令历史是排查证据，不是痕迹。
         """
-        result = next((r for r in self.report.results if r.number == 19), None)
+        spec = self._spec_of("traces")
+        result = None
+        if spec is not None:
+            result = next((r for r in self.report.results
+                           if r.number == spec.number), None)
         traces_cfg = ctx.baseline.get("traces", {})
 
         if not traces_cfg.get("auto_cleanup", False):
@@ -463,8 +486,9 @@ class Runner:
             self._write_cleanup_log({"error": data["error"]})
             return
 
-        if result is None:
-            result = CheckResult(number=19, title="使用痕迹", status=Status.PASS)
+        if result is None and spec is not None:
+            result = CheckResult(number=spec.number, title=spec.title,
+                                 status=Status.PASS)
             self.report.add(result)
 
         logs_before = data.get("logs_before_mb")
@@ -623,8 +647,11 @@ class Runner:
             status = ros_remote.wait_for_nodes(ctx.remote, profile, timeout=60)
             if not status["ready"]:
                 missing = "、".join(status["missing"])  # type: ignore[arg-type]
+                imu_spec = self._spec_of("imu")
                 result = CheckResult(
-                    number=8, title="IMU", status=Status.FAIL, fatal=True,
+                    number=imu_spec.number if imu_spec else 0,
+                    title=imu_spec.title if imu_spec else "IMU",
+                    status=Status.FAIL, fatal=True,
                     summary=f"bringup 未能就绪，缺少节点：{missing}",
                 )
                 result.add("已出现的节点", len(status["nodes"]))  # type: ignore[arg-type]
@@ -650,8 +677,11 @@ class Runner:
             # attach 模式下若 master 根本没起，每项都会等到超时（电压一项就要 90 秒），
             # 用户会以为程序卡死。这里快速失败并给出可操作的提示。
             if not ros_remote.is_master_running(ctx.remote, profile):
+                imu_spec2 = self._spec_of("imu")
                 result = CheckResult(
-                    number=8, title="IMU", status=Status.FAIL, fatal=True,
+                    number=imu_spec2.number if imu_spec2 else 0,
+                    title=imu_spec2.title if imu_spec2 else "IMU",
+                    status=Status.FAIL, fatal=True,
                     summary="ROS master 未运行，无法进行传感器检测",
                 )
                 result.detail = (

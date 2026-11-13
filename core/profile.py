@@ -41,12 +41,12 @@ class ProfileError(Exception):
 
 @dataclass
 class TapConfig:
-    """串口协议采集（第 20 项）的配置。
+    """串口协议采集（第 12 项）的配置。
 
     可选段。缺省 ``enabled=False``。
 
     这里刻意用一个**显式开关**，而不是「看车上日志文件在不在」：
-    第 20 项判的是「本次采集的链路质量」，而日志文件可能是上一次
+    第 12 项判的是「本次采集的链路质量」，而日志文件可能是上一次
     采集的残留。没有开关就无法区分两者，会把旧数据当本次结果判 PASS
     —— 那是伪验证，比 SKIP 更危险。
 
@@ -132,7 +132,7 @@ class RosConfig:
     # 可在 profile.yaml 的 ros.env_prefix 显式声明；
     # 未声明时由 env_overrides 的键推导公共前缀。
     env_prefix: str = ""
-    # 串口协议采集（第 20 项）。可选，默认关闭。
+    # 串口协议采集（第 12 项）。可选，默认关闭。
     tap: TapConfig = field(default_factory=TapConfig)
 
     def topic(self, key: str) -> str:
@@ -387,7 +387,7 @@ def _build_tap(raw: Any, where: str) -> TapConfig:
     """解析 ros.tap 段。缺省整个段等于未启用。
 
     只做类型校验，不做“猜”：写错了就报错，不静默当成关闭。
-    静默兜底在这里特别危险 —— 用户以为开了采集，第 20 项却因配置
+    静默兜底在这里特别危险 —— 用户以为开了采集，第 12 项却因配置
     写错而判 SKIP，报告上看不出区别。
     """
     if raw is None:

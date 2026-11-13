@@ -274,7 +274,7 @@ def main() -> int:
         up = fetch("to_mcu.raw")
     finally:
         # 取回后清掉车上的日志目录。
-        # 不留给下一次：第 20 项读的就是这个目录，残留数据会被当成
+        # 不留给下一次：第 12 项读的就是这个目录，残留数据会被当成
         # 下一次检测的结果（Round 10 审查）。必须放在 close() 之前。
         try:
             remote.run(f"rm -rf {shquote(tap_dir)}", record=False)

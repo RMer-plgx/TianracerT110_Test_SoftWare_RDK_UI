@@ -128,6 +128,9 @@ class TestWorker(QThread):
                 mode=cfg["mode"],
                 motion=cfg["motion"],
                 profile_id=cfg.get("profile_id"),
+                # sudo 密码与 SSH 密码可能不同（车上 SSH 是 sunrise，
+                # sudo 是 ros）。从 config 取，让将来能在界面里配。
+                sudo_password=cfg.get("sudo_password") or "ros",
                 tool_name="tb-verify-ui",
                 pause_for_ground=pause_for_ground if cfg["motion"] == "full" else None,
                 on_output=self.output.emit,
@@ -701,7 +704,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.full_motion)
 
         hint = QLabel(
-            "不勾选微动则第 18 项记为未验证。\n"
+            "不勾选微动则第 20 项记为未验证。\n"
             "完整运动测试的落地段会让车左转、右转各一整圈，\n"
             "需要约 4 m × 4 m 开阔平地。"
         )
@@ -1114,6 +1117,9 @@ class MainWindow(QMainWindow):
             "answers": answers,
             "profile_id": profile_id or (self.profile.id if self.profile else None),
             "conn_mode": self.conn_mode,
+            # 目前没有独立输入框，沿用车辆通用默认值。
+            # 将来加输入框时只需改这里 + 界面上多一个 QLineEdit。
+            "sudo_password": "ros",
         }
 
         # 重置界面

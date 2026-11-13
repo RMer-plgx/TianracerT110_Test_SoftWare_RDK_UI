@@ -142,10 +142,34 @@ class Remote:
 
     def sudo(self, command: str, sudo_password: str,
              timeout: int = 60) -> CommandResult:
-        """带密码的 sudo 执行。"""
+        """带密码的 sudo 执行。
+
+        **密码不能进 history。** `run()` 会把 command 原文记进
+        `self.history`，而 history 最终写进报告的 raw.log ——
+        raw.log 随报告一起归档交付。等于把车辆 sudo 密码写进交付物
+        （2026-11-13 审查 R17-2 指出）。
+
+        做法：实际命令走 record=False，另外记一条**脱敏**的进 history。
+        报告里仍能看出「执行了哪条 sudo」，但看不到密码。
+        """
         escaped = shquote(command)
         cmd = f"echo {shquote(sudo_password)} | sudo -S bash -c {escaped}"
-        return self.run(cmd, timeout=timeout)
+        result = self.run(cmd, timeout=timeout, record=False)
+
+        # 脱敏记录：保留可读的操作，去掉密码
+        masked = CommandResult(
+            command=f"sudo bash -c {escaped}    # 密码已隐去",
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            duration_sec=result.duration_sec,
+        )
+        # 防御：万一 stdout/stderr 里回显了密码，也一并抹掉
+        if sudo_password:
+            masked.stdout = masked.stdout.replace(sudo_password, "***")
+            masked.stderr = masked.stderr.replace(sudo_password, "***")
+        self.history.append(masked)
+        return result
 
     # -- 辅助 -------------------------------------------------------------
 

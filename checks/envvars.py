@@ -65,6 +65,17 @@ def run(ctx) -> CheckResult:
     # T110 的变量既有 TIANRACER_* 也有 TIANBOT_NAME（后者会被漏掉）。
     prefixes = {prefix} | {n.split("_")[0] for n in expected if "_" in n}
     declared = read_bashrc_exports(ctx.remote, sorted(prefixes))
+
+    # 读不到 ≠ 没声明。读不到时不下结论，判 WARN 让人去看。
+    if declared is None:
+        result.status = Status.WARN
+        result.summary = "读不到车辆的 ~/.bashrc，无法判断环境变量是否符合标准"
+        result.detail = (
+            "grep ~/.bashrc 失败（文件不存在或 SSH 中断）。\n"
+            "本项不作通过判定 —— 「读不到」不等于「没声明」。\n"
+            "可手工确认：bash -ic 'env | grep -E \"^TIAN(RACER|BOT)\"'"
+        )
+        return result
     result.add("车辆声明的变量", len(declared), "项",
                expected=f"{len(expected)} 项",
                note="读自 ~/.bashrc 的 export 行（不受非交互 shell 影响）")

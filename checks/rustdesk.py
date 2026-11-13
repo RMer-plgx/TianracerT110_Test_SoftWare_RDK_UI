@@ -146,8 +146,13 @@ def run(ctx) -> CheckResult:
     has_desktop = _has_x(vals) and bool(vals.get("SESSION"))
     repaired = []
 
+    # 自动修复默认开（用户要求「零操作」），但可以由产品配置关掉。
+    # 这是检测工具**主动改变车端运行状态**的唯一一处，应该由配置声明。
+    cfg = (ctx.baseline or {}).get("rustdesk", {})
+    auto_repair = bool(cfg.get("auto_repair", True))
+
     # ---- 自动修复：只在「服务在跑但没有图形会话」时才动手 ----
-    if active == "active" and not has_desktop:
+    if auto_repair and active == "active" and not has_desktop:
         repaired = _try_repair(r, ctx)
         vals = _snapshot(r)
         procs = _procs(r)
@@ -185,9 +190,15 @@ def run(ctx) -> CheckResult:
 
     if not has_desktop:
         result.status = Status.WARN
-        result.summary = "没有图形会话（X 未启动），远程连接会黑屏"
+        if auto_repair:
+            result.summary = "没有图形会话（X 未启动），远程连接会黑屏"
+            tried = "检测软件已尝试自动拉起 lightdm，但仍失败。"
+        else:
+            result.summary = "没有图形会话（X 未启动），远程连接会黑屏"
+            tried = ("本项已配置为不自动修复（baseline.yaml 的 "
+                     "`rustdesk.auto_repair: false`），未尝试拉起 lightdm。")
         result.detail = (
-            "这不是显示器的问题：检测软件已尝试自动拉起 lightdm，但仍失败。\n"
+            "这不是显示器的问题：" + tried + "\n"
             "\n"
             "按可能性排序：\n"
             "  1. HDMI 诱骗器没插紧 —— 拔下重新插一遍（最常见）\n"
@@ -209,5 +220,12 @@ def run(ctx) -> CheckResult:
         )
         return result
 
-    result.summary = "服务与用户会话均正常"
+    if repaired:
+        # 明确写出来：报告读者要知道「这台车检测前是没画面的，
+        # 是检测软件把它拉起来的」，而不是以为本来就正常。
+        result.summary = ("服务与用户会话均正常"
+                          "（本次检测自动启动了 " + "、".join(
+                              x.replace("systemctl start ", "") for x in repaired) + "）")
+    else:
+        result.summary = "服务与用户会话均正常"
     return result
