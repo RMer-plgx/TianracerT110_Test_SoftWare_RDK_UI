@@ -98,6 +98,6 @@
 | [0007](0007-source-consistency-readonly.md) | 源码一致性只读比对远端 | Accepted | 已实现；未推送分支判 FAIL，交付镜像自带分支可经 `allowed_local_branches` 白名单降为 WARN；detached HEAD 归 WARN |
 | [0008](0008-spin-verified-criteria.md) | 落地互校的通过只由姿态误差决定 | Accepted | 待实施：打滑率降为独立 WARN，不再否掉 IMU/里程计 |
 | [0009](0009-check-order-display-vs-execution.md) | 展示顺序与执行顺序解耦 | Accepted | 待实施：报告按编号 1..20，执行仍按 static→runtime→motion；第 20 项前置 |
-| [0010](0010-mainboard-serial-from-jetson.md) | 主控序列号改读 Jetson | Accepted | 待实施：现在读的是 CP2102 芯片序列号（全批 0001，无区分度） |
+| [0010](0010-mainboard-serial-from-rdk-x5.md) | 主控序列号改读 SoC device-tree | Accepted | 待实施：现在读的是 CP2102 芯片序列号（全批 0001，无区分度） |
 
 记录约定：每项可独立取舍的架构决策使用独立文件，记录状态、背景、决策、替代方案和影响。`Accepted` 表示决策已确认，不代表实现或验收完成；`Proposed` 表示方案待确认。实现变化时同步更新本总览；被替代的决策保留记录并注明后续决策。

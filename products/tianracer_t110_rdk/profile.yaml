@@ -12,7 +12,7 @@ id: tianracer_t110_rdk
 name: Tianracer T110（RDK）
 model: Tianracer T110
 platform: rdk
-description: NVIDIA Jetson Orin Nano（RDK 平台）的 T110 阿克曼底盘整车
+description: D-Robotics RDK X5（Sunrise 5）的 T110 阿克曼底盘整车
 revision: "2026-11-03"
 
 ros:

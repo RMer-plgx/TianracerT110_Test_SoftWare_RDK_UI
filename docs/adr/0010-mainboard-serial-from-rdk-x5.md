@@ -1,4 +1,4 @@
-# ADR-0010. 主控序列号改读 Jetson，不再读 USB 转串口芯片
+# ADR-0010. 主控序列号改读 SoC 的 device-tree，不再读 USB 转串口芯片
 
 ## 状态
 
@@ -19,7 +19,7 @@ udevadm info -q property -n /dev/ttyUSB0 | grep ID_SERIAL_SHORT
 
 | 对象 | 序列号来源 | 示例（同一台车） |
 | --- | --- | --- |
-| **Jetson / Orin Nano** | `/proc/device-tree/serial-number` | `328150681214c98a00d868f80012004` |
+| **主控 SoC（RDK X5 / Sunrise 5）** | `/proc/device-tree/serial-number` | `328150681214c98a00d868f80012004` |
 | **CP2102 转串口芯片** | `udevadm ... ID_SERIAL_SHORT` | `0001` |
 | 下位机 MCU | 协议里没有序列号字段 | — |
 
@@ -37,12 +37,12 @@ CP2102 出厂时厂家**可以**烧唯一 ID，也可以不烧。不烧就用默
 
 ## 决策
 
-**第 6 项改读 Jetson 序列号，并改变判定方式。**
+**第 6 项改读 SoC 的 device-tree 序列号，并改变判定方式。**
 
 | 项 | 现状 | 新 |
 | --- | --- | --- |
 | 标题 | 主控硬件 ID | **主控序列号** |
-| 数据源 | CP2102 `ID_SERIAL_SHORT` | **Jetson `/proc/device-tree/serial-number`** |
+| 数据源 | CP2102 `ID_SERIAL_SHORT` | **`/proc/device-tree/serial-number`** |
 | 判定 | 与 `expected_serial` 比 | **只记录 + 跨车重复判 FAIL** |
 | CP2102 | 混在其中 | 降为独立一行，只验证「是 CP2102」（VID:PID），不记序列号 |
 | `0001` | 判 WARN | 作为批次提示记录，不判定 |
@@ -52,7 +52,7 @@ CP2102 出厂时厂家**可以**烧唯一 ID，也可以不烧。不烧就用默
 单台车检测时，只把序列号写进报告，不判 PASS/FAIL（没有期望值可比）。
 
 **重复检测才是判据**：如果同一份报告目录里出现两台车序列号相同，
-说明镜像被克隆过（每台车的 Jetson 序列号本该唯一），判 FAIL。
+说明镜像被克隆过（每台车的 SoC 序列号本该唯一），判 FAIL。
 
 实现上这需要一次「历史记录扫描」，可以放在第 6 项内部，
 扫 `records_root()` 下最近的报告。
@@ -63,6 +63,32 @@ CP2102 出厂时厂家**可以**烧唯一 ID，也可以不烧。不烧就用默
 这是硬件拓扑的一部分，值得记录。但**不记录它的序列号**，
 因为没有区分度。
 
+## 硬件事实（2026-11-13 实测）
+
+本产品的主控是 **D-Robotics RDK X5**（SoC：Sunrise 5 / `X5U`），
+不是 NVIDIA Jetson。两台在线车的数据：
+
+| 车 | `/proc/device-tree/model` | `serial-number` |
+| --- | --- | --- |
+| 192.168.1.82 | `D-Robotics X5 MD V0.2` | `308118a90a2dc19403bb44d80000024` |
+| 192.168.1.93 | `D-Robotics X5 MD V1.2` | `328150681214c98a00d868f80012004` |
+
+**两个序列号不同**，说明这个字段有区分度。
+
+同机的其它标识（供交叉参考）：
+
+```
+/sys/class/socinfo/soc_id     X5U
+/sys/class/socinfo/board_id   506
+/etc/machine-id               93376d30162346569ffd698a59b4b039   ← 镜像克隆后重复
+eth0 MAC                      4a:c6:58:49:78:7f
+内核                          6.1.83 aarch64, Ubuntu 22.04.5, 系统版本 3.3.3
+```
+
+`machine-id` 不能用作车辆标识 —— 镜像复制后所有车相同（这一点在
+A/B 镜像交付场景下是必然的）。`eth0 MAC` 也可能因镜像/网卡驱动配置而重复，
+`/proc/device-tree/serial-number` 是唯一一个来自 SoC eFuse 的值。
+
 ## 替代方案
 
 - **按用户提议「标准全改成 0001」**：让 WARN 消失，但这一项从此没有意义。
@@ -70,6 +96,7 @@ CP2102 出厂时厂家**可以**烧唯一 ID，也可以不烧。不烧就用默
 - **保留现状 + 把 `0001` 加进 `acceptable_serials`**：同样是让 WARN 消失。
   `baseline.yaml` 已经有这个机制，改一行就够。但问题一样：字段无意义。
 - **读下位机 MCU 序列号**：协议里没有这个字段，改不了。
+- **用 `machine-id`**：镜像克隆后全相同，比 `0001` 更糟。
 
 ## 影响
 
@@ -79,11 +106,15 @@ CP2102 出厂时厂家**可以**烧唯一 ID，也可以不烧。不烧就用默
   旧报告里的 WARN 在新版本不会再现。
 - `baseline.yaml` 的 `hardware.expected_serial` / `acceptable_serials`
   两个字段会废弃。要不要保留兼容（不认识就忽略）需实施时决定。
+- 顺带修正一处文档错误：`products/tianracer_t110_rdk/profile.yaml`
+  的 `description` 之前写「NVIDIA Jetson Orin Nano」，实际是 RDK X5。
 
 ## 未验证
 
-- **Jetson 序列号在所有批次都唯一吗？** 只验了 1 台。
-  如果存在同批次相同的情况，改读 Jetson 也解决不了唯一性。
-  实施前应该至少验 3 台。
-- `/proc/device-tree/serial-number` 在不同 JetPack 版本上路径是否一致？
-  只验了这一台的版本。
+- **同硬件版本的车，序列号是否唯一？** 两只样本恰好是不同板版本
+  （V0.2 与 V1.2），所以"序列号不同"也可能只是版本不同带来的。
+  实施前应该在**至少 2 台同版本**的车上看一眼。
+- `/proc/device-tree/serial-number` 在 RDK X5 的不同系统版本
+  （3.3.3 之外）上是否都存在？只验了一个版本。
+- 如果板子换过或返修换过 SoC，序列号会变 —— 这属于正常，但历史查重时
+  会把同一台车判成两台。查重逻辑要考虑时间窗口，不能无限追溯。
