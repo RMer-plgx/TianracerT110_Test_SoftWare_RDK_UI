@@ -101,6 +101,26 @@ class RosConfig:
     #
     # 写错仓库名不生效，会回到 FAIL —— 不做事后猜测。
     allowed_local_branches: Dict[str, str] = field(default_factory=dict)
+
+    # 已确认等价的本地/上游分叉（2026-11-13，ADR-0009 后续）。
+    # 背景：车上 tianbot_core 与远端 dev 各自实现了 raw mode 修复 + 串口录音，
+    # 内容等价（差异只有注释语言），但 git 层面是「领先 2 / 落后 3」。
+    # 第 7 项会把这种分叉报成 WARN，让人以为车上是老代码。
+    #
+    # 声明后：本地领先的提交 ⊆ local_commits 且落后的 ⊆ remote_commits
+    #        → 判 PASS「已确认等价分叉」
+    # 出现任何不在列表里的新提交 → 仍报 WARN（上游有新东西 / 本地有新改动）。
+    #
+    # 形如：{仓库名: {reason, verified_at, local_commits, remote_commits}}
+    known_divergences: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    # 第 7 项的「已知可接受」项（2026-11-13）。
+    # accept_unreachable: remote 不可达但已知可接受的仓库（如 SSH 无 key）。
+    # accept_dirty: 未提交改动属于现场适配，不作为告警。
+    # 两者都只是「降噪」—— 具体情况仍会逐条写进报告 detail，
+    # 不会隐藏任何信息。
+    accept_unreachable: List[str] = field(default_factory=list)
+    accept_dirty: bool = False
     # 报告里要额外展示父节点的 frame（可选）。
     # 这些是「看着有用」而非「必需」的，缺了不报错，只是不显示。
     display_frames: List[str] = field(default_factory=list)
@@ -318,6 +338,51 @@ def _build_allowed_branches(raw: Any, where: str) -> Dict[str, str]:
     return out
 
 
+def _build_known_divergences(raw: Any, where: str) -> Dict[str, Dict[str, Any]]:
+    """解析 ros.known_divergences：已确认等价的本地/上游分叉。
+
+    严格校验：写错了会导致第 7 项误判 PASS 或误判 WARN，
+    比「静默忽略」危险得多。
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ProfileError(
+            f"{where} 的 known_divergences 应为映射（仓库名: 说明），"
+            f"实际是 {type(raw).__name__}"
+        )
+    out: Dict[str, Dict[str, Any]] = {}
+    for repo, info in raw.items():
+        if not isinstance(repo, str) or not repo.strip():
+            raise ProfileError(f"{where} 的 known_divergences 里有非法仓库名：{repo!r}")
+        if not isinstance(info, dict):
+            raise ProfileError(
+                f"{where} 的 known_divergences.{repo} 应为映射，"
+                f"至少含 reason 与 local_commits/remote_commits"
+            )
+        local = info.get("local_commits") or []
+        remote = info.get("remote_commits") or []
+        if not isinstance(local, list) or not isinstance(remote, list):
+            raise ProfileError(
+                f"{where} 的 known_divergences.{repo} 的 "
+                f"local_commits / remote_commits 应为列表"
+            )
+        # 允许写短 sha（7 位）或全 sha；统一成小写、去空白
+        def _norm(xs):
+            return {str(x).strip().lower() for x in xs if str(x).strip()}
+        out[repo] = {
+            "reason": str(info.get("reason") or ""),
+            "verified_at": str(info.get("verified_at") or ""),
+            "local_commits": _norm(local),
+            "remote_commits": _norm(remote),
+            # 比对基准分支（可选）。不写就按本地 upstream / 同名远端分支。
+            # 写它的理由：车上的分支是本地改造分支（feat/xxx），
+            # 而评等价应该跟上游主干（dev）比，不是跟自己的镜像分支比。
+            "compare_with": str(info.get("compare_with") or "").strip(),
+        }
+    return out
+
+
 def _build_tap(raw: Any, where: str) -> TapConfig:
     """解析 ros.tap 段。缺省整个段等于未启用。
 
@@ -381,8 +446,10 @@ BASELINE_REQUIREMENTS: Dict[str, List[str]] = {
         "camera.expected_encoding",
     ],
     "hardware": [
+        # 2026-11-13（ADR-0010）：不再比对 CP2102 的序列号，
+        # 改为「平台关键词 + device-tree 序列号」。
+        # vendor_id/model_id 保留：它们只验证「底盘是 CP2102」这个拓扑事实。
         "hardware.vendor_id", "hardware.model_id",
-        "hardware.expected_serial", "hardware.acceptable_serials",
     ],
     "health": [
         "health.temp_warn_c", "health.temp_fail_c",
@@ -644,6 +711,10 @@ def load(profile_id: Optional[str] = None) -> Profile:
         repos=[str(r) for r in (ros_data.get("repos") or [])],
         allowed_local_branches=_build_allowed_branches(
             ros_data.get("allowed_local_branches"), ros_where),
+        known_divergences=_build_known_divergences(
+            ros_data.get("known_divergences"), ros_where),
+        accept_unreachable=[str(x) for x in (ros_data.get("accept_unreachable") or [])],
+        accept_dirty=bool(ros_data.get("accept_dirty") or False),
         env_prefix=_resolve_env_prefix(ros_data, overrides),
         env_hook_file=str(ros_data.get("env_hook_file", "")),
         display_frames=[str(f) for f in (ros_data.get("display_frames") or [])],

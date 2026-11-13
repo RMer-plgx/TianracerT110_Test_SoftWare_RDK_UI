@@ -12,7 +12,7 @@ from ._util import run_probe
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=9, title="激光雷达", status=Status.PASS)
+    result = CheckResult(number=13, title="激光雷达", status=Status.PASS)
     cfg = ctx.baseline.get("radar", {})
     freq = ctx.baseline.get("frequency", {}).get("radar_hz", {})
 

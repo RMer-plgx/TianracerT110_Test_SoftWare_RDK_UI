@@ -8,7 +8,7 @@ from core.verdict import CheckResult, Status
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=10, title="雷达以太网", status=Status.PASS)
+    result = CheckResult(number=8, title="雷达以太网", status=Status.PASS)
     baseline = ctx.baseline.get("network", {})
     lidar_ip = baseline.get("lidar_ip", "192.168.198.2")
     prefix = baseline.get("lidar_host_ip_prefix", "192.168.198.")

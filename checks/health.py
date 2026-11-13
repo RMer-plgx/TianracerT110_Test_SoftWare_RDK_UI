@@ -43,7 +43,7 @@ class _Finding:
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=17, title="系统健康", status=Status.PASS)
+    result = CheckResult(number=10, title="系统健康", status=Status.PASS)
     baseline = ctx.baseline.get("health", {})
     r = ctx.remote
     findings: list[_Finding] = []

@@ -92,7 +92,7 @@ def cleanup(ctx, keep_bash_history: bool = True) -> dict:
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=19, title="使用痕迹", status=Status.PASS)
+    result = CheckResult(number=11, title="使用痕迹", status=Status.PASS)
     baseline = ctx.baseline.get("traces", {})
     r = ctx.remote
 

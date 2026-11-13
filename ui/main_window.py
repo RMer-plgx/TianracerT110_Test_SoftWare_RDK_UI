@@ -313,6 +313,104 @@ class WiredSetupWorker(QThread):
                 pass
 
 
+class CodeSyncWorker(QThread):
+    """对车上仓库执行 git fetch，并列出与远端的差异。
+
+    只做 fetch —— 它只写 .git/refs/remotes，不动工作区、不影响运行中的节点。
+    **不执行 pull / checkout / merge**：车上带未提交的适配改动
+    （底盘类型 ackermann、波特率 115200、ackermann_msgs 依赖），
+    切分支会丢掉它们，车就跑不起来了。
+    """
+
+    output = pyqtSignal(str)
+    done = pyqtSignal(str, bool)     # (差异摘要, 是否全部成功)
+
+    def __init__(self, host: str, user: str, password: str,
+                 profile_id=None, parent=None):
+        super().__init__(parent)
+        self._host = host
+        self._user = user
+        self._password = password
+        self._profile_id = profile_id
+
+    def run(self) -> None:
+        from core import profile as product_profile
+        from core.ssh import Remote
+
+        lines = []
+        ok = True
+        remote = None
+        try:
+            profile = product_profile.load(self._profile_id)
+            repos = profile.ros.repos or []
+            ws = profile.ros.workspace
+
+            remote = Remote(self._host, self._user, self._password)
+            remote.connect()
+
+            for repo in repos:
+                path = f"{ws}/src/{repo}"
+                self.output.emit(f"  {repo}: git fetch …")
+                res = remote.run(
+                    f"cd {path} 2>/dev/null || exit 3; "
+                    "timeout 40 git fetch origin 2>&1 | tail -3",
+                    timeout=90, record=False,
+                )
+                if not res.ok:
+                    ok = False
+                    lines.append(f"{repo}: fetch 失败（远端不可达或无权限）")
+                    continue
+
+                info = remote.run(
+                    f"cd {path} 2>/dev/null || exit 3\n"
+                    'echo "BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"\n'
+                    "echo \"SHORT=$(git log -1 --format='%h %s' --date=short 2>/dev/null)\"\n"
+                    "echo '---'\n"
+                    "git status --short 2>/dev/null | wc -l\n"
+                    "git rev-list --count HEAD 2>/dev/null\n",
+                    timeout=30, record=False,
+                ).stdout or ""
+                branch = ""
+                short = ""
+                dirty = 0
+                for ln in info.splitlines():
+                    if ln.startswith("BRANCH="):
+                        branch = ln[7:].strip()
+                    elif ln.startswith("SHORT="):
+                        short = ln[6:].strip()
+                # 未提交改动数：first line after ---
+                after = info.partition("---")[2].strip().splitlines()
+                if after:
+                    try:
+                        dirty = int(after[0].strip())
+                    except ValueError:
+                        dirty = 0
+
+                lines.append(
+                    f"{repo}: {branch} @ {short}"
+                    + (f"，{dirty} 项未提交改动" if dirty else "，工作区干净")
+                )
+                self.output.emit(f"  {repo}: 已更新远端引用")
+
+        except Exception as exc:
+            ok = False
+            lines.append(f"检查失败：{type(exc).__name__}: {exc}")
+        finally:
+            if remote is not None:
+                try:
+                    remote.close()
+                except Exception:
+                    pass
+
+        lines.append("")
+        lines.append("说明：本次只执行了 git fetch（更新 .git 里的远端引用），")
+        lines.append("没有改动工作区，也没有切分支 —— 车上代码现在还是原样。")
+        lines.append("")
+        lines.append("如果要真正同步到上游版本，需要人工确认后单独操作：")
+        lines.append("先备份车上未提交的适配改动，再切分支并重新编译。")
+        self.done.emit("\n".join(lines), ok)
+
+
 class CleanupWorker(QThread):
     """后台清理车上使用痕迹。
 
@@ -376,6 +474,7 @@ class MainWindow(QMainWindow):
         self._last_config: dict | None = None
         self._cleaner = None
         self._wired_worker = None
+        self._sync_worker = None
         self._unplug_worker = None
 
         _title = (self.profile.name if self.profile else "产品") + " 整车测试"
@@ -724,6 +823,18 @@ class MainWindow(QMainWindow):
         # 报告里的「需要人工现场确认的项目」一节保留 —— 它是人工复核与
         # 「确认接受」告警项的唯一载体，删按钮不等于删功能。
 
+        # 检查代码更新：只做 git fetch + 展示差异，绝不自动 checkout/pull。
+        # 为什么不做自动同步：车上带未提交的适配改动（ackermann/115200），
+        # 切分支会丢掉它们，车就跑不起来了。
+        self.sync_btn = QPushButton("检查代码更新")
+        self.sync_btn.setObjectName("Ghost")
+        self.sync_btn.setToolTip(
+            "对车上仓库执行 git fetch（只更新 .git，不动工作区），"
+            "然后列出本地与远端的差异"
+        )
+        self.sync_btn.clicked.connect(self.check_code_updates)
+        layout.addWidget(self.sync_btn)
+
         # 清理使用记录：删掉车上 ROS 日志 / bash_history / .viminfo
         self.clean_btn = QPushButton("清理使用记录")
         self.clean_btn.setObjectName("Ghost")
@@ -1013,6 +1124,12 @@ class MainWindow(QMainWindow):
         self.counter_label.setText(f"0 / {total}")
         self.report = None
         self.view_btn.setEnabled(False)
+        # 关键：判定标签必须一并重置。
+        # 它只在初始化和 _on_finished 里被写，不重置的话：
+        # 上一轮的「判定：具备交付条件」绿字会一直挂在屏幕上，
+        # 直到本轮跑完才刷新 —— 多车连续测试时看到的全是上一台车的结论。
+        self.verdict_label.setText("尚未开始")
+        self.verdict_label.setStyleSheet("font-size: 15px; font-weight: 600;")
         # 新一轮：清掉上一轮的取消标志与残留确认框
         self._cancel_flag = False
         if self._ground_dialog is not None:
@@ -1022,6 +1139,10 @@ class MainWindow(QMainWindow):
                 pass
             self._ground_dialog = None
         self.open_btn.setEnabled(False)
+        # 检测期间锁住左侧配置：IP/账号/模式/运动选项都不应该能改。
+        # config 已在上面快照过，改了也不会生效，
+        # 但用户会以为改了 —— 下一步点「清理使用记录」时用的还是旧值。
+        self._set_config_editable(False)
         self._log(f"开始检测：{host}")
 
         self._last_config = dict(config)
@@ -1225,10 +1346,29 @@ class MainWindow(QMainWindow):
 
         self._cleanup_after_run()
 
+    def _set_config_editable(self, editable: bool) -> None:
+        """检测期间锁定左侧配置面板。
+
+        为什么要锁：`_launch_test` 已经把 config 快照下来了，
+        检测中改界面不会影响本次运行，但用户会以为改了。
+        而「清理使用记录」用的是 `_last_config`，也是旧值 ——
+        用户改了 IP 再点清理，清的还是上一台车。
+        """
+        for widget in (self.host_edit, self.user_edit, self.pass_edit,
+                       self.mode_combo, self.esc_check, self.ground_check,
+                       self.allow_pulse, self.full_motion):
+            widget.setEnabled(editable)
+        # 连接模式开关也一并锁住
+        switch = getattr(self, "mode_switch", None)
+        if switch is not None:
+            switch.setEnabled(editable)
+
     def _cleanup_after_run(self) -> None:
         """每一轮结束后的共同收尾。"""
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        # 解锁左侧配置：检测结束（成功/失败/中止）都要恢复
+        self._set_config_editable(True)
         # 关掉可能还在显示的落地确认框
         if self._ground_dialog is not None:
             try:
@@ -1258,6 +1398,52 @@ class MainWindow(QMainWindow):
         os.startfile(str(self.record_dir))  # noqa: S606
 
     # -- 清理 -------------------------------------------------------------
+
+    def check_code_updates(self) -> None:
+        """对车上仓库执行 git fetch，列出与远端的差异。
+
+        **只读 .git，不动工作区。** 不做 checkout / pull / merge ——
+        车上带着未提交的适配改动（底盘类型、波特率、依赖），
+        切分支会丢掉它们，车直接跑不起来。
+
+        完整的差异分析见 .codewhale/review/CODE_SYNC_COMPARISON.md。
+        """
+        host = self.host_edit.text().strip()
+        if not host or not self._valid_host(host):
+            QMessageBox.warning(self, "缺少信息",
+                                "请先填写正确的车辆 IP。")
+            return
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.information(self, "正在检测",
+                                    "检测进行中，请等结束或先停止。")
+            return
+        if self._sync_worker is not None and self._sync_worker.isRunning():
+            return
+
+        self.sync_btn.setEnabled(False)
+        self._log("检查代码更新：对车上仓库执行 git fetch（不会改动工作区）…")
+        self._sync_worker = CodeSyncWorker(
+            host, self.user_edit.text().strip() or "sunrise",
+            self.pass_edit.text() or "sunrise",
+            self.profile.id if self.profile else None,
+        )
+        self._sync_worker.output.connect(self._on_output)
+        self._sync_worker.done.connect(self._on_code_sync_done)
+        self._sync_worker.start()
+
+    def _on_code_sync_done(self, summary: str, ok: bool) -> None:
+        self.sync_btn.setEnabled(True)
+        self._log("代码检查完成。")
+        box = QMessageBox(self)
+        box.setWindowTitle("代码更新检查")
+        box.setIcon(QMessageBox.Information if ok else QMessageBox.Warning)
+        box.setText("已执行 git fetch（未改动工作区）")
+        box.setDetailedText(summary)
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec_()
+        if self._sync_worker is not None:
+            self._sync_worker.deleteLater()
+            self._sync_worker = None
 
     def cleanup_traces(self) -> None:
         """手动清理车上使用痕迹。"""

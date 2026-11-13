@@ -50,17 +50,54 @@ class TestNoSelfDowngrade:
             assert "Status.NOTICE" not in text, f"{path.name} 仍在用 NOTICE"
 
     def test_rustdesk_missing_server_is_warn(self):
-        # 远程黑屏是功能不可用，必须报 WARN，不能自行放行
+        """远程黑屏是功能不可用，必须报 WARN，不能自行放行。"""
         src = (ROOT / "checks/rustdesk.py").read_text(encoding="utf-8")
-        block = src[src.index("elif not has_server:"):]
-        block = block[:block.index("elif not has_desktop:")]
+        marker = 'if not procs["server"]:'
+        assert marker in src, src[:200]
+        block = src[src.index(marker):src.index(marker) + 400]
         assert "Status.WARN" in block
 
-    def test_hardware_acceptable_serial_is_warn(self):
-        src = (ROOT / "checks/hardware.py").read_text(encoding="utf-8")
-        block = src[src.index("elif serial in acceptable:"):]
-        block = block[:block.index("else:")]
+    def test_rustdesk_no_x_is_warn_not_fail(self):
+        """X 未启动也是 WARN —— 有诱骗器可补救，不是硬件坏了。"""
+        src = (ROOT / "checks/rustdesk.py").read_text(encoding="utf-8")
+        marker = "if not has_desktop:"
+        assert marker in src
+        block = src[src.index(marker):src.index(marker) + 400]
         assert "Status.WARN" in block
+
+    def test_rustdesk_auto_repair_does_not_pop_dialog(self):
+        """自动修复必须静默 —— 用户要求「不弹窗，傻瓜式」。"""
+        src = (ROOT / "checks/rustdesk.py").read_text(encoding="utf-8")
+        assert "QMessageBox" not in src
+        assert "systemctl start lightdm" in src
+
+    def test_hardware_platform_mismatch_is_fail(self):
+        """平台不对要判 FAIL 中止，不能降级成 WARN（ADR-0010）。"""
+        src = (ROOT / "checks/hardware.py").read_text(encoding="utf-8")
+        # 平台不符的分支必须判 FAIL
+        assert "不是 RDK X5 平台" in src
+        block = src[src.index("不是 RDK X5 平台"):]
+        assert "Status.FAIL" in block[:400]
+
+    def test_hardware_missing_serial_is_fail(self):
+        """平台对但读不到序列号，同样判 FAIL 中止。"""
+        src = (ROOT / "checks/hardware.py").read_text(encoding="utf-8")
+        # 找到 `if not serial:` 这个分支，确认它判 FAIL
+        marker = "if not serial:"
+        assert marker in src
+        block = src[src.index(marker):src.index(marker) + 300]
+        assert "Status.FAIL" in block, block
+
+    def test_hardware_no_longer_compares_cp2102_serial(self):
+        """不再读 CP2102 的 ID_SERIAL_SHORT —— 同批全是 0001，没有区分度。
+
+        只看**代码**，docstring 里提到旧实现是允许的（那是解释为什么改）。
+        """
+        src = (ROOT / "checks/hardware.py").read_text(encoding="utf-8")
+        # 允许 note/docstring 里提到它（那是解释为什么改），
+        # 但不能再从解析结果里取值。
+        assert 'parsed.get("ID_SERIAL_SHORT")' not in src, "仍在取 CP2102 序列号"
+        assert "serial-number" in src, "没有改读 device-tree"
 
     def test_warn_still_reported_in_verdict(self):
         report = Report(host="x", user="u", started_at="t")

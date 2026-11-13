@@ -142,6 +142,10 @@ class Context:
     force_motion: bool = False
     # 电压是否确实取到了（未知不能当成安全）
     voltage_known: bool = False
+    # sudo 密码。目前只有第 3 项（RustDesk 自动修复）用到：
+    # 显示服务器没起来时，需要 `systemctl start lightdm`。
+    # 注意它与 SSH 密码可能不同（车上 SSH 是 sunrise，sudo 是 ros）。
+    sudo_password: str = "ros"
     # 落地段转向互校是否真的做成功（左右两圈都过）。
     # 由 checks/motion.py 写入，供 IMU / 里程计两项回填状态用。
     spin_verified: bool = False
@@ -200,6 +204,7 @@ class Runner:
     def __init__(self, host: str, user: str, password: str,
                  answers: Optional[Dict[str, str]] = None,
                  mode: str = "auto", motion: str = "none",
+                 sudo_password: str = "ros",
                  profile_id: Optional[str] = None,
                  tool_name: str = "tb-verify",
                  pause_for_ground=None,
@@ -215,6 +220,8 @@ class Runner:
         self.host = host
         self.user = user
         self._password = password
+        # sudo 密码与 SSH 密码可能不同，单独存（第 3 项自动修复要用）
+        self.sudo_password = sudo_password
         self.answers = answers or {}
         self.mode = mode
         self.motion = motion
@@ -331,6 +338,7 @@ class Runner:
                       motion_level=self.motion,
                       motion_armed=bool(self.answers.get("motion_armed")),
                       force_motion=bool(self.answers.get("force_motion")),
+                      sudo_password=self.sudo_password,
                       pause_for_ground=self.pause_for_ground,
                       on_output=self.on_output,
                       on_check_start=self.on_check_start,
@@ -694,7 +702,12 @@ class Runner:
                 ctx.say(f"       ↑ [{item.number:02d}] {item.title} "
                         f"落地互校通过，转为 PASS")
             else:
-                # 保持 PENDING：只测了一半，不能算通过
+                # 必须**显式**设 PENDING，不能只改摘要。
+                # 2026-11-13 实测发现：motion="none" 时 imu/odom 走的是
+                # 普通 PASS 路径（频率、静态指标都正常），status 是 PASS；
+                # 如果这里只替换摘要，报告会显示「✅ PASS」+「航向精度未验证」，
+                # 等于把「测了一半」当成了「测完了」——违反 ADR-0002。
+                item.status = Status.PENDING
                 item.summary = item.summary.replace(
                     "航向精度待落地互校",
                     "航向精度未验证（落地互校未执行或未通过）")

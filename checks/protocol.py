@@ -139,7 +139,7 @@ def _type_breakdown(stats: ParseStats) -> str:
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=20, title="通讯链路（协议层）", status=Status.PASS)
+    result = CheckResult(number=12, title="通讯链路（协议层）", status=Status.PASS)
 
     # ---- 先看开关 ----
     # 第 20 项读的是车上的原始日志文件，而文件**存在不代表本次采过**：

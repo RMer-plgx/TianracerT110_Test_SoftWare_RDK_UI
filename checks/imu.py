@@ -12,7 +12,7 @@ PENDING_SUFFIX = "；频率与静态指标正常，航向精度待落地互校"
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=8, title="IMU", status=Status.PASS)
+    result = CheckResult(number=18, title="IMU", status=Status.PASS)
     cfg = ctx.baseline.get("imu", {})
     freq = ctx.baseline.get("frequency", {}).get("imu_hz", {})
 
@@ -111,10 +111,17 @@ def run(ctx) -> CheckResult:
         # 架空段只能证明「有数据、频率对、静止不漂」。
         # 陀螺仪准不准，必须落地转一整圈、与里程计比对航向才知道。
         # 用户 2026-11-03：这种「测了一半」不能直接标绿。
+        # 无论有没有选运动，IMU 的「航向精度」都没验证过 —— 架空段只证明
+        # 「有数据、频率对、静止不漂」。所以两种情况都要标 PENDING。
+        #
+        # 2026-11-13 修复：motion_level == "none" 时原来只加了一句
+        # 「本次未做运动测试，航向精度未验证」，状态仍是 PASS ——
+        # 报告里会出现「✅ PASS」+「未验证」，等于把测了一半当成测完了，
+        # 违反 ADR-0002（未完成落地互校时不可交付）。
         level = getattr(ctx, "motion_level", "none")
+        result.status = Status.PENDING
+        result.needs_ground = True
         if level != "none":
-            result.status = Status.PENDING
-            result.needs_ground = True
             result.summary += PENDING_SUFFIX
         else:
             result.summary += "；本次未做运动测试，航向精度未验证"

@@ -13,7 +13,7 @@ LEGAL_ROOT_NAMES = {"map", "world", "odom"}
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=13, title="TF 树", status=Status.PASS)
+    result = CheckResult(number=15, title="TF 树", status=Status.PASS)
     required = ctx.baseline.get("tf", {}).get("required_frames", [])
 
     data = run_probe(ctx, "tf_probe", "3", timeout=60)

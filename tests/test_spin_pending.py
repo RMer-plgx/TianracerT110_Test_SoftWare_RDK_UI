@@ -420,7 +420,13 @@ class TestImuOdomPending:
         assert result.status is Status.PENDING
         assert result.needs_ground is True
 
-    def test_imu_pass_when_motion_disabled(self, monkeypatch):
+    def test_imu_pending_even_when_motion_disabled(self, monkeypatch):
+        """不选运动时 IMU 也必须标 PENDING（2026-11-13 修复）。
+
+        原来这里断言 PASS —— 那是错的：架空段只证明「有数据、频率对、
+        静止不漂」，航向精度从未验证。判 PASS 会让报告出现
+        「✅ PASS / 航向精度未验证」，把测了一半当成测完了（违反 ADR-0002）。
+        """
         from checks import imu
         monkeypatch.setattr(imu, "measure_hz", lambda *a, **k: 50.0)
         monkeypatch.setattr(imu, "run_probe", lambda *a, **k: {
@@ -432,9 +438,8 @@ class TestImuOdomPending:
         })
         ctx = _FakeCtx({}, motion_level="none")
         result = imu.run(ctx)
-        # 不做运动测试时，落地段本来就不在范围内 → PASS，但要注明
-        assert result.status is Status.PASS
-        assert result.needs_ground is False
+        assert result.status is Status.PENDING, result.status
+        assert result.needs_ground is True
         assert "未验证" in result.summary
 
     def test_odom_pending_when_motion_enabled(self, monkeypatch):
@@ -838,3 +843,49 @@ class TestSpinGeometryWiring:
         assert motion_cfg.get("track_m"), "baseline 缺 track_m"
         assert motion_cfg["spin"].get("slip_tolerance_pct"), \
             "baseline 缺 slip_tolerance_pct"
+
+
+class TestGroundDependentsMustBePending:
+    """没做落地互校时，IMU/里程计必须是 PENDING，不能是 PASS。
+
+    2026-11-13 实测发现：motion="none" 时 imu/odom 走普通 PASS 路径
+    （频率与静态指标都正常），_resolve_ground_dependents 的 else 分支
+    只替换了摘要文字、没有设 status，于是报告出现
+    「✅ PASS / 航向精度未验证」——把测了一半当成测完了（违反 ADR-0002）。
+    """
+
+    def test_else_branch_sets_pending_explicitly(self):
+        import inspect
+        from core import runner
+        src = inspect.getsource(runner.Runner._resolve_ground_dependents)
+        # else 分支里必须显式赋 PENDING
+        idx = src.index("else:")
+        else_block = src[idx:]
+        assert "item.status = Status.PENDING" in else_block, (
+            "else 分支没有显式设 PENDING —— 未做落地互校的项会显示成 PASS"
+        )
+
+    def test_pending_items_stay_pending_without_spin(self):
+        """行为验证：spin_verified=False 时 needs_ground 项转 PENDING。"""
+        from core.verdict import CheckResult, Report, Status
+
+        class _Ctx:
+            spin_verified = False
+            def __init__(self):
+                self.said = []
+            def say(self, msg):
+                self.said.append(msg)
+
+        runner_obj = object.__new__(self._runner_cls())
+        item = CheckResult(number=18, title="IMU", status=Status.PASS,
+                           summary="50 Hz，航向精度待落地互校", needs_ground=True)
+        rep = Report(host="x", user="u", started_at="t")
+        rep.add(item)
+        runner_obj.report = rep
+        runner_obj._resolve_ground_dependents(_Ctx())
+        assert item.status is Status.PENDING, item.status
+
+    @staticmethod
+    def _runner_cls():
+        from core.runner import Runner
+        return Runner

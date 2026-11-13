@@ -10,7 +10,7 @@ from ._util import echo_once, measure_hz, parse_float
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=11, title="USB 摄像头", status=Status.PASS)
+    result = CheckResult(number=14, title="USB 摄像头", status=Status.PASS)
     cfg = ctx.baseline.get("camera", {})
     freq = ctx.baseline.get("frequency", {}).get("camera_hz", {})
     r = ctx.remote

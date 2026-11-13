@@ -106,18 +106,16 @@ class TestEnvvarOverrideHonesty:
     这里验证判断依据确实换成了 profile，而不是残留的硬编码集合。
     """
 
-    def test_only_prefix_vars_marked_overridden(self):
+    def test_bashrc_mismatch_is_warn(self):
+        """2026-11-13（ADR-0012）：判据改为 .bashrc 声明值，不符判 WARN。"""
         from checks import envvars
 
         profile = get_profile()
-        overridden_keys = set(profile.ros.env_overrides)
-        # 取一个真的会被 export 的，和一个不会的
-        exported = sorted(overridden_keys)[0]
-        not_exported = "TIANRACER_BASE"      # T110 不 export 这个
+        name = sorted(profile.ros.env_overrides)[0]
 
         class FakeCtx:
             baseline = {
-                "envvars": {exported: "expected-value", not_exported: "compact"},
+                "envvars": {name: "expected-value"},
                 "envvars_known_deviations": {},
             }
 
@@ -125,25 +123,64 @@ class TestEnvvarOverrideHonesty:
                 self.remote = None
                 self.profile = profile
 
-        actual = {exported: "wrong-value", not_exported: "standard"}
-
         import core.remote as remote_mod
-        original = remote_mod.read_env_vars
+        orig_bashrc = remote_mod.read_bashrc_exports
+        orig_env = remote_mod.read_env_vars
         try:
-            # 签名必须与真实函数一致（2 个参数）。
-            # 之前写成 lambda _r: actual 恰好「兼容」了漏传 profile 的错误调用，
-            # 导致第 4 项在真机上 TypeError 而测试全绿（Round 6 指出）。
-            remote_mod.read_env_vars = lambda r, p: actual
+            # .bashrc 声明了变量但值不对
+            remote_mod.read_bashrc_exports = lambda r, p: {name: "wrong-value"}
+            remote_mod.read_env_vars = lambda r, p: {name: "wrong-value"}
             import importlib
             importlib.reload(envvars)
             result = envvars.run(FakeCtx())
         finally:
-            remote_mod.read_env_vars = original
+            remote_mod.read_bashrc_exports = orig_bashrc
+            remote_mod.read_env_vars = orig_env
             importlib.reload(envvars)
 
+        assert result.status is Status.WARN
         detail = result.detail or ""
-        assert exported in detail
-        assert "不在自动修正白名单" in detail or "未修正" in detail
+        assert name in detail
+        assert "车辆声明 wrong-value" in detail
+
+    def test_bashrc_match_is_pass(self):
+        """.bashrc 声明值与标准一致 → PASS。"""
+        from checks import envvars
+
+        profile = get_profile()
+        name = sorted(profile.ros.env_overrides)[0]
+
+        class FakeCtx:
+            baseline = {
+                "envvars": {name: "expected-value"},
+                "envvars_known_deviations": {},
+            }
+
+            def __init__(self):
+                self.remote = None
+                self.profile = profile
+
+        import core.remote as remote_mod
+        orig_bashrc = remote_mod.read_bashrc_exports
+        orig_env = remote_mod.read_env_vars
+        try:
+            remote_mod.read_bashrc_exports = lambda r, p: {name: "expected-value"}
+            remote_mod.read_env_vars = lambda r, p: {name: "expected-value"}
+            import importlib
+            importlib.reload(envvars)
+            result = envvars.run(FakeCtx())
+        finally:
+            remote_mod.read_bashrc_exports = orig_bashrc
+            remote_mod.read_env_vars = orig_env
+            importlib.reload(envvars)
+
+        assert result.status is Status.PASS
+
+    def test_reads_bashrc_not_runtime_env(self):
+        """必须调 read_bashrc_exports —— 运行时环境会被 env-hooks 污染。"""
+        from checks import envvars
+        src = __import__("inspect").getsource(envvars)
+        assert "read_bashrc_exports" in src
 
     def test_override_set_comes_from_profile(self):
         """白名单必须来自 profile，不能是硬编码常量。"""

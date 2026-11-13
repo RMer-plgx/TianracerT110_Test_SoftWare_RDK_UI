@@ -18,7 +18,7 @@ from ._util import parse_float
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=15, title="激光建图链路", status=Status.PASS)
+    result = CheckResult(number=17, title="激光建图链路", status=Status.PASS)
     cfg = ctx.baseline.get("mapping", {})
     r = ctx.remote
 

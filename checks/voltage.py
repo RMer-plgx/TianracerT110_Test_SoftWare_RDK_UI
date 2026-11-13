@@ -43,7 +43,7 @@ def _strict_float(text: str) -> Optional[float]:
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=14, title="电池电压", status=Status.PASS)
+    result = CheckResult(number=16, title="电池电压", status=Status.PASS)
     cfg = ctx.baseline.get("voltage", {})
     timeout = int(cfg.get("sample_timeout_sec", 90))
 

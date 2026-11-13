@@ -29,33 +29,36 @@ def prof():
 
 
 class TestRegistryUnchanged:
-    """检测项清单必须与重构前完全一致。"""
+    """检测项清单的顺序与编号（2026-11-13 重新编号，ADR-0009）。"""
 
-    # 重构前 hardcode 在 runner.py 的 REGISTRY，顺序即执行顺序
+    # 2026-11-13：重新编号，使**编号 = 执行顺序**。
+    # 旧编号是历史遗留：16/17/19 是 static 却编在后面，18 是 motion
+    # 却编在 19 前面，报告里编号跳来跳去。
+    # 新顺序同时满足：
+    #   - static → runtime → motion 的硬依赖
+    #   - 通讯链路前置到 runtime 最前（后续项可参考它的帧统计）
+    #   - IMU 与里程计相邻，紧跟建图链路（两者都靠落地互校转 PASS）
     EXPECTED = [
-        (1,  "网络连通性",        "network",  True,  "static"),
-        (2,  "系统身份",          "identity", False, "static"),
-        (3,  "RustDesk 远程桌面", "rustdesk", False, "static"),
-        (4,  "环境变量",          "envvars",  False, "static"),
-        (5,  "设备节点",          "devices",  False, "static"),
-        (6,  "主控硬件 ID",       "hardware", False, "static"),
-        (7,  "源码一致性",        "source",   False, "static"),
-        (10, "雷达以太网",        "lannet",   False, "static"),
-        (16, "teb 导航插件",      "teb",      False, "static"),
-        (17, "系统健康",          "health",   False, "static"),
-        (19, "使用痕迹",          "traces",   False, "static"),
-        (8,  "IMU",              "imu",      True,  "runtime"),
-        (9,  "激光雷达",          "lidar",    True,  "runtime"),
-        (11, "USB 摄像头",        "camera",   False, "runtime"),
-        (12, "里程计",            "odom",     True,  "runtime"),
-        (13, "TF 树",             "tf",       False, "runtime"),
-        (14, "电池电压",          "voltage",  False, "runtime"),
-        (15, "激光建图链路",      "mapping",  False, "runtime"),
-        # 20 是 2026-11-06 新增的协议层检测项。它是 runtime，
-        # 所以排在 motion 之前 —— 报告编号乱跳是故意的，
-        # 编号沿用历史不重排，执行顺序由 phase 决定。
-        (20, "通讯链路（协议层）", "protocol", False, "runtime"),
-        (18, "运动控制",          "motion",   False, "motion"),
+        (1,  "网络连通性",         "network",  True,  "static"),
+        (2,  "系统身份",           "identity", False, "static"),
+        (3,  "RustDesk 远程桌面",  "rustdesk", False, "static"),
+        (4,  "环境变量",           "envvars",  False, "static"),
+        (5,  "设备节点",           "devices",  False, "static"),
+        (6,  "主控平台与序列号",   "hardware", True,  "static"),
+        (7,  "源码一致性",         "source",   False, "static"),
+        (8,  "雷达以太网",         "lannet",   False, "static"),
+        (9,  "teb 导航插件",       "teb",      False, "static"),
+        (10, "系统健康",           "health",   False, "static"),
+        (11, "使用痕迹",           "traces",   False, "static"),
+        (12, "通讯链路（协议层）", "protocol", False, "runtime"),
+        (13, "激光雷达",           "lidar",    True,  "runtime"),
+        (14, "USB 摄像头",         "camera",   False, "runtime"),
+        (15, "TF 树",              "tf",       False, "runtime"),
+        (16, "电池电压",           "voltage",  False, "runtime"),
+        (17, "激光建图链路",       "mapping",  False, "runtime"),
+        (18, "IMU",               "imu",      True,  "runtime"),
+        (19, "里程计",             "odom",     True,  "runtime"),
+        (20, "运动控制",           "motion",   False, "motion"),
     ]
 
     def test_count_is_20(self, prof):
@@ -66,8 +69,9 @@ class TestRegistryUnchanged:
         assert actual == self.EXPECTED
 
     def test_fatal_set_unchanged(self, prof):
-        # 关键项：网络、IMU、雷达、里程计
-        assert prof.fatal_numbers() == [1, 8, 9, 12]
+        # 关键项：网络、主控平台、雷达、IMU、里程计
+        # 2026-11-13：主控加入 fatal（平台不对则中止，ADR-0010）
+        assert prof.fatal_numbers() == [1, 6, 13, 18, 19]
 
     def test_numbers_unique(self, prof):
         numbers = prof.check_numbers()

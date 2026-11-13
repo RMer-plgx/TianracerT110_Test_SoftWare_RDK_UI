@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import re
+
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -65,6 +67,73 @@ class EnvVarDiff:
     @property
     def matches(self) -> bool:
         return self.actual == self.expected
+
+
+def read_bashrc_exports(remote: Remote, prefixes) -> Dict[str, str]:
+    """读 `~/.bashrc` 里显式声明的产品环境变量。
+
+    为什么不能直接读进程环境（read_env_vars）
+    ---------------------------------------------
+    `~/.bashrc` 开头有这段：
+
+        case $- in
+            *i*) ;;
+              *) return;;      ← 非交互 shell 在这里就退出了
+        esac
+
+    而检测软件是通过 SSH 非交互执行命令的，所以 `.bashrc` 里后面的
+    `export TIANRACER_BASE_PORT=/dev/ttyUSB0` **根本没执行**。
+    此时 `source devel/setup.bash` 会用 env-hooks 的默认值填上
+    （`/dev/tianbot_base` / 460800 / oradar_lidar）。
+
+    实测（2026-11-13）：
+
+        bash -ic 'echo $TIANRACER_BASE_PORT'   → /dev/ttyUSB0   （交互，正确）
+        bash -c  'source setup.bash; echo ...' → /dev/tianbot_base（非交互，错）
+
+    而车本身是好的 —— 用户交互登录时一切正常。所以「车辆标准」应该
+    看 `.bashrc` 写了什么，而不是看非交五会话里被 env-hooks 覆盖后的值。
+    （ADR-0012）
+
+    只解析形如 `export NAME=value` 的行，忽略注释与函数体里的行。
+    值两边的引号会去掉。
+
+    `prefixes` 可以是单个前缀或多个。为什么要多个：T110 的变量既有
+    `TIANRACER_*` 也有 `TIANBOT_NAME`，只按 env_prefix（TIANRACER）过滤
+    会漏掉后者（2026-11-13 实车发现）。
+    """
+    if isinstance(prefixes, str):
+        prefixes = [prefixes]
+    pattern = "|".join(re.escape(p) for p in prefixes if p)
+    if not pattern:
+        return {}
+    result = remote.run(
+        f"grep -E '^export ({pattern})[A-Z0-9_]*=' ~/.bashrc 2>/dev/null",
+        record=False,
+    )
+    vars_: Dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("export "):
+            continue
+        body = line[len("export "):]
+        key, sep, value = body.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip()
+        # 去引号（支持 "x" 与 'x'）
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        # 去掉行尾注释（`=value  # comment`），但值内部可能有 #
+        # 只在 # 前面是空白时认为是注释
+        for i, ch in enumerate(value):
+            if ch == "#" and i > 0 and value[i - 1] in " \t":
+                value = value[:i].rstrip()
+                break
+        if key:
+            vars_[key] = value
+    return vars_
 
 
 def read_env_vars(remote: Remote, profile: Profile) -> Dict[str, str]:

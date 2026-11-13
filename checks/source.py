@@ -247,6 +247,20 @@ def _count(remote_runner, path: str, rng: str) -> int:
     return _int(res.stdout)
 
 
+def _short_shas(remote_runner, path: str, rng: str) -> set:
+    """列出一个 commit 范围里的短 sha（7 位，小写）。
+
+    用于 known_divergences 比对：光有「领先 2 个」不够，
+    还得知道是哪 2 个，才能判断是不是已确认等价的那几个。
+    """
+    res = remote_runner.run(
+        "cd " + _remote_path(path) + " 2>/dev/null && "
+        f"git rev-list --abbrev-commit --abbrev=7 {rng} 2>/dev/null",
+        timeout=20, record=False,
+    )
+    return {ln.strip().lower() for ln in (res.stdout or "").splitlines() if ln.strip()}
+
+
 def _compare(remote_runner, path: str, head: str, remote_sha: str):
     """判断本地相对远端的关系。返回 (关系, 相差提交数)。
 
@@ -283,6 +297,50 @@ def _compare(remote_runner, path: str, head: str, remote_sha: str):
     return _DIVERGED, _count(remote_runner, path, f"{remote_sha}..{head}")
 
 
+def _check_known_divergence(remote_runner, path: str, head: str,
+                            remote_sha: str, rel: str, declared):
+    """检查这次分叉是否就是配置里声明过的「等价分叉」。
+
+    命中条件（全部满足才返回说明文字，否则返回 None）：
+      1. 配置里声明了这个仓库
+      2. 本地领先的提交 ⊆ local_commits
+      3. 远端领先的提交 ⊆ remote_commits
+
+    第 2/3 条是关键：任何一边多出新提交就不算命中 ——
+    那说明真的变了（上游有新功能、或本地有新改动），必须报出来。
+
+    `rel` 是 _compare 的结论（领先/落后/分叉），只用来说明今天的实际关系。
+    """
+    if not declared:
+        return None
+    allowed_local = declared.get("local_commits") or set()
+    allowed_remote = declared.get("remote_commits") or set()
+    if not allowed_local and not allowed_remote:
+        return None
+
+    # 本地领先的（远端有、本地没合并的部分不看这里）
+    local_only = _short_shas(remote_runner, path, f"{remote_sha}..{head}")
+    remote_only = _short_shas(remote_runner, path, f"{head}..{remote_sha}")
+
+    extra_local = local_only - allowed_local
+    extra_remote = remote_only - allowed_remote
+    if extra_local or extra_remote:
+        # 有清单外的提交，不认
+        return None
+
+    reason = declared.get("reason") or "已确认内容等价"
+    when = declared.get("verified_at") or ""
+    parts = [reason]
+    if when:
+        parts.append(f"核对于 {when}")
+    if local_only:
+        parts.append("本地领先 " + ", ".join(sorted(local_only)))
+    if remote_only:
+        parts.append("远端领先 " + ", ".join(sorted(remote_only)))
+    parts.append("两边清单外的提交出现时会重新报 WARN")
+    return "；".join(parts)
+
+
 def run(ctx) -> CheckResult:
     result = CheckResult(number=7, title="源码一致性", status=Status.PASS)
     r = ctx.remote
@@ -299,6 +357,10 @@ def run(ctx) -> CheckResult:
     unresolved = []    # 读到了，但远端比不了
     unpushed = []      # 本地分支远端不存在，且未在配置里声明 —— 判 FAIL
     declared = []      # 本地分支未推送，但配置里已声明是交付镜像自带
+    declared_equiv = []  # 未推送/分叉，但配置里声明了两边内容等价
+    accepted = []        # 已知可接受（remote 不可达 / 现场适配的未提交改动）
+    accept_unreachable = set(getattr(ctx.profile.ros, "accept_unreachable", []) or [])
+    accept_dirty = bool(getattr(ctx.profile.ros, "accept_dirty", False))
     drift = []         # 与远端不一致
 
     allowed = getattr(ctx.profile.ros, "allowed_local_branches", {}) or {}
@@ -345,6 +407,14 @@ def run(ctx) -> CheckResult:
         else:
             remote, ubranch = "origin", (branch if branch != "?" else "")
             guessed = True
+
+        # known_divergences 可以指定比对基准分支。
+        # 车上是本地改造分支（feat/xxx），评测等价应该看上游主干。
+        _kd = getattr(ctx.profile.ros, "known_divergences", {}).get(repo) or {}
+        _cw = _kd.get("compare_with") or ""
+        if _cw:
+            ubranch = _cw
+            guessed = False
 
         # 先取地址再问远端。顺序不能反：比对失败时若还没取过地址，
         # 报告就只剩「远端不可达」，看不出 remote 到底配成了什么
@@ -400,11 +470,14 @@ def run(ctx) -> CheckResult:
         if kind != "ok":
             note = f"{remote}/{ubranch or '?'}：{msg}" + guess_hint
             if bad_url:
-                # 三斜杠能被归一化，所以它只是「可疑点」而不是原因。
                 note += ("；地址三斜杠虽能被 git 归一化，但此处比对仍失败，"
                          "建议核对 git remote -v")
-            result.add(f"{repo} 远端比对", "无法比对", note=note)
-            unresolved.append(repo)
+            if repo in accept_unreachable:
+                result.add(f"{repo} 远端比对", "无法比对（已知可接受）", note=note)
+                accepted.append(f"{repo}（远端不可达）")
+            else:
+                result.add(f"{repo} 远端比对", "无法比对", note=note)
+                unresolved.append(repo)
             continue
 
         rel, cnt = _compare(r, path, head, remote_sha)
@@ -420,17 +493,44 @@ def run(ctx) -> CheckResult:
         tail = "（ls-remote，未改动本地）"
         if guessed:
             tail = guess_hint + tail
-        result.add(f"{repo} 相对远端", shown, expected=_SYNC,
-                   note=f"比对 {remote}/{ubranch} @ {remote_sha[:8]}{tail}")
+        base_note = f"比对 {remote}/{ubranch} @ {remote_sha[:8]}{tail}"
+
+        # 先看是不是已确认等价的分叉 —— 命中就只记一行，不重复
+        known = None
+        if rel != _SYNC:
+            known = _check_known_divergence(
+                r, path, head, remote_sha, rel,
+                getattr(ctx.profile.ros, "known_divergences", {}).get(repo))
+
+        if known:
+            result.add(f"{repo} 相对远端", f"已确认等价分叉（{shown}）",
+                       expected=_SYNC,
+                       note=f"{known}。{base_note}")
+            declared_equiv.append(
+                f"{repo}（{rel} {cnt} 个提交）" if cnt else repo)
+            continue
+
+        result.add(f"{repo} 相对远端", shown, expected=_SYNC, note=base_note)
         if rel != _SYNC:
             drift.append(f"{repo} {rel}" + (f" {cnt} 个提交" if cnt else ""))
 
     # ---- 汇总：四类问题一次性列出，不用 early return ----
     # 旧实现每类问题各自 return，导致「A 仓库读不到」会盖掉「B 仓库落后」。
+    # parts = 真正的问题（决定 WARN/FAIL）
+    # notes = 已确认项（只作说明，不影响状态）
     parts = []
+    notes = []
+
+    if dirty_total:
+        if accept_dirty:
+            accepted.append(f"{dirty_total} 项未提交改动（现场适配）")
+        else:
+            parts.append(f"{dirty_total} 项未提交改动")
+
     if unpushed:
         parts.append("本地分支未推送：" + "、".join(unpushed))
     if declared:
+        # 按 ADR-0007：声明过但仍是「未推送」，判 WARN（可见、可确认）
         parts.append("已声明的本地分支：" + "、".join(declared))
     if drift:
         parts.append("与远端不一致：" + "、".join(drift))
@@ -438,8 +538,12 @@ def run(ctx) -> CheckResult:
         parts.append("无法比对：" + "、".join(unresolved))
     if problems:
         parts.append("无法读取：" + "、".join(problems))
-    if dirty_total:
-        parts.append(f"{dirty_total} 项未提交改动")
+
+    # 这两类是「已确认没问题」，只作说明
+    if declared_equiv:
+        notes.append("已确认等价分叉：" + "、".join(declared_equiv))
+    if accepted:
+        notes.append("已知可接受：" + "、".join(accepted))
 
     if unpushed:
         # 出厂的东西必须可复现。落后还能 fetch 补回来，未推送的分支不能。
@@ -458,6 +562,24 @@ def run(ctx) -> CheckResult:
             "本项用 git ls-remote 只读比对，未执行 fetch/pull，\n"
             "车上的工作区与正在运行的节点都不受影响。"
         )
+        return result
+
+    # 只有「已确认项」而没有真正的问题 → PASS
+    if not parts and notes:
+        result.summary = "检查通过（" + "；".join(notes) + "）"
+        detail = ["以下项已确认，仍如实记录供核对："]
+        detail.extend(f"  - {n}" for n in notes)
+        detail.append("")
+        detail.append(
+            "未隐藏任何信息。要恢复严格判定：删掉 profile.yaml 的 "
+            "known_divergences / accept_unreachable / accept_dirty 即可。"
+        )
+        detail.append("")
+        detail.append(
+            "本项用 git ls-remote + git rev-list 只读比对，"
+            "未执行 fetch/pull，工作区与运行中的节点都不受影响。"
+        )
+        result.detail = "\n".join(detail)
         return result
 
     if parts:

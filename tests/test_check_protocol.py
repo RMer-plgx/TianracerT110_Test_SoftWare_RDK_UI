@@ -128,7 +128,7 @@ def _measure(result, name):
 def test_no_tap_log_gives_skip():
     result = _run({})
     assert result.status is Status.SKIP
-    assert result.number == 20
+    assert result.number == 12   # 2026-11-13 重新编号（ADR-0009）
 
 
 # ---------------------------------------------------------------------------

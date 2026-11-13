@@ -11,7 +11,7 @@ PENDING_SUFFIX = "；频率与静止漂移正常，航向精度待落地互校"
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=12, title="里程计", status=Status.PASS)
+    result = CheckResult(number=19, title="里程计", status=Status.PASS)
     cfg = ctx.baseline.get("odom", {})
     freq = ctx.baseline.get("frequency", {}).get("odom_hz", {})
     window = float(cfg.get("sample_seconds", 5))
@@ -65,10 +65,12 @@ def run(ctx) -> CheckResult:
 
         # 频率和静止漂移只能说明「有输出、不动时不乱漂」。
         # 里程计推算的航向准不准，必须落地转一整圈与 IMU 比对。
+        # 同 imu.py：没选运动也要标 PENDING，否则「测了一半」会显示成 PASS。
+        # 见 checks/imu.py 里 2026-11-13 的说明与 ADR-0002。
         level = getattr(ctx, "motion_level", "none")
+        result.status = Status.PENDING
+        result.needs_ground = True
         if level != "none":
-            result.status = Status.PENDING
-            result.needs_ground = True
             result.summary += PENDING_SUFFIX
         else:
             result.summary += "；本次未做运动测试，行驶航向精度未验证"

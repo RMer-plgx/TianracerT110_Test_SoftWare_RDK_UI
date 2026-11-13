@@ -11,7 +11,7 @@ from ._util import as_list, parse_float
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=16, title="teb 导航插件", status=Status.PASS)
+    result = CheckResult(number=9, title="teb 导航插件", status=Status.PASS)
     r = ctx.remote
 
     found = r.run(

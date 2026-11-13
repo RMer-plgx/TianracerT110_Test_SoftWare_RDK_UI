@@ -121,6 +121,43 @@ ros:
   allowed_local_branches:
     tianbot_core: feat/serial-tap-recording
 
+  # 已确认等价的本地/上游分叉（2026-11-13）。
+  #
+  # tianbot_core 的车端分支与上游 dev 各自实现了同一件事：
+  #   - raw mode 修复：车上 212785e ≈ 上游 59bd6c8 + c47921d
+  #   - 串口录音：    车上 8c502d6  = 上游 1229b23（就是从车上导出的 patch）
+  # 实测差异**只有注释语言**（中文 vs 英文），代码逻辑完全一致：
+  #   cfmakeraw / EXTPROC / c_cflag&=~CRTSCTS / c_iflag&=~IXON 四处都对得上，
+  #   tap_dump 4 处、TIANBOT_TAP_DIR 1 处，serial.h 零差异。
+  #
+  # 声明后，第 7 项不会因为「领先 2 / 落后 3」报 WARN。
+  # 一旦任何一边多出新提交，立即恢复 WARN —— 那时就真的需要人看。
+  known_divergences:
+    tianbot_core:
+      reason: "本地与上游各自实现 raw mode 修复与串口录音，代码等价，仅注释语言不同"
+      verified_at: "2026-11-13"
+      # 跟上游主干 dev 比，不是跟自己的镜像分支比
+      compare_with: dev
+      local_commits:
+        - 212785e
+        - 8c502d6
+      remote_commits:
+        - 59bd6c8
+        - c47921d
+        - 1229b23
+
+  # 第 7 项的已知可接受项（2026-11-13）。
+  # 不隐藏信息 —— 报告 detail 里仍会写明每个仓库的实际状态。
+  #
+  # webrtc_ros_bridge：车上没有 GitHub SSH key，git fetch 从未成功过，
+  #   无法与远端比对。它当前是车在用的（bringup 里 include），不能动。
+  #   要恢复检查需在车上配 key 或改 HTTPS。
+  accept_unreachable:
+    - webrtc_ros_bridge
+  # 未提交改动属于现场适配（底盘类型 ackermann、波特率 115200、
+  # ackermann_msgs 依赖），是让车能跑的必要内容，不入 git 是有意的。
+  accept_dirty: true
+
   # bringup 后必须出现的节点。缺任何一个都判为启动失败。
   nodes:
     required:
@@ -149,31 +186,40 @@ ros:
 # -----------------------------------------------------------------------------
 checks:
   items:
+    # 2026-11-13：重新编号，使**编号 = 执行顺序**（ADR-0009）。
+    # 旧编号是历史遗留的：16/17/19 是 static 却编在后面，18 是 motion
+    # 却编在 19 前面，导致执行顺序在纸上跳来跳去。
+    # 新编号按 static → runtime → motion 连续排列，报告从上到下一项一项过。
+
     # --- static：不需要 ROS，先做，快且无风险 ---
     - {number: 1,  title: 网络连通性,        module: network,  phase: static,  fatal: true}
     - {number: 2,  title: 系统身份,          module: identity, phase: static}
     - {number: 3,  title: RustDesk 远程桌面, module: rustdesk, phase: static}
     - {number: 4,  title: 环境变量,          module: envvars,  phase: static}
     - {number: 5,  title: 设备节点,          module: devices,  phase: static}
-    - {number: 6,  title: 主控硬件 ID,       module: hardware, phase: static}
+    - {number: 6,  title: 主控平台与序列号,  module: hardware, phase: static,  fatal: true}
     - {number: 7,  title: 源码一致性,        module: source,   phase: static}
-    - {number: 10, title: 雷达以太网,        module: lannet,   phase: static}
-    - {number: 16, title: teb 导航插件,      module: teb,      phase: static}
-    - {number: 17, title: 系统健康,          module: health,   phase: static}
-    - {number: 19, title: 使用痕迹,          module: traces,   phase: static}
+    - {number: 8,  title: 雷达以太网,        module: lannet,   phase: static}
+    - {number: 9,  title: teb 导航插件,      module: teb,      phase: static}
+    - {number: 10, title: 系统健康,          module: health,   phase: static}
+    - {number: 11, title: 使用痕迹,          module: traces,   phase: static}
 
     # --- runtime：需要 bringup 起来 ---
-    - {number: 8,  title: IMU,              module: imu,      phase: runtime, fatal: true}
-    - {number: 9,  title: 激光雷达,         module: lidar,    phase: runtime, fatal: true}
-    - {number: 11, title: USB 摄像头,       module: camera,   phase: runtime}
-    - {number: 12, title: 里程计,           module: odom,     phase: runtime, fatal: true}
-    - {number: 13, title: TF 树,            module: tf,       phase: runtime}
-    - {number: 14, title: 电池电压,         module: voltage,  phase: runtime}
-    - {number: 15, title: 激光建图链路,     module: mapping,  phase: runtime}
-    - {number: 20, title: 通讯链路（协议层）, module: protocol, phase: runtime}
+    # 通讯链路放最前：它读的是原始串口字节，bringup 刚起时帧最干净，
+    # 后续各项可以参考它的帧统计（ADR-0009）。
+    - {number: 12, title: 通讯链路（协议层）, module: protocol, phase: runtime}
+    - {number: 13, title: 激光雷达,         module: lidar,    phase: runtime, fatal: true}
+    - {number: 14, title: USB 摄像头,       module: camera,   phase: runtime}
+    - {number: 15, title: TF 树,            module: tf,       phase: runtime}
+    - {number: 16, title: 电池电压,         module: voltage,  phase: runtime}
+    - {number: 17, title: 激光建图链路,     module: mapping,  phase: runtime}
+    # IMU 与里程计放在一起，紧跟建图链路：
+    # 两者都靠落地转圈互校才能从 PENDING 转 PASS，连在一起做报告好读。
+    - {number: 18, title: IMU,              module: imu,      phase: runtime, fatal: true}
+    - {number: 19, title: 里程计,           module: odom,     phase: runtime, fatal: true}
 
     # --- motion：会让车动，必须人工确认 ---
-    - {number: 18, title: 运动控制,         module: motion,   phase: motion}
+    - {number: 20, title: 运动控制,         module: motion,   phase: motion}
 
 # -----------------------------------------------------------------------------
 # 环境变量分组说明（可选）

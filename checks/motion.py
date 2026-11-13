@@ -29,7 +29,7 @@ from ._util import run_probe
 
 
 def run(ctx) -> CheckResult:
-    result = CheckResult(number=18, title="运动控制", status=Status.PASS,
+    result = CheckResult(number=20, title="运动控制", status=Status.PASS,
                          phase="motion")
     cfg = ctx.baseline.get("motion", {})
     safety = cfg.get("safety", {})
@@ -525,6 +525,15 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0, track=0.0):
         # 四驱同速 + 单舵机的结构决定了转弯必然打滑，理论值由
         # `expected_slip()` 按轴距/轮距/转角算出。偏离过多才说明异常
         # （轮胎磨损、地面油污、某轮卡死）。
+        #
+        # 2026-11-13（ADR-0008）：打滑率**不再否掉 verified**。
+        # 它主要反映地面摩擦（同一台车换块地能差 10pp 以上），
+        # 而 verified 代表「车体姿态精度已验证」，是车本身的能力。
+        # 两者绑在同一个结论里，等于让地面决定一台车能不能交付。
+        # 实测：姿态误差 0.42~0.96°（容差 3°）、IMU ±360.8~361.0°，
+        # 车确实转满了，但打滑率 45~52% 超理论值 → 连带 IMU/里程计 PENDING。
+        # 现在打滑率仍判 WARN（保留在 statuses 里影响第 18 项整体状态），
+        # 但不影响 verified。
         if slip_pct is not None and theory_slip is not None:
             dev = slip_pct - theory_slip["total_pct"]
             result.add(
@@ -532,10 +541,16 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0, track=0.0):
                 expected=f"理论 {theory_slip['total_pct']:.0f}% ± {slip_tol:.0f}",
                 note=(f"内外轮差 {theory_slip['lateral_pct']:.0f}% + "
                       f"前后轴差 {theory_slip['fore_aft_pct']:.0f}%；"
-                      f"四驱同速导致，不是故障"))
+                      f"四驱同速导致，不是故障；此值反映地面摩擦，"
+                      f"不影响 IMU 姿态精度判定"))
             st = judge_max_only(abs(dev), slip_tol, slip_tol * 2)
             statuses.append(st)
-            if st is not Status.PASS:
+            # WARN 不否 verified：WARN 表示「地面摩擦与标定时不同」，
+            #   是环境差异，不是车的能力问题（ADR-0008）。
+            # FAIL 仍否 verified：judge_max_only 的 FAIL 阈值是 slip_tol*2，
+            #   即偏离超过 30 个百分点（如打滑 200%）。那不是地面能造成的，
+            #   而是轮胎脱落 / 某轮卡死 / odom 严重失真这类真故障。
+            if st is Status.FAIL:
                 verified_all = False
         elif slip_pct is not None:
             # 没有几何参数时只记录，不判定
@@ -591,7 +606,13 @@ def _run_spin(ctx, spin_cfg, result, safety, wheelbase=0.0, track=0.0):
             statuses.append(Status.SKIP)
             verified_all = False
 
-    return statuses, verified_all and all(s is Status.PASS for s in statuses)
+    # 返回值的两个用途：
+    #   statuses → judge_all(statuses) 决定第 18 项整体状态（打滑率 WARN 会体现在这里）
+    #   第二项   → 决定 IMU/里程计能否从 PENDING 转 PASS
+    #
+    # 第二项**只看 verified_all**，不再要求所有 status 都是 PASS。
+    # 否则打滑率一 WARN，IMU/里程计就永远保持待验证（ADR-0008）。
+    return statuses, verified_all
 
 
 # ---------------------------------------------------------------------------
