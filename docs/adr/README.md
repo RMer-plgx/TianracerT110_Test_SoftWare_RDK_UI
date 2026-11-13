@@ -55,6 +55,17 @@
   `static → runtime → motion`（硬依赖），报告按编号 1..20 渲染；
   第 20 项前置到 runtime 最前，让协议层数据能被后续项引用。
   见[展示顺序](0009-check-order-display-vs-execution.md)。
+- **四个车端问题已有定论，均不改车运行逻辑**（2026-11-13）：
+  - 主控已换为 **RDK X5**（不是 Jetson）。序列号改读 device-tree，
+    并作为平台确认判据：读不到则 FAIL 中止。见 [ADR-0010](0010-mainboard-serial-from-rdk-x5.md)。
+  - RustDesk 黑屏的真因是 `headless-display.service` 启动失败
+    （systemd 不展开 `ExecStartPre` 里的 `$(mcookie)`），不是缺诱骗器。
+    见 [ADR-0011](0011-rustdesk-headless-display.md)。
+  - 第 4 项环境变量：`.bashrc` 第 18-20 行非交互提前 `return`，
+    导致检测软件读到 env-hooks 的错误默认值。改以 `.bashrc` 声明为准。
+    见 [ADR-0012](0012-envvars-from-bashrc.md)。
+  - 第 5 项软链：雷达规则用通用 CP2102 ID，把底盘命名成了雷达。
+    删规则即可（零引用，不影响运行）。见 [ADR-0013](0013-symlink-udev-rule-fix.md)。
 - **源码一致性原先根本没比远端，2026-11-10 重写。** 旧实现只数本地未提交
   改动，却把结论写成「与远端一致」—— 实车当场露馅（tianbot_core 落后上游
   2 个提交，报告仍说一致）。现用 `git ls-remote` 只读比对，不执行 `fetch`：
@@ -98,6 +109,9 @@
 | [0007](0007-source-consistency-readonly.md) | 源码一致性只读比对远端 | Accepted | 已实现；未推送分支判 FAIL，交付镜像自带分支可经 `allowed_local_branches` 白名单降为 WARN；detached HEAD 归 WARN |
 | [0008](0008-spin-verified-criteria.md) | 落地互校的通过只由姿态误差决定 | Accepted | 待实施：打滑率降为独立 WARN，不再否掉 IMU/里程计 |
 | [0009](0009-check-order-display-vs-execution.md) | 展示顺序与执行顺序解耦 | Accepted | 待实施：报告按编号 1..20，执行仍按 static→runtime→motion；第 20 项前置 |
-| [0010](0010-mainboard-serial-from-rdk-x5.md) | 主控序列号改读 SoC device-tree | Accepted | 待实施：现在读的是 CP2102 芯片序列号（全批 0001，无区分度） |
+| [0010](0010-mainboard-serial-from-rdk-x5.md) | 主控序列号改读 RDK X5 device-tree | Accepted | 待实施：现在读的是 CP2102 芯片序列号（全批 0001）；改为平台确认 + 序列号，读不到则 FAIL 中止 |
+| [0011](0011-rustdesk-headless-display.md) | RustDesk 黑屏根因是虚拟显示服务启动失败 | Accepted | 待实施：`headless-display.service` 的 `$(mcookie)` 未被 systemd 展开；检测软件自动拉起显示服务器 |
+| [0012](0012-envvars-from-bashrc.md) | 环境变量以车辆 `.bashrc` 声明为标准 | Accepted | 待实施：`.bashrc` 非交互提前 return，导致读到 env-hooks 的错误默认值 |
+| [0013](0013-symlink-udev-rule-fix.md) | 软链冲突修车端 udev 规则 | Accepted | 待实施：雷达规则用通用 CP2102 ID，把底盘命名成了雷达；删规则（零引用） |
 
 记录约定：每项可独立取舍的架构决策使用独立文件，记录状态、背景、决策、替代方案和影响。`Accepted` 表示决策已确认，不代表实现或验收完成；`Proposed` 表示方案待确认。实现变化时同步更新本总览；被替代的决策保留记录并注明后续决策。

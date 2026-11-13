@@ -1,4 +1,4 @@
-# ADR-0010. 主控序列号改读 SoC 的 device-tree，不再读 USB 转串口芯片
+# ADR-0010. 主控序列号改读 RDK X5 device-tree，并作为平台确认判据
 
 ## 状态
 
@@ -13,13 +13,13 @@ udevadm info -q property -n /dev/ttyUSB0 | grep ID_SERIAL_SHORT
 ```
 
 `/dev/ttyUSB0` 是 **CP2102 USB 转串口芯片**。所以 `ID_SERIAL_SHORT`
-是这块芯片的 USB 描述符里的序列号。
+是这块芯片的 USB 描述符里的序列号，不是任何「主控」的序列号。
 
-### 它不是任何「主控」的序列号
+### 三个对象，代码读错了
 
-| 对象 | 序列号来源 | 示例（同一台车） |
+| 对象 | 序列号来源 | 实测值 |
 | --- | --- | --- |
-| **主控 SoC（RDK X5 / Sunrise 5）** | `/proc/device-tree/serial-number` | `328150681214c98a00d868f80012004` |
+| **RDK X5 主控** | `/proc/device-tree/serial-number` | `328150681214c98a00d868f80012004` |
 | **CP2102 转串口芯片** | `udevadm ... ID_SERIAL_SHORT` | `0001` |
 | 下位机 MCU | 协议里没有序列号字段 | — |
 
@@ -30,32 +30,69 @@ udevadm info -q property -n /dev/ttyUSB0 | grep ID_SERIAL_SHORT
 CP2102 出厂时厂家**可以**烧唯一 ID，也可以不烧。不烧就用默认值 `0001`。
 同一批模块全是 `0001` —— 用户测了好几台都是 0001，正是这个原因。
 
-**这意味着这个字段无法用来识别车辆。** 比对它只会制造假告警：
-- 文档要求 `1001`，实际 `0001` → 永远 WARN
-- 就算把标准改成 `0001`，这一项也只是从「永远 WARN」变成「永远 PASS」，
-  仍然不能告诉任何人「这是哪台车」
+**这个字段无法识别车辆。** 比对它只会制造假告警。
+
+### 平台是 RDK X5，不是 Jetson
+
+本文初版按 Jetson 写。用户 2026-11-13 指出当前主控是 **RDK X5**
+（D-Robotics，SoC 为 X5U）。
+
+## 硬件事实（2026-11-13 实测）
+
+| 车 | `/proc/device-tree/model` | `serial-number` |
+| --- | --- | --- |
+| 192.168.1.82 | `D-Robotics X5 MD V0.2` | `308118a90a2dc19403bb44d80000024` |
+| 192.168.1.93 | `D-Robotics X5 MD V1.2` | `328150681214c98a00d868f80012004` |
+
+**两个序列号不同，确认唯一。** 型号版本不同（V0.2 / V1.2），说明批次有差异，
+但都能读到序列号。
+
+同机的其它标识（供交叉参考）：
+
+```
+/proc/device-tree/compatible   D-Robotics, x5
+/sys/class/socinfo/soc_id      X5U
+/sys/class/socinfo/board_id    506
+/etc/machine-id                93376d30162346569ffd698a59b4b039   ← 镜像克隆后重复
+```
+
+`machine-id` 在镜像克隆后会重复，不能当车辆标识；device-tree 的
+`serial-number` 才是硬件级的、每台唯一的。
 
 ## 决策
 
-**第 6 项改读 SoC 的 device-tree 序列号，并改变判定方式。**
+**第 6 项改成「平台确认 + 序列号读取」，两者任一不满足都判 FAIL 并中止。**
 
 | 项 | 现状 | 新 |
 | --- | --- | --- |
-| 标题 | 主控硬件 ID | **主控序列号** |
-| 数据源 | CP2102 `ID_SERIAL_SHORT` | **`/proc/device-tree/serial-number`** |
-| 判定 | 与 `expected_serial` 比 | **只记录 + 跨车重复判 FAIL** |
+| 标题 | 主控硬件 ID | **主控平台与序列号** |
+| 平台判据 | 无 | `model` 含 `D-Robotics X5`，或 `compatible` 含 `D-Robotics, x5` |
+| 序列号 | CP2102 `ID_SERIAL_SHORT` | **RDK X5 `/proc/device-tree/serial-number`** |
+| 判定 | 与 `expected_serial` 比 | **平台不符 → FAIL 中止；读不到序列号 → FAIL 中止；都对 → PASS** |
 | CP2102 | 混在其中 | 降为独立一行，只验证「是 CP2102」（VID:PID），不记序列号 |
-| `0001` | 判 WARN | 作为批次提示记录，不判定 |
 
-### 「只记录 + 查重」怎么判
+### 用户明确要求的语义
 
-单台车检测时，只把序列号写进报告，不判 PASS/FAIL（没有期望值可比）。
+> 确认是 RDK 平台，能读到序列号就 pass，如果不是 RDK X5 或者读不到序列号就报错结束
 
-**重复检测才是判据**：如果同一份报告目录里出现两台车序列号相同，
-说明镜像被克隆过（每台车的 SoC 序列号本该唯一），判 FAIL。
+```python
+model  = read("/proc/device-tree/model")           # D-Robotics X5 MD V1.2
+compat = read("/proc/device-tree/compatible")      # D-Robotics, x5
+serial = read("/proc/device-tree/serial-number")   # 328150681214c98a00...
 
-实现上这需要一次「历史记录扫描」，可以放在第 6 项内部，
-扫 `records_root()` 下最近的报告。
+is_x5 = ("D-Robotics X5" in model) or ("D-Robotics, x5" in compat)
+
+if not is_x5:
+    FAIL  "不是 RDK X5 平台：{model}"
+elif not serial.strip():
+    FAIL  "平台正确但读不到序列号（device-tree 无 serial-number）"
+else:
+    PASS  "{model}，序列号 {serial}"
+```
+
+**「报错结束」的含义**：这一项设为 `fatal`，判 FAIL 后中止后续检测。
+理由：如果主控换成了别的平台，后面所有阈值（频率、电压、相机分辨率、
+轴距轮距）都可能是错的，继续测没有意义，而且会给出误导性的 PASS。
 
 ### 为什么保留 CP2102 检查
 
@@ -63,58 +100,29 @@ CP2102 出厂时厂家**可以**烧唯一 ID，也可以不烧。不烧就用默
 这是硬件拓扑的一部分，值得记录。但**不记录它的序列号**，
 因为没有区分度。
 
-## 硬件事实（2026-11-13 实测）
-
-本产品的主控是 **D-Robotics RDK X5**（SoC：Sunrise 5 / `X5U`），
-不是 NVIDIA Jetson。两台在线车的数据：
-
-| 车 | `/proc/device-tree/model` | `serial-number` |
-| --- | --- | --- |
-| 192.168.1.82 | `D-Robotics X5 MD V0.2` | `308118a90a2dc19403bb44d80000024` |
-| 192.168.1.93 | `D-Robotics X5 MD V1.2` | `328150681214c98a00d868f80012004` |
-
-**两个序列号不同**，说明这个字段有区分度。
-
-同机的其它标识（供交叉参考）：
-
-```
-/sys/class/socinfo/soc_id     X5U
-/sys/class/socinfo/board_id   506
-/etc/machine-id               93376d30162346569ffd698a59b4b039   ← 镜像克隆后重复
-eth0 MAC                      4a:c6:58:49:78:7f
-内核                          6.1.83 aarch64, Ubuntu 22.04.5, 系统版本 3.3.3
-```
-
-`machine-id` 不能用作车辆标识 —— 镜像复制后所有车相同（这一点在
-A/B 镜像交付场景下是必然的）。`eth0 MAC` 也可能因镜像/网卡驱动配置而重复，
-`/proc/device-tree/serial-number` 是唯一一个来自 SoC eFuse 的值。
-
 ## 替代方案
 
-- **按用户提议「标准全改成 0001」**：让 WARN 消失，但这一项从此没有意义。
+- **按用户初版提议「标准全改成 0001」**：让 WARN 消失，但这一项从此没有意义。
   既不能识别车辆，也不能验证批次，只是一个恒真的装饰。
-- **保留现状 + 把 `0001` 加进 `acceptable_serials`**：同样是让 WARN 消失。
-  `baseline.yaml` 已经有这个机制，改一行就够。但问题一样：字段无意义。
+- **只记录不判定（本文旧版的方案）**：需要跨车查重才有意义，
+  实现复杂且要扫历史报告。用户已明确要求「读不到就报错」，
+  直接判 PASS/FAIL 更简单、更严格。
 - **读下位机 MCU 序列号**：协议里没有这个字段，改不了。
-- **用 `machine-id`**：镜像克隆后全相同，比 `0001` 更糟。
 
 ## 影响
 
 - **报告里的序列号会变。** 从 `0001` 变成 32 位十六进制字符串。
   如果下游有系统按旧格式解析，会失效。
-- 判定语义变了：第 6 项从「与文档比对」变成「记录 + 查重」。
-  旧报告里的 WARN 在新版本不会再现。
+- 第 6 项从 `WARN 可接受` 变成 **`FAIL 即中止`**。
+  平台不符或读不到序列号时，检测会在第 6 项就停下。
 - `baseline.yaml` 的 `hardware.expected_serial` / `acceptable_serials`
-  两个字段会废弃。要不要保留兼容（不认识就忽略）需实施时决定。
-- 顺带修正一处文档错误：`products/tianracer_t110_rdk/profile.yaml`
-  的 `description` 之前写「NVIDIA Jetson Orin Nano」，实际是 RDK X5。
+  两个字段废弃，改成 `hardware.required_platform_keywords`（字符串列表）。
 
 ## 未验证
 
-- **同硬件版本的车，序列号是否唯一？** 两只样本恰好是不同板版本
-  （V0.2 与 V1.2），所以"序列号不同"也可能只是版本不同带来的。
-  实施前应该在**至少 2 台同版本**的车上看一眼。
-- `/proc/device-tree/serial-number` 在 RDK X5 的不同系统版本
-  （3.3.3 之外）上是否都存在？只验了一个版本。
-- 如果板子换过或返修换过 SoC，序列号会变 —— 这属于正常，但历史查重时
-  会把同一台车判成两台。查重逻辑要考虑时间窗口，不能无限追溯。
+- **只验了 2 台车**（V0.2 和 V1.2 各一台）。其它批次是否都能读到
+  `serial-number` 未知。如果有批次读不到，会全部 FAIL —— 这是有意的严格，
+  但上线前应该至少验 5 台。
+- **`/proc/device-tree/model` 的字符串格式**在不同镜像版本上是否稳定？
+  现在用「包含」匹配而不是全等，能容忍 `V0.2` / `V1.2` 这类后缀。
+- 旧版 ADR 里提到的 `machine-id` 会重复，本方案不依赖它。
