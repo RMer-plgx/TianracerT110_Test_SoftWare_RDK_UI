@@ -47,6 +47,14 @@
   打滑率与**几何理论值**比对，**闭合误差只记录不判定**（实测 1.1~1.3 m）。
   场地需约 4m×4m（含滑移余量），不是纯圆弧算的 1.8 m。
   见[转向标定](0005-steering-calibration.md)的「追加发现」。
+- **打滑率不再否掉「落地互校通过」**（2026-11-13）。实测两台次：姿态误差
+  0.42~0.96°（容差 3°）但打滑率 45~52%（理论 30%±15）→ 判 WARN →
+  连带 IMU/里程计保持 PENDING。打滑率主要反映地面摩擦，不是车的能力，
+  故降为独立 WARN。见[落地互校判据](0008-spin-verified-criteria.md)。
+- **检测项的展示顺序与执行顺序分开**（2026-11-13）。执行仍按
+  `static → runtime → motion`（硬依赖），报告按编号 1..20 渲染；
+  第 20 项前置到 runtime 最前，让协议层数据能被后续项引用。
+  见[展示顺序](0009-check-order-display-vs-execution.md)。
 - **源码一致性原先根本没比远端，2026-11-10 重写。** 旧实现只数本地未提交
   改动，却把结论写成「与远端一致」—— 实车当场露馅（tianbot_core 落后上游
   2 个提交，报告仍说一致）。现用 `git ls-remote` 只读比对，不执行 `fetch`：
@@ -88,5 +96,8 @@
 | [0005](0005-steering-calibration.md) | 转向角间接测量与标定 | Accepted | 标定完成且**判据已按物理约束重写**：打滑率 29% 是四驱同速的几何必然，姿态误差才是主判据 |
 | [0006](0006-mygo-plugin-platform.md) | MyGo 桌面壳与多机器人产品插件 | Accepted | P0 探针已实现（包校验/schema/沙箱/探针/界面 spike）；运行时会话、设备能力、正式 UI 未实现 |
 | [0007](0007-source-consistency-readonly.md) | 源码一致性只读比对远端 | Accepted | 已实现；未推送分支判 FAIL，交付镜像自带分支可经 `allowed_local_branches` 白名单降为 WARN；detached HEAD 归 WARN |
+| [0008](0008-spin-verified-criteria.md) | 落地互校的通过只由姿态误差决定 | Accepted | 待实施：打滑率降为独立 WARN，不再否掉 IMU/里程计 |
+| [0009](0009-check-order-display-vs-execution.md) | 展示顺序与执行顺序解耦 | Accepted | 待实施：报告按编号 1..20，执行仍按 static→runtime→motion；第 20 项前置 |
+| [0010](0010-mainboard-serial-from-jetson.md) | 主控序列号改读 Jetson | Accepted | 待实施：现在读的是 CP2102 芯片序列号（全批 0001，无区分度） |
 
 记录约定：每项可独立取舍的架构决策使用独立文件，记录状态、背景、决策、替代方案和影响。`Accepted` 表示决策已确认，不代表实现或验收完成；`Proposed` 表示方案待确认。实现变化时同步更新本总览；被替代的决策保留记录并注明后续决策。
