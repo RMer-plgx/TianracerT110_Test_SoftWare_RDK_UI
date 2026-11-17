@@ -555,17 +555,9 @@ class TestClockReadyGuard:
 
         return _R()
 
-    def test_returns_false_when_clock_is_year_2000(self):
-        """时间停在 2000 年、NTP 也没同步 → 等满超时后 ok=False。"""
-        from core import remote as R
-        r = self._remote(["946684800\nno"] * 40)      # 2000-01-01
-        res = R.ensure_clock_ready(r, timeout=2)
-        assert res["ok"] is False
-        assert res["epoch"] < 1577836800
-
     def test_passes_when_synchronized(self):
         from core import remote as R
-        r = self._remote(["1794904000\nyes"])
+        r = self._remote(["EPOCH=1794904000\nSYNCED=yes\nNET=1\n"])
         res = R.ensure_clock_ready(r, timeout=5)
         assert res["ok"] is True
         assert res["synchronized"] is True
@@ -573,7 +565,7 @@ class TestClockReadyGuard:
     def test_passes_when_time_plausible_but_offline(self):
         """离线车 NTP 同步不上，但只要时间不是 2000 年就放行。"""
         from core import remote as R
-        r = self._remote(["1794904000\nno"])
+        r = self._remote(["EPOCH=1794904000\nSYNCED=no\nNET=0\n"])
         res = R.ensure_clock_ready(r, timeout=5)
         assert res["ok"] is True
         assert res["synchronized"] is False
@@ -669,26 +661,90 @@ class TestClockReadinessDetails:
     def test_offline_with_year_2000_returns_immediately(self):
         """离线 + 时间停在 2000 → 立刻返回，不白等满超时。"""
         from core import remote as R
-        # epoch, synced, 默认路由数
-        r = self._remote(["946684800\nno\n0\n"] * 10)
+        r = self._remote(["EPOCH=946684800\nSYNCED=no\nNET=0\n"] * 10)
         res = R.ensure_clock_ready(r, timeout=30)
         assert res["ok"] is False
         assert res["waited_sec"] < 5, res["waited_sec"]
-        assert "无默认路由" in res.get("reason", "") or res.get("reason")
+        assert "没有默认路由" in res.get("reason", "")
+
+    def test_missing_synced_line_does_not_mean_offline(self):
+        """R23-1：SYNCED 行缺失（timedatectl 不可用）不能判成「无默认路由」。
+
+        旧写法按位置取三行：timedatectl 无输出时路由数 left-shift，
+        `stdout="946684800\\n1\\n"` → parts[2] 不存在 → has_net=False，
+        于是「车有网」被报成「没有默认路由」（假结论），
+        且跳过了短路守卫 —— 2000 年时钟 + NTP 跳变的原始故障照旧发生。
+        这是仓库第五次「读不到 → 当成具体结论」。
+        """
+        from core import remote as R
+        r = self._remote(["EPOCH=946684800\nNET=1\n"] * 60)
+        res = R.ensure_clock_ready(r, timeout=2)
+        assert res["ok"] is False
+        # 关键：不能短路，必须真的等（有网）
+        assert res.get("reason") == "等待超时", res.get("reason")
+        assert res["waited_sec"] >= 1.5, res["waited_sec"]
+        # 读不到就是 None，不写成 False
+        assert res["synchronized"] is None
+
+    def test_missing_net_line_does_not_short_circuit(self):
+        """R23-1：NET 行缺失也不得短路 —— 读不到不能当「没网」。"""
+        from core import remote as R
+        r = self._remote(["EPOCH=946684800\nSYNCED=no\n"] * 60)
+        res = R.ensure_clock_ready(r, timeout=2)
+        assert res.get("reason") == "等待超时", res.get("reason")
+        assert res["waited_sec"] >= 1.5, res["waited_sec"]
+
+    def test_short_circuit_does_not_announce_waiting(self):
+        """R23-3：短路时不该先报一次「仍在等」。"""
+        from core import remote as R
+        seen = []
+        r = self._remote(["EPOCH=946684800\nSYNCED=no\nNET=0\n"] * 10)
+        res = R.ensure_clock_ready(r, timeout=30, on_wait=seen.append)
+        assert res["waited_sec"] < 1.5, res["waited_sec"]
+        assert seen == [], seen
 
     def test_on_wait_callback_called(self):
         """等待期间必须回调，否则界面空屏像卡死。"""
         from core import remote as R
         seen = []
-        r = self._remote(["946684800\nyes\n1\n"] * 10)
+        r = self._remote(["EPOCH=946684800\nSYNCED=yes\nNET=1\n"] * 10)
         R.ensure_clock_ready(r, timeout=3, on_wait=seen.append)
         assert seen, "on_wait 从未被调用"
         assert "epoch" in seen[0] and "has_net" in seen[0]
 
+    def test_on_wait_is_rate_limited_to_one_per_five_seconds(self, monkeypatch):
+        """R22-1：60 秒每 5 秒反馈一次，不能每轮（1.5s）都刷。
+
+        用假时钟替换 core.remote 模块的 time，只影响被测模块。
+        旧逻辑（`elapsed >= 5.0` 绝对阈值）60 秒会调用 37 次、间隔 1.5s。
+        """
+        from core import remote as R
+
+        class _Clock:
+            def __init__(self):
+                self.now = 0.0
+
+            def time(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += seconds
+
+        monkeypatch.setattr(R, "time", _Clock())
+        seen = []
+        r = self._remote(["EPOCH=946684800\nSYNCED=yes\nNET=1\n"] * 200)
+        R.ensure_clock_ready(r, timeout=60, on_wait=seen.append)
+
+        stamps = [s["waited_sec"] for s in seen]
+        assert stamps, "on_wait 从未被调用"
+        gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+        assert all(g >= 5.0 for g in gaps), stamps
+        assert len(stamps) <= 13, f"60 秒反馈了 {len(stamps)} 次，仍在刷屏"
+
     def test_online_with_year_2000_keeps_waiting_then_times_out(self):
         """有网但还没校时 → 一直等，超时后 ok=False 且 reason=等待超时。"""
         from core import remote as R
-        r = self._remote(["946684800\nno\n1\n"] * 40)
+        r = self._remote(["EPOCH=946684800\nSYNCED=no\nNET=1\n"] * 40)
         res = R.ensure_clock_ready(r, timeout=2)
         assert res["ok"] is False
         assert res.get("reason") == "等待超时"
@@ -711,3 +767,32 @@ class TestBringupFailureDetail:
         assert "hint" in src and "clock" in src
         # detail 要在 report.add 之前赋值（否则渲染时是空的）
         assert src.index("result.detail") < src.index("self.report.add(result)")
+
+    def test_detail_mentions_occupied_port(self):
+        """R22-2：端口被占时 detail 必须写明，否则报告里只剩「缺节点」。
+
+        只看 `"port_free" in src` 不够——前面 ctx.say 分支也有这个词，
+        这里限定在 detail 构造段内。
+        """
+        import inspect
+        from core import runner
+        src = inspect.getsource(runner.Runner._run_runtime_phase)
+        start = src.index("detail = []")
+        end = src.index("result.detail", start)
+        block = src[start:end]
+        assert "port_free is False" in block, "detail 构造段没有端口占用说明"
+
+    def test_detail_mentions_clock_reason(self):
+        """R23-2：短路时报告要写 reason，不能只写「已等 0.0s」。
+
+        同时检查 synchronized 三态：读不到时写「未知」，不写成「否」。
+        """
+        import inspect
+        from core import runner
+        src = inspect.getsource(runner.Runner._run_runtime_phase)
+        start = src.index('if not clock["ok"]:')
+        end = src.index("if port_free is False:", start)
+        block = src[start:end]
+        assert 'clock.get("reason")' in block, "detail 没有写 reason"
+        assert "原因：" in block
+        assert '"未知"' in block, "synchronized 读不到时应写「未知」"

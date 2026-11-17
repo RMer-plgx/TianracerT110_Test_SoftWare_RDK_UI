@@ -298,31 +298,66 @@ def ensure_clock_ready(remote: Remote, timeout: int = 60,
 
     ## 返回
 
-    {ok: bool, epoch: int, synchronized: bool, waited_sec: float}
-    `ok=False` 表示等了 timeout 秒仍然不可信 —— 调用方应告警但可以继续
-    （有些离线环境本来就没有 NTP，不能因此禁止检测）。
+    {ok: bool, epoch: int, synchronized: bool | None,
+     waited_sec: float, reason: str}
+    `ok=False` 有两条路径，都表示「时钟不可信」，但代价不同：
+      - **离线短路**：车明确没有默认路由且时间停在 2000 年，NTP 不可能校时，
+        立刻返回，`reason` 说明「NTP 无法校时」
+      - **等待超时**：有网（或网络读不到）但 timeout 秒内仍未校时，
+        `reason="等待超时"`
+    调用方应告警但可以继续（有些离线环境本来就没有 NTP，不能因此禁止检测）。
+
+    `synchronized` 是三态：True / False / **None（timedatectl 没给出答案）**。
+    读不到时不要当成「没有同步」—— 那是仓库反复踩过的「读不到 = 具体结论」。
     """
     started = time.time()
     last_epoch = 0
-    synced = False
-    announced = False
+    synced = None
+    # R22-1：记录「上次反馈的时间点」，而不是「是否反馈过」。
+    # 原来写成 `not announced or elapsed >= 5.0`，elapsed 单调递增，
+    # 第 6 秒之后每轮（1.5s）都满足 —— 60 秒刷 37 行。
+    last_announced = -999.0
     while True:
         elapsed = time.time() - started
         if elapsed >= timeout:
             break
+        # R23-1：逐行 key=value 回显，**不按位置取值**。
+        # 原来写成 `date +%s; timedatectl …; ip route … | wc -l` 再 out.split()
+        # 按索引取 —— timedatectl 无输出时只剩两行，路由数左移：
+        #   stdout = "946684800\n1\n"  → parts[2] 不存在 → has_net=False
+        # 于是「车有网」被报成「没有默认路由」（假结论），
+        # 并且跳过了下面的短路守卫 —— 守在最需要它的时候自己关掉了。
+        # 这是仓库第五次「读不到 → 当成具体结论」（前四次 R14-2 / R15-5 /
+        # R17-5 / R21-2）。写法照抄 checks/source.py:_probe_script 的 BRANCH= 范式。
         out = remote.run(
-            "date +%s; timedatectl show -p NTPSynchronized --value 2>/dev/null; "
-            "ip route show default 2>/dev/null | wc -l",
+            'echo "EPOCH=$(date +%s)"; '
+            'echo "SYNCED=$(timedatectl show -p NTPSynchronized --value '
+            '2>/dev/null || echo unknown)"; '
+            # NET 也要探测：`ip` 缺失时 `wc -l` 读空输入仍输出 0，
+            # 会被当成「确实没有默认路由」—— 与 R23-1 同一条
+            # 「读不到 → 具体结论」。见 HANDOFF §6.1。
+            'if command -v ip >/dev/null 2>&1 '
+            '&& ip route show default >/dev/null 2>&1; then '
+            'echo "NET=$(ip route show default 2>/dev/null | wc -l)"; '
+            'else echo "NET=unknown"; fi',
             timeout=15, record=False,
         ).stdout or ""
-        parts = out.split()
-        try:
-            last_epoch = int(parts[0]) if parts else 0
-        except ValueError:
-            last_epoch = 0
-        synced = len(parts) > 1 and parts[1].strip().lower() == "yes"
-        # 有默认路由 = 有网，NTP 才有可能校时
-        has_net = len(parts) > 2 and parts[2].strip() not in ("", "0")
+        vals = {}
+        for line in out.splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                vals[key.strip()] = value.strip()
+
+        epoch_raw = vals.get("EPOCH", "")
+        last_epoch = int(epoch_raw) if epoch_raw.isdigit() else 0
+        # 只有明确的 yes / no 才算已知，其余（缺行、unknown、空）都是读不到
+        synced_raw = vals.get("SYNCED", "").lower()
+        synced = (True if synced_raw == "yes"
+                  else False if synced_raw == "no" else None)
+        # 有默认路由 = 有网，NTP 才有可能校时。读不到记 None ——
+        # 宁可等满超时，也不能凭猜测提前放弃（R23-1）。
+        net_raw = vals.get("NET", "")
+        has_net = int(net_raw) > 0 if net_raw.isdigit() else None
 
         # 2020-01-01 = 1577836800。低于它一定是「还没校时」。
         # 只要时间合理就放行，**不强制 NTP 同步**：离线车（车间、无 WiFi）
@@ -337,8 +372,21 @@ def ensure_clock_ready(remote: Remote, timeout: int = 60,
                 "waited_sec": round(elapsed, 1),
             }
 
+        # R21-3 + R23-3：离线且时间停在 2000 年 —— 再等也不会有结果，立刻返回。
+        # 放在 on_wait 之前：否则离线场景会先报一次「仍在等」再报「未同步」。
+        # 只在**明确读到**没有默认路由时短路；has_net=None（读不到）照常等，
+        # 宁可白等到超时，也不能凭猜测提前放弃（R23-1）。
+        if has_net is False and last_epoch and last_epoch < 1577836800:
+            return {
+                "ok": False,
+                "epoch": last_epoch,
+                "synchronized": synced,
+                "waited_sec": round(elapsed, 1),
+                "reason": "车时间停在 2000 年且没有默认路由，NTP 无法校时",
+            }
+
         # R21-3：等待期间必须给反馈，否则界面 30 秒空屏像卡死。
-        if on_wait is not None and (not announced or elapsed >= 5.0):
+        if on_wait is not None and elapsed - last_announced >= 5.0:
             try:
                 on_wait({
                     "epoch": last_epoch,
@@ -347,18 +395,7 @@ def ensure_clock_ready(remote: Remote, timeout: int = 60,
                 })
             except Exception:
                 pass
-            announced = True
-
-        # R21-3：离线且时间停在 2000 年 —— 再等也不会有结果，立刻返回。
-        # 让调用方明确告警，而不是白等满 30 秒。
-        if not has_net and last_epoch and last_epoch < 1577836800:
-            return {
-                "ok": False,
-                "epoch": last_epoch,
-                "synchronized": False,
-                "waited_sec": round(elapsed, 1),
-                "reason": "车时间停在 2000 年且没有默认路由，NTP 无法校时",
-            }
+            last_announced = elapsed
         time.sleep(1.5)
 
     return {

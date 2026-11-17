@@ -642,10 +642,12 @@ class Runner:
             # 详见 core/remote.py:ensure_clock_ready 的 docstring。
             def _clock_wait(info):
                 # R21-3：等待期间给反馈，否则界面空屏像卡死
+                # R23-1：has_net 是三态，读不到时说「网络未知」，不猜。
+                net = info.get("has_net")
+                net_text = ("，车有网络" if net is True else
+                            "，车无网络" if net is False else "，网络未知")
                 ctx.say(f"      仍在等系统时钟（epoch={info['epoch']}，"
-                        f"已等 {info['waited_sec']}s"
-                        + ("，车有网络" if info["has_net"] else "，车无网络")
-                        + "）…")
+                        f"已等 {info['waited_sec']}s{net_text}）…")
 
             clock = ros_remote.ensure_clock_ready(
                 ctx.remote, timeout=60, on_wait=_clock_wait)
@@ -707,15 +709,31 @@ class Runner:
                     detail.append(f"可能原因：{hint}")
                     detail.append("")
                 if not clock["ok"]:
+                    # synchronized 三态：读不到时写「未知」，不写成「否」
+                    sync = clock["synchronized"]
+                    sync_text = ("是" if sync is True else
+                                 "否" if sync is False else "未知")
                     detail.append(
                         f"系统时钟未同步：epoch={clock['epoch']}，"
-                        f"NTPSynchronized={'是' if clock['synchronized'] else '否'}，"
+                        f"NTPSynchronized={sync_text}，"
                         f"已等 {clock['waited_sec']}s。"
                     )
+                    # R23-2：reason 也要进报告。短路时「已等 0.0s」对读者
+                    # 无意义，真正要说明的是「不可能等到，直接放弃」；
+                    # ctx.say 那句「该状态会写进报告」才算成立。
+                    reason = clock.get("reason") or ""
+                    if reason:
+                        detail.append(f"原因：{reason}")
                     detail.append(
                         "RDK X5 无 RTC 电池，断电后时间从 2000-01-01 开始；"
                         "若 roslaunch 启动过程中 NTP 跳变，rosmaster 会失联。"
                     )
+                    detail.append("")
+                if port_free is False:
+                    # R22-2：端口被占是 bringup 失败的真实前置原因之一。
+                    # 只进 ctx.say 的话，报告里看不到；若此时日志为空，
+                    # hint 会指向「launch 文件没加载」，方向就偏了。
+                    detail.append("11311 在启动前仍被占用（等待 15s 未释放）。")
                     detail.append("")
                 detail.append("排查顺序：")
                 detail.append("  tail -40 /tmp/tt_launch.log")
