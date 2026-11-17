@@ -665,7 +665,9 @@ class TestClockReadinessDetails:
         res = R.ensure_clock_ready(r, timeout=30)
         assert res["ok"] is False
         assert res["waited_sec"] < 5, res["waited_sec"]
-        assert "没有默认路由" in res.get("reason", "")
+        # R24-1：用完整相等，不用子串/非空（原来的 `或 reason 非空` 写法
+        # 在 93bce0f 里已不存在；这里再收紧成完整文案）。
+        assert res["reason"] == "车时间停在 2000 年且没有默认路由，NTP 无法校时"
 
     def test_missing_synced_line_does_not_mean_offline(self):
         """R23-1：SYNCED 行缺失（timedatectl 不可用）不能判成「无默认路由」。

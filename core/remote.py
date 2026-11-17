@@ -403,7 +403,9 @@ def ensure_clock_ready(remote: Remote, timeout: int = 60,
         "epoch": last_epoch,
         "synchronized": synced,
         "waited_sec": round(time.time() - started, 1),
-        "reason": "等待超时" if last_epoch <= 1577836800 else "",
+        # R24-2：走到这里必然是超时。循环内只要 last_epoch > 阈值就 return ok=True，
+        # 所以「last_epoch <= 阈值」恒真；原三元表达式只会取前者，删掉免误导。
+        "reason": "等待超时",
     }
 
 
