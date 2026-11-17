@@ -40,8 +40,18 @@ def run(ctx) -> CheckResult:
         result.add("accel z", f"{az:.3f}" if az is not None else "?", "m/s²",
                    expected=f"{z_min}–{z_max}",
                    note="静置应接近 9.8")
-        accel_status = judge_range(az, z_min, z_max,
-                                   warn_margin=max(0.0, z_max - warn_high))
+        # warn 区只在上限侧：baseline 的 accel_z_warn_high 是「高于此值提醒」，
+        # 没有下界 warn 的语义。原来把 margin 同时套到两端，
+        # 导致 z=9.68（接近下限 9.4）被判 WARN，而摘要还写「偏高」——
+        # 2026-11-17 实测 9.68 就是这样被判 WARN 的。
+        if az is None:
+            accel_status = Status.SKIP
+        elif az < z_min or az > z_max:
+            accel_status = Status.FAIL
+        elif az > warn_high:
+            accel_status = Status.WARN
+        else:
+            accel_status = Status.PASS
 
         norm = data.get("accel_norm")
         if norm is not None:
@@ -82,8 +92,12 @@ def run(ctx) -> CheckResult:
             result.summary = "车体姿态倾斜过大，检查 IMU 安装"
     elif result.status is Status.WARN:
         if accel_status is Status.WARN:
-            result.summary = (f"z 轴 {az:.2f} m/s² 偏高（标称 9.8），标度待确认"
-                              if az is not None else "IMU 数据接近阈值")
+            if az is None:
+                result.summary = "IMU 数据接近阈值"
+            elif az > warn_high:
+                result.summary = (f"z 轴 {az:.2f} m/s² 偏高（标称 9.8），标度待确认")
+            else:
+                result.summary = (f"z 轴 {az:.2f} m/s² 偏离（标称 9.8），标度待确认")
         else:
             result.summary = "IMU 数据接近阈值，需关注"
     elif result.status is Status.SKIP:
@@ -108,16 +122,19 @@ def run(ctx) -> CheckResult:
             parts.append(f"roll {roll:.2f}° / pitch {pitch:.2f}°")
         result.summary = "，".join(parts) if parts else "IMU 正常"
 
-        # 架空段只能证明「有数据、频率对、静止不漂」。
-        # 陀螺仪准不准，必须落地转一整圈、与里程计比对航向才知道。
-        # 用户 2026-11-03：这种「测了一半」不能直接标绿。
-        # 无论有没有选运动，IMU 的「航向精度」都没验证过 —— 架空段只证明
-        # 「有数据、频率对、静止不漂」。所以两种情况都要标 PENDING。
-        #
-        # 2026-11-13 修复：motion_level == "none" 时原来只加了一句
-        # 「本次未做运动测试，航向精度未验证」，状态仍是 PASS ——
-        # 报告里会出现「✅ PASS」+「未验证」，等于把测了一半当成测完了，
-        # 违反 ADR-0002（未完成落地互校时不可交付）。
+    # 架空段只能证明「有数据、频率对、静止不漂」。陀螺仪准不准，
+    # 必须落地转一整圈、与里程计比对航向才知道。
+    #
+    # 2026-11-13：无论 motion_level 是什么，只要没做落地互校就是 PENDING。
+    # 2026-11-17 修复：这段原来写在 `else`（PASS）分支里，
+    # 所以 IMU 一旦因静态指标 WARN/FAIL，就**不会**被标 PENDING，
+    # needs_ground 也不会置位 —— 后果是判定时漏掉 IMU，
+    # 而且落地互校通过后它也不会被回填成 PASS。
+    # WARN 也属于「静态指标有问题、航向未验证」，一样要标 PENDING。
+    # 只有 PASS / WARN 才转 PENDING：
+    #   FAIL 是真故障，不能被掩盖成「待验证」
+    #   SKIP 是连数据都没取到，保持 SKIP 才能让报告显示「未取得数据」
+    if result.status in (Status.PASS, Status.WARN):
         level = getattr(ctx, "motion_level", "none")
         result.status = Status.PENDING
         result.needs_ground = True

@@ -63,10 +63,14 @@ def run(ctx) -> CheckResult:
     else:
         result.summary = f"{hz:.1f} Hz，{window:.0f} 秒静止漂移 {drift:.4f} m"
 
-        # 频率和静止漂移只能说明「有输出、不动时不乱漂」。
-        # 里程计推算的航向准不准，必须落地转一整圈与 IMU 比对。
-        # 同 imu.py：没选运动也要标 PENDING，否则「测了一半」会显示成 PASS。
-        # 见 checks/imu.py 里 2026-11-13 的说明与 ADR-0002。
+    # 频率和静止漂移只能说明「有输出、不动时不乱漂」。
+    # 里程计推算的航向准不准，必须落地转一整圈与 IMU 比对。
+    #
+    # 2026-11-17：这段从 `else` 分支移出来 —— 原来只在 PASS 时执行，
+    # 所以里程计一旦判 WARN（如漂移接近阈值）就漏掉 PENDING，
+    # 落地互校通过后也不会被回填。同 imu.py 的修法。
+    # 只对 PASS / WARN 转 PENDING：FAIL 是真故障、SKIP 是没取到数据。
+    if result.status in (Status.PASS, Status.WARN):
         level = getattr(ctx, "motion_level", "none")
         result.status = Status.PENDING
         result.needs_ground = True

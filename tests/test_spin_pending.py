@@ -889,3 +889,73 @@ class TestGroundDependentsMustBePending:
     def _runner_cls():
         from core.runner import Runner
         return Runner
+
+
+class TestPendingSurvivesWarn:
+    """静态指标 WARN 时，IMU/里程计仍必须标 PENDING。
+
+    2026-11-17 实测发现：PENDING 逻辑原来写在 `else`（即 PASS）分支里，
+    所以只要静态指标判 WARN，就不会标 PENDING、needs_ground 也不置位。
+    后果：
+      - 第 18 项显示 WARN 而不是「待验证」；
+      - 判定时只报「致命项未完成落地互校：里程计」，IMU 被漏掉；
+      - 落地互校通过后，IMU 也不会被 _resolve_ground_dependents 回填成 PASS。
+    """
+
+    def test_imu_warn_still_pending(self, monkeypatch):
+        from checks import imu as imu_mod
+        monkeypatch.setattr(imu_mod, "measure_hz", lambda *a, **k: 50.0)
+        # z=10.4：在 [9.4, 10.6] 内但高于 warn_high=10.3 → WARN
+        monkeypatch.setattr(imu_mod, "run_probe", lambda *a, **k: {
+            "ok": True,
+            "accel": {"x": 0.1, "y": 0.1, "z": 10.4},
+            "accel_norm": 10.4,
+            "gyro": {"x": 0.001, "y": 0.001, "z": 0.001},
+            "roll_deg": 0.5, "pitch_deg": 0.5,
+        })
+        ctx = _FakeCtx({}, motion_level="none")
+        result = imu_mod.run(ctx)
+        assert result.status is Status.PENDING, result.status
+        assert result.needs_ground is True
+
+    def test_imu_z_near_lower_bound_is_not_warn(self, monkeypatch):
+        """z=9.68 接近下限 9.4，但没超出 → 应 PASS（warn 只在上限侧）。"""
+        from checks import imu as imu_mod
+        monkeypatch.setattr(imu_mod, "measure_hz", lambda *a, **k: 50.0)
+        monkeypatch.setattr(imu_mod, "run_probe", lambda *a, **k: {
+            "ok": True,
+            "accel": {"x": 0.1, "y": 0.1, "z": 9.68},
+            "accel_norm": 9.68,
+            "gyro": {"x": 0.001, "y": 0.001, "z": 0.001},
+            "roll_deg": 0.5, "pitch_deg": 0.5,
+        })
+        ctx = _FakeCtx({}, motion_level="none")
+        result = imu_mod.run(ctx)
+        # 转了 PENDING，但不应带 WARN 的痕迹
+        assert result.status is Status.PENDING
+        assert "偏高" not in result.summary, result.summary
+
+    def test_imu_skip_stays_skip(self, monkeypatch):
+        """探针失败（没数据）保持 SKIP，不能被 PENDING 覆盖。"""
+        from checks import imu as imu_mod
+        monkeypatch.setattr(imu_mod, "measure_hz", lambda *a, **k: 50.0)
+        monkeypatch.setattr(imu_mod, "run_probe", lambda *a, **k: {
+            "ok": False, "reason": "no data",
+        })
+        ctx = _FakeCtx({}, motion_level="none")
+        result = imu_mod.run(ctx)
+        assert result.status is Status.SKIP, result.status
+
+    def test_odom_warn_still_pending(self, monkeypatch):
+        """odom 的 WARN 只能来自频率（drift 判定没有 warn 区）。"""
+        from checks import odom as odom_mod
+        # hz=96：在 95–105 内但 < 95+2 → WARN
+        monkeypatch.setattr(odom_mod, "run_probe", lambda *a, **k: {
+            "ok": True, "hz": 96.0, "static_drift_m": 0.0001,
+            "start": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+            "end": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+        })
+        ctx = _FakeCtx({}, motion_level="none")
+        result = odom_mod.run(ctx)
+        assert result.status is Status.PENDING, result.status
+        assert result.needs_ground is True
