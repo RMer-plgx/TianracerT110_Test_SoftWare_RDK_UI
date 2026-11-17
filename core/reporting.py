@@ -8,7 +8,7 @@ from typing import Tuple
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from .paths import resource_path
-from .verdict import Report
+from .verdict import Report, phase_label
 
 
 def _env(autoescape: bool = False) -> Environment:
@@ -32,6 +32,9 @@ def _env(autoescape: bool = False) -> Environment:
         keep_trailing_newline=True,
     )
     environment.filters["pct"] = lambda v: f"{float(v) * 100:.0f}%"
+    # 模板里要直接写 phase_label(item.phase) 而不是让每个调用点
+    # 自己拼中文 —— 环节名只允许有一个来源（core.verdict.PHASE_LABELS）。
+    environment.globals["phase_label"] = phase_label
     return environment
 
 

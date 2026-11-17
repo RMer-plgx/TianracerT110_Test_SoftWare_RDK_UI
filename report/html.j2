@@ -178,6 +178,39 @@
 <div class="verdict {{ report.verdict_class }}" id="verdict-auto">{{ report.verdict }}</div>
 <div class="muted" id="verdict-label">程序自动判定</div>
 
+{# 为什么不只给一句「不具备交付条件」：读报告的人要能直接回答
+   「哪一环节的什么值出了问题」。这里把每个阻断项拆成
+   环节 / 项号标题 / 实测值（对比期望） / 问题四列。
+
+   不只列 FAIL（R26-1）：verdict 还有「致命项停在 PENDING」与
+   「未验证比例超限」两条路径，只列 FAIL 会让那两种报告
+   判定为红但下方一片空白 —— 读者会误以为「没有具体问题」。 #}
+{% if report.blocking_items or report.blocking_note %}
+<div class="aborted" id="blocking-items">
+  <strong>❌ 阻断交付的原因{% if report.blocking_items %}（{{ report.blocking_items | length }} 项）{% endif %}</strong>
+  {% if report.blocking_note %}
+  <p style="margin:8px 0 0">{{ report.blocking_note }}</p>
+  {% endif %}
+  {% if report.blocking_items %}
+  <table>
+    <thead>
+      <tr><th>环节</th><th>检测项</th><th>实测值 / 期望</th><th>问题</th></tr>
+    </thead>
+    <tbody>
+    {% for f in report.blocking_items %}
+      <tr>
+        <td>{{ f.phase_label }}</td>
+        <td>{{ f.number }}. {{ f.title }}{% if f.fatal %} <span class="tag fail">致命</span>{% endif %}</td>
+        <td>{% for v in f.values_text %}{{ v }}{% if not loop.last %}<br>{% endif %}{% else %}—{% endfor %}</td>
+        <td><span class="tag {{ f.kind }}">{{ f.reason }}</span> {{ f.summary }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endif %}
+
 <div id="verdict-reviewed" style="display:none">
   <div class="verdict good" id="verdict-reviewed-box">具备交付条件</div>
   <div class="muted">人工复核后判定（下方已逐条确认接受的项计入通过）</div>
@@ -293,10 +326,10 @@
   <strong>它们现在不算通过</strong>。如果本次不做落地测试，可人工确认接受。
 </p>
 <table>
-  <thead><tr><th>#</th><th>项目</th><th>说明</th></tr></thead>
+  <thead><tr><th>#</th><th>环节</th><th>项目</th><th>说明</th></tr></thead>
   <tbody>
   {% for item in report.pending | sort(attribute='number') %}
-    <tr><td>{{ item.number }}</td><td>{{ item.title }}</td><td>{{ item.summary }}</td></tr>
+    <tr><td>{{ item.number }}</td><td>{{ phase_label(item.phase) }}</td><td>{{ item.title }}</td><td>{{ item.summary }}</td></tr>
   {% endfor %}
   </tbody>
 </table>
@@ -305,10 +338,10 @@
 {% if report.skipped %}
 <h3>完全未执行（{{ report.skipped | length }} 项）</h3>
 <table>
-  <thead><tr><th>#</th><th>项目</th><th>原因</th></tr></thead>
+  <thead><tr><th>#</th><th>环节</th><th>项目</th><th>原因</th></tr></thead>
   <tbody>
   {% for item in report.skipped | sort(attribute='number') %}
-    <tr><td>{{ item.number }}</td><td>{{ item.title }}</td><td>{{ item.summary }}</td></tr>
+    <tr><td>{{ item.number }}</td><td>{{ phase_label(item.phase) }}</td><td>{{ item.title }}</td><td>{{ item.summary }}</td></tr>
   {% endfor %}
   </tbody>
 </table>

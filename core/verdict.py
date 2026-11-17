@@ -108,6 +108,19 @@ class CheckResult:
 # 未验证比例的容忍上限：SKIP 项占可判定项超过这个比例就不算交付合格
 MAX_SKIP_RATIO = 0.2
 
+# 执行阶段的展示名。报告要回答「哪一环节出的问题」，
+# 所以这里必须是给人看的中文，而不是 profile.yaml 里的枚举值。
+PHASE_LABELS = {
+    "static": "静态检查（不需 bringup）",
+    "runtime": "运行时检查（需 bringup）",
+    "motion": "运动测试（车辆会动）",
+}
+
+
+def phase_label(phase: str) -> str:
+    """phase 枚举 → 报告里显示的环节名。未知值原样返回，不吞。"""
+    return PHASE_LABELS.get(phase, phase or "未标注阶段")
+
 
 @dataclass
 class Report:
@@ -156,6 +169,111 @@ class Report:
     @property
     def skipped(self) -> List[CheckResult]:
         return [r for r in self.results if r.status is Status.SKIP]
+
+    @property
+    def blocking_items(self) -> List[Dict[str, Any]]:
+        """所有阻断交付的项，不只是 FAIL 项。
+
+        交付判定只说一句「不具备交付条件」是不够的。读报告的人
+        （现场工程师、客户、售后退修）要能直接回答三个问题：
+
+          1. **哪一环节**（static / runtime / motion）
+          2. **哪一项的哪个实测值不对**（value vs expected）
+          3. **具体是什么问题**（summary）
+
+        ## 为什么不能只列 FAIL（2026-11-17 审查 R26-1）
+
+        `verdict` 有不止一条阻断路径，若这里只收 FAIL，另两条最常见的
+        实际报告会出现「判定为不具备交付条件，但下方没有任何区块」，
+        读者会误以为「只是数据不全、没有具体问题」：
+
+          - 致命项停在 PENDING（没场地做落地互校时 IMU/里程计必然如此）
+          - 未验证比例超限（几项 SKIP 就能超过 20%）
+
+        「没有区块 ≠ 没有问题」这个歧义比信息缺失更难纠正，所以这里
+        按 verdict 的路径逐条覆盖。无法归到具体项的阻断原因
+        （中途终止、全无数据）由 `blocking_note` 负责。
+
+        ## 项值的取法
+
+        优先取带 `expected` 的测量项：那才是这条判据真正比对的值。
+        比如电压项里既有「采样耗时 3.2 s」也有「电压 10.40 V
+        （期望 ≥ 11.0 V）」，后者才是失败原因；把前者也塞进「项值」
+        会让读者多扫一行无关信息。若没有任何带期望的测量（比如
+        「串口节点缺失」），退回列出全部测量 —— 至少让人看到实际读到了
+        什么。两者都没有时 `values_text` 为空，模板显示「—」，
+        问题本身仍在 `summary` 里。
+
+        键名用 `values_text` 而不是 `values`：Jinja2 的属性解析是
+        `getattr(obj, name)` 优先于 `obj[name]`，`f.values` 会拿到
+        dict 内置的 `.values` 绑定方法（实测报 TypeError）。
+        """
+        items: List[Dict[str, Any]] = []
+        seen = set()
+
+        def add(result: CheckResult, kind: str, reason: str) -> None:
+            # 同一项可能同时命中多条路径（如 fatal PENDING 也在
+            # 未验证超限的集合里），只保留最先命中的理由。
+            if result.number in seen:
+                return
+            seen.add(result.number)
+            keyed = [m for m in result.measurements if m.expected]
+            shown = keyed or list(result.measurements)
+            values = []
+            for measurement in shown:
+                text = f"{measurement.name} {measurement.display()}".strip()
+                if measurement.expected:
+                    text += f"（期望 {measurement.expected}）"
+                values.append(text)
+            items.append({
+                "number": result.number,
+                "title": result.title,
+                "phase": result.phase,
+                "phase_label": phase_label(result.phase),
+                "kind": kind,
+                "reason": reason,
+                "fatal": result.fatal,
+                "summary": result.summary,
+                "values_text": values,
+            })
+
+        # 路径 1：FAIL 项（致命优先靠前）。
+        for failed in sorted(self.failed, key=lambda r: r.number):
+            add(failed, "fail", "致命项失败" if failed.fatal else "失败")
+
+        # 路径 2：致命项停在 PENDING（没做完落地互校）。
+        for pending in sorted(self.pending, key=lambda r: r.number):
+            if pending.fatal:
+                add(pending, "pending", "致命项未完成落地互校")
+
+        # 路径 3：未验证比例超限 → 全部 SKIP / PENDING 都是阻断原因。
+        # 中止时不算：中止本身已是阻断理由（归 blocking_note），
+        # 那些未验证项只是中止的后果，不是独立问题。
+        if not self.aborted_reason and self.skip_ratio > MAX_SKIP_RATIO:
+            for item in sorted(self.unverified, key=lambda r: r.number):
+                add(item, item.status.value,
+                    "未验证比例超限" if item.status is Status.SKIP
+                    else "未验证比例超限（待落地验证）")
+
+        return items
+
+    @property
+    def blocking_note(self) -> str:
+        """无法归到具体检测项的阻断原因。
+
+        这三种情况下 `blocking_items` 可能为空或是次要信息，但判定
+        仍然不是「具备交付条件」——必须有一句话说明，否则报告里
+        红色判定下方会是一片空白。
+        """
+        if not self.results:
+            return "未产生任何检测结果，无法判定"
+        if self.aborted_reason:
+            return f"测试中途终止：{self.aborted_reason}"
+        if not self.judged:
+            return "没有可判定的检测项"
+        if not self.executed and not self.pending:
+            return "所有检测项均未取得数据"
+        return ""
 
     @property
     def executed(self) -> List[CheckResult]:

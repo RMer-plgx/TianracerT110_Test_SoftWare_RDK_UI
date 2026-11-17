@@ -851,7 +851,7 @@ class Runner:
     # -- 单项执行 ---------------------------------------------------------
 
     def _execute(self, ctx: Context, entry) -> None:
-        number, title, module_name, func_name, fatal, _phase = entry
+        number, title, module_name, func_name, fatal, phase = entry
 
         # 用户已请求停止：当前项直接跳过，不再启动。
         # 只在阶段边界检查的话，最长要等一项跑完（电压 90 秒），
@@ -859,7 +859,7 @@ class Runner:
         if getattr(ctx, "cancel_requested", False):
             self.report.add(CheckResult(
                 number=number, title=title, status=Status.SKIP, fatal=fatal,
-                summary="用户手动停止，未执行",
+                summary="用户手动停止，未执行", phase=phase,
             ))
             return
 
@@ -869,6 +869,7 @@ class Runner:
             self.report.add(CheckResult(
                 number=number, title=title, status=Status.SKIP, fatal=fatal,
                 summary="用户未允许车辆微动，底盘响应未验证",
+                phase=phase,
                 detail=(
                     "串口有数据、里程计有输出，并不代表电机能转。\n"
                     "2026-10-30 实例：通信全绿，但电调未开，车完全不动。\n"
@@ -901,6 +902,10 @@ class Runner:
         result.number = number
         result.title = title
         result.fatal = fatal
+        # phase 来自 profile 的 checks.items，之前解包成 _phase 后丢掉了，
+        # 于是报告里所有项的「环节」都是默认的 static。失败项要指明
+        # 是哪一环节出问题，这里必须真的填上（2026-11-17 用户要求）。
+        result.phase = phase
         result.duration_sec = round(time.time() - started, 2)
         self.report.add(result)
         ctx.say(f"       {result.status.marker} {result.status.value.upper()}"

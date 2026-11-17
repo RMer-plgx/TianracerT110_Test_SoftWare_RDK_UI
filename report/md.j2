@@ -110,20 +110,20 @@
 
 已在本阶段测过，但结论要等落地段转向互校才能确定。**现在不算通过。**
 
-| # | 项目 | 说明 |
-|---|---|---|
+| # | 环节 | 项目 | 说明 |
+|---|---|---|---|
 {% for item in report.pending | sort(attribute='number') %}
-| {{ item.number }} | {{ item.title }} | {{ item.summary | replace('\n', ' ') }} |
+| {{ item.number }} | {{ phase_label(item.phase) }} | {{ item.title }} | {{ item.summary | replace('\n', ' ') }} |
 {% endfor %}
 {% endif %}
 
 {% if report.skipped %}
 ### 完全未执行（{{ report.skipped | length }} 项）
 
-| # | 项目 | 原因 |
-|---|---|---|
+| # | 环节 | 项目 | 原因 |
+|---|---|---|---|
 {% for item in report.skipped | sort(attribute='number') %}
-| {{ item.number }} | {{ item.title }} | {{ item.summary }} |
+| {{ item.number }} | {{ phase_label(item.phase) }} | {{ item.title }} | {{ item.summary }} |
 {% endfor %}
 {% endif %}
 
@@ -155,12 +155,18 @@ MD 版本只能手工添加标记：
 
 ### {{ report.verdict }}
 
-{% if report.failed %}
-**失败项**
-
-{% for item in report.failed %}
-- **{{ item.number }}. {{ item.title }}** — {{ item.summary }}
+{% if report.blocking_items or report.blocking_note %}
+**阻断交付的原因{% if report.blocking_items %}（{{ report.blocking_items | length }} 项）{% endif %}**
+{% if report.blocking_note %}
+> {{ report.blocking_note }}
+{% endif %}
+{% if report.blocking_items %}
+| 环节 | 检测项 | 实测值 / 期望 | 问题 |
+|---|---|---|---|
+{% for f in report.blocking_items %}
+| {{ f.phase_label }} | {{ f.number }}. {{ f.title }}{% if f.fatal %}（致命）{% endif %} | {{ f.values_text | join('；') or '—' }} | {{ f.reason }}：{{ f.summary | replace('\n', ' ') }} |
 {% endfor %}
+{% endif %}
 {% endif %}
 
 {% if report.warned %}
