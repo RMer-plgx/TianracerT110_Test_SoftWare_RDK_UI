@@ -430,6 +430,7 @@ class CleanupWorker(QThread):
 
     def run(self) -> None:
         from checks import traces
+        from core import profile as product_profile
 
         cfg = self._config
         remote = None
@@ -446,6 +447,18 @@ class CleanupWorker(QThread):
             data = traces.cleanup(
                 ctx, keep_bash_history=self._keep_history
             )
+
+            # 清理完必须**重算第 11 项**，否则界面/report 还挂着清理前的
+            # 快照 —— 用户点了按钮、痕迹也清了，卡片却仍是「建议清理」。
+            # 2026-11-17 用户实测反馈的就是这个。
+            if not data.get("error"):
+                try:
+                    prof = product_profile.load(cfg.get("profile_id"))
+                    ctx.baseline = prof.baseline
+                    ctx.profile = prof
+                    data["check"] = traces.run(ctx)
+                except Exception as exc:
+                    data["rerun_error"] = f"{type(exc).__name__}: {exc}"
         except Exception as exc:
             data = {"error": f"{type(exc).__name__}: {exc}"}
         finally:
@@ -1286,6 +1299,29 @@ class MainWindow(QMainWindow):
         self._ground_dialog = dialog
         dialog.show()
 
+    def _paint_verdict(self) -> None:
+        """按当前 report 重画判定标签。
+
+        颜色直接用 core 的判定（verdict_class），不在 UI 层重写一份 ——
+        之前手写三档（failed/warned/其它→绿）把「中止」显示成了绿色，
+        正是 core 早已修掉的 bug。
+
+        抽成方法的原因：清理使用记录后第 11 项会重新检测、判定可能
+        从「告警」变回「可交付」，那时也要重画。
+        """
+        if self.report is None:
+            return
+        c = palette(self.theme)
+        color = {
+            "good": c["pass"],
+            "warn": c["warn"],
+            "bad": c["fail"],
+        }.get(self.report.verdict_class, c["text_muted"])
+        self.verdict_label.setStyleSheet(
+            f"font-size: 15px; font-weight: 600; color: {color};"
+        )
+        self.verdict_label.setText(f"判定：{self.report.verdict}")
+
     def _on_finished(self, report: Report, record_dir: str) -> None:
         self.report = report
 
@@ -1299,19 +1335,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(done)
         self.counter_label.setText(f"{done} / {len(self.cards)}")
 
-        # 颜色直接用 core 的判定，不在 UI 层重写一份。
-        # 之前手写了三档（failed/warned/其它→绿），
-        # 结果把「中止」显示成绿色——正是 core 早已修掉的 bug。
-        c = palette(self.theme)
-        color = {
-            "good": c["pass"],
-            "warn": c["warn"],
-            "bad": c["fail"],
-        }.get(report.verdict_class, c["text_muted"])
-        self.verdict_label.setStyleSheet(
-            f"font-size: 15px; font-weight: 600; color: {color};"
-        )
-        self.verdict_label.setText(f"判定：{report.verdict}")
+        self._paint_verdict()
 
         if record_dir:
             self.record_dir = Path(record_dir)
@@ -1451,6 +1475,16 @@ class MainWindow(QMainWindow):
             self._sync_worker.deleteLater()
             self._sync_worker = None
 
+    def _hist_warn_lines(self) -> int:
+        """第 11 项的 bash_history 告警阈值，用于对话框文案。"""
+        try:
+            if self.profile is not None:
+                return int(self.profile.baseline.get("traces", {})
+                           .get("bash_history_lines_warn", 800))
+        except Exception:
+            pass
+        return 800
+
     def cleanup_traces(self) -> None:
         """手动清理车上使用痕迹。"""
         cfg = self._last_config
@@ -1469,23 +1503,49 @@ class MainWindow(QMainWindow):
         if self._cleaner is not None and self._cleaner.isRunning():
             return
 
-        reply = QMessageBox.question(
-            self, "确认清理",
-            f"将删除 {cfg['host']} 上的以下内容：\n\n"
+        # keep_bash_history 从产品配置读（原来硬编码 True，
+        # 与 baseline 的 keep_bash_history 脱节 —— 用户改了配置也不生效）。
+        keep_hist = True
+        try:
+            if self.profile is not None:
+                keep_hist = bool(
+                    self.profile.baseline.get("traces", {})
+                    .get("keep_bash_history", True))
+        except Exception:
+            pass
+
+        box = QMessageBox(self)
+        box.setWindowTitle("确认清理")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(
+            f"将删除 {cfg['host']} 上的：\n\n"
             "  · ~/.ros/log 下的全部 ROS 日志\n"
             "  · ~/.viminfo\n\n"
-            "命令历史 ~/.bash_history 会**保留**（现场排查需要）。\n"
-            "  如需一并清空，请在 config/baseline.yaml 里\n"
-            "  把 traces.keep_bash_history 改为 false。\n\n"
-            "删除后不可恢复。确认继续？",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            "命令历史 ~/.bash_history 是否一并清空？"
         )
-        if reply != QMessageBox.Yes:
+        box.setInformativeText(
+            "命令历史是现场排查的证据，通常建议保留。\n"
+            "但第 11 项「使用痕迹」在 bash_history 超过 "
+            f"{self._hist_warn_lines()} 行时会报告警 ——\n"
+            "只清日志不清历史，那个告警不会消失。\n\n"
+            "默认按产品配置（traces.keep_bash_history = "
+            f"{'保留' if keep_hist else '清空'}）。\n"
+            "删除后不可恢复。"
+        )
+        keep_btn = box.addButton("只清日志（保留历史）", QMessageBox.AcceptRole)
+        wipe_btn = box.addButton("一并清空历史", QMessageBox.DestructiveRole)
+        cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
+        box.setDefaultButton(wipe_btn if not keep_hist else keep_btn)
+        box.exec_()
+
+        clicked = box.clickedButton()
+        if clicked is cancel_btn:
             return
+        keep_hist = (clicked is keep_btn)
 
         self.clean_btn.setEnabled(False)
-        self._log("清理使用记录…")
-        self._cleaner = CleanupWorker(cfg, keep_history=True, parent=self)
+        self._log(f"清理使用记录（{'保留' if keep_hist else '清空'} bash_history）…")
+        self._cleaner = CleanupWorker(cfg, keep_history=keep_hist, parent=self)
         self._cleaner.done.connect(self._on_cleanup_done)
         self._cleaner.start()
 
@@ -1505,5 +1565,35 @@ class MainWindow(QMainWindow):
             f".viminfo：{'已删除' if data.get('vim_after') == 0 else '仍存在'}"
         )
         self._log("✅ 清理完成：" + message.replace("\n", "；"))
+
+        # 用清理后重算的第 11 项结果刷新卡片与报告，
+        # 否则用户清完了、卡片还停在「建议清理」。
+        check = data.get("check")
+        if check is not None:
+            card = self.cards.get(check.number)
+            if card is not None:
+                card.set_result(check.status, check.summary)
+            if self.report is not None:
+                for i, old_item in enumerate(self.report.results):
+                    if old_item.number == check.number:
+                        self.report.results[i] = check
+                        break
+                # 判定可能从「告警」变回「可交付」，一并刷新
+                self._paint_verdict()
+                # 磁盘上的 report.md / report.html 也要重渲染 ——
+                # 那是交付物，不重写的话文件里还是清理前的 WARN。
+                if self.record_dir is not None:
+                    try:
+                        render(self.report, self.record_dir)
+                        self._log("报告已重新生成（含第 "
+                                  f"{check.number} 项最新结果）")
+                    except Exception as exc:
+                        self._log(f"⚠ 报告重生成失败：{type(exc).__name__}: {exc}")
+            message += f"\n\n第 {check.number} 项已重新检测：" \
+                       f"{check.status.value.upper()} — {check.summary}"
+            if data.get("rerun_error"):
+                message += f"\n（重算失败：{data['rerun_error']}）"
+            self._log(f"第 {check.number} 项已刷新：{check.status.value.upper()}")
+
         QMessageBox.information(self, "清理完成", message)
 

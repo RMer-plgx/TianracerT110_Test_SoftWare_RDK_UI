@@ -216,3 +216,61 @@ class TestVoltageSingleThreshold:
         # 若把 normal_v 调到 11.7，「偏低提醒」档恢复
         assert judge_voltage(11.3, 11.7, 11.0) is Status.WARN
         assert judge_voltage(11.7, 11.7, 11.0) is Status.PASS
+
+
+class TestCleanupUpdatesCheck11:
+    """点了「清理使用记录」之后，第 11 项必须跟着刷新。
+
+    2026-11-17 用户实测反馈：点了按钮、痕迹也清了，卡片仍是「建议清理」。
+    三个原因叠加：
+      1. CleanupWorker 只调 traces.cleanup，不重跑 traces.run
+         → 没有新结果可以给界面
+      2. _on_cleanup_done 只弹消息框，不更新卡片/报告
+      3. cleanup_traces 硬编码 keep_history=True，与 baseline 的
+         traces.keep_bash_history 脱节 —— 而第 11 项告警的正是
+         bash_history 行数，保留历史就永远清不掉那条 WARN
+    """
+
+    def _src(self):
+        from pathlib import Path
+        return (Path(__file__).resolve().parent.parent
+                / "ui" / "main_window.py").read_text(encoding="utf-8")
+
+    def test_cleanup_worker_reruns_check(self):
+        """清理后必须重跑 traces.run，否则界面拿不到新结果。"""
+        src = self._src()
+        block = src[src.index("class CleanupWorker"):]
+        block = block[:block.index("class MainWindow")]
+        assert "traces.run(ctx)" in block, "CleanupWorker 没有重跑第 11 项"
+
+    def test_cleanup_done_refreshes_card_and_report(self):
+        src = self._src()
+        block = src[src.index("def _on_cleanup_done"):]
+        # 到下一个方法定义为止
+        rest = block[10:]
+        nxt = rest.find("\n    def ")
+        if nxt > 0:
+            block = block[:nxt + 10]
+        assert "card.set_result" in block, "没更新卡片"
+        assert "self.report.results[i] = check" in block, "没更新报告对象"
+        assert "render(self.report" in block, "没重渲染磁盘报告"
+
+    def test_keep_history_comes_from_baseline(self):
+        """keep_bash_history 必须读产品配置，不能硬编码。"""
+        src = self._src()
+        block = src[src.index("def cleanup_traces"):]
+        block = block[:block.index("def _on_cleanup_done")]
+        assert 'get("keep_bash_history"' in block, "keep_bash_history 没读配置"
+
+    def test_cleanup_dialog_offers_choice(self):
+        """必须让用户明确选「保留」还是「一并清空」。"""
+        src = self._src()
+        block = src[src.index("def cleanup_traces"):]
+        block = block[:block.index("def _on_cleanup_done")]
+        assert "只清日志" in block
+        assert "一并清空历史" in block
+
+    def test_no_stale_config_path_in_dialog(self):
+        """对话框曾写 config/baseline.yaml —— 那个目录早已不存在。"""
+        src = self._src()
+        assert "config/baseline.yaml" not in src
