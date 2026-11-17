@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from .profile import Profile
-from .ssh import CommandResult, Remote
+from .ssh import CommandResult, Remote, shquote
 
 # 电压抢订阅的输出文件。checks/voltage.py 也引用这个常量，
 # 两边必须一致。runner 在启动前和收尾时各清一次，防止跨会话读到旧值。
@@ -219,6 +219,132 @@ def is_master_running(remote: Remote, profile: Profile) -> bool:
     result = remote.run(ros("rosnode list >/dev/null 2>&1 && echo UP", profile),
                         record=False)
     return "UP" in result.stdout
+
+
+def wait_for_port_free(remote: Remote, port: int = 11311,
+                       timeout: int = 15) -> bool:
+    """等 11311 真正释放。
+
+    ## 为什么需要（2026-11-17 实测）
+
+    `kill_all` 已经等了 7 秒（INT 5s + KILL 1s + fuser 1s），但实测
+    一次「车上有 8 个节点在跑」的清理中，roslaunch 的 pmon 优雅关闭
+    子节点要更久。新 roslaunch 起来时 11311 还被占着，于是：
+      - rosmaster 启动失败（端口冲突）
+      - roslaunch 报 could not contact master
+      - `/tmp/tt_launch.log` 是 **0 字节**（连 launch 文件都没加载完）
+      - 表现为「rosmaster 未在预期时间内就绪」，而手工再起又立刻成功
+
+    这是**时序竞争**，不是配置错误 —— 所以加一道显式等待，
+    而不是继续加大 kill_all 里的 sleep。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        out = remote.run(
+            f"ss -tln 2>/dev/null | grep -c ':{port}' || true",
+            timeout=15, record=False,
+        ).stdout or ""
+        if out.strip() in ("0", ""):
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def ensure_clock_ready(remote: Remote, timeout: int = 30) -> Dict[str, object]:
+    """启动 bringup 前确认系统时钟已同步。
+
+    ## 为什么需要（2026-11-17 实测）
+
+    RDK X5 没有 RTC 电池，**开机时间从 2000-01-01 08:01:22 开始**，
+    要等 NTP 校时才跳到真实时间。roslaunch 如果在 2000 年的时间下
+    启动 rosmaster，而 NTP 随后把时间一下跳 26 年：
+
+        roslaunch 2000-01-01 08:01:22  启动
+                 2000-01-01 08:01:27  rosmaster started with pid [4779]
+                 ...重试 33 秒...
+                 2026-11-17 16:15:02  ← 时间跳变
+                 RLException: could not contact master [http://localhost:11311]
+                 process[master]: SIGINT killed
+
+    实测日志：`.ros/log/94d8c34c-.../roslaunch-ubuntu-4545.log`，
+    前 50 行全是 2000 年时间戳，之后直接崩。
+
+    ## 什么时候会撞上
+
+    有线模式流程是「连 192.168.128.10 → 让车连 WiFi → 拔线 → 切无线」。
+    拔线后 usb0 消失、NetworkManager 重新配置、NTP 重新校时 ——
+    如果用户正好在这个窗口点「开始检测」，就会跨过时间跳变。
+    无线模式直接连通常撞不上（车早就同步过了），所以表现为
+    「有线失败、无线成功」这种看起来像网络问题的现象。
+
+    ## 返回
+
+    {ok: bool, epoch: int, synchronized: bool, waited_sec: float}
+    `ok=False` 表示等了 timeout 秒仍然不可信 —— 调用方应告警但可以继续
+    （有些离线环境本来就没有 NTP，不能因此禁止检测）。
+    """
+    started = time.time()
+    last_epoch = 0
+    while time.time() - started < timeout:
+        out = remote.run(
+            "date +%s; timedatectl show -p NTPSynchronized --value 2>/dev/null",
+            timeout=15, record=False,
+        ).stdout or ""
+        parts = out.split()
+        try:
+            last_epoch = int(parts[0]) if parts else 0
+        except ValueError:
+            last_epoch = 0
+        synced = len(parts) > 1 and parts[1].strip().lower() == "yes"
+
+        # 2020-01-01 = 1577836800。低于它一定是「还没校时」。
+        plausible = last_epoch > 1577836800
+        if plausible and (synced or last_epoch > 0):
+            # 时钟合理就放行：synced 为假时（离线车）只要时间不是 2000 年也能用
+            return {
+                "ok": True,
+                "epoch": last_epoch,
+                "synchronized": synced,
+                "waited_sec": round(time.time() - started, 1),
+            }
+        time.sleep(1.5)
+
+    return {
+        "ok": False,
+        "epoch": last_epoch,
+        "synchronized": False,
+        "waited_sec": round(time.time() - started, 1),
+    }
+
+
+def roslaunch_failure_hint(remote: Remote, profile: Profile,
+                           log_path: str = "/tmp/tt_launch.log") -> str:
+    """从 roslaunch 的 stderr 里给出可读的失败原因。
+
+    目前识别两类：
+      - could not contact master → 多半是系统时间在启动过程中被 NTP 跳变
+      - Address already in use   → 11311 被残留进程占着
+
+    返回空串表示没识别出具体原因，调用方不要瞎猜。
+    """
+    out = remote.run(
+        f"tail -40 {shquote(log_path)} 2>/dev/null; "
+        "ls -t ~/.ros/log/*/roslaunch-*.log 2>/dev/null | head -1 | "
+        "xargs -r tail -20 2>/dev/null",
+        timeout=20, record=False,
+    ).stdout or ""
+    low = out.lower()
+
+    if "could not contact master" in low:
+        # 同时看日志里有没有 2000 年的时间戳 —— 有就是时间跳变
+        if "2000-01-01" in out:
+            return ("系统时间在 roslaunch 启动过程中被 NTP 跳变"
+                    "（车开机时从 2000-01-01 开始）。"
+                    "等车联网校时完成再测，或重试一次")
+        return "rosmaster 未能监听 11311（可能被残留进程占用）"
+    if "address already in use" in low:
+        return "11311 端口被占用，先清理车上残留的 rosmaster"
+    return ""
 
 
 def wait_for_master(remote: Remote, profile: Profile, timeout: int = 40) -> bool:

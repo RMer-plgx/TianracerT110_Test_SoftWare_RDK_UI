@@ -527,3 +527,77 @@ def _is_subprocess_call(func, aliases) -> bool:
         return func.id in aliases["funcs"]
     return False
 
+
+class TestClockReadyGuard:
+    """启动 bringup 前必须确认系统时钟已同步。
+
+    2026-11-17 实车：有线模式失败、无线模式成功。根因不是网络 ——
+    RDK X5 无 RTC 电池，开机从 2000-01-01 起；有线模式流程（配 WiFi
+    后拔线）触发 NTP 校时，检测正好跨过时间跳变：
+    roslaunch 在 2000 年下起了 rosmaster，时间跳 26 年后 rosmaster 失联，
+    报 `could not contact master`。日志前 50 行全是 2000 年时间戳。
+    """
+
+    def _remote(self, replies):
+        from core.ssh import Remote
+
+        class _R(Remote):
+            def __init__(self):
+                self.host = "x"
+                self.history = []
+                self._replies = list(replies)
+
+            def run(self, cmd, timeout=30, record=True):
+                from core.ssh import CommandResult
+                out = self._replies.pop(0) if self._replies else ""
+                return CommandResult(command=cmd, exit_code=0,
+                                     stdout=out, stderr="", duration_sec=0.0)
+
+        return _R()
+
+    def test_returns_false_when_clock_is_year_2000(self):
+        """时间停在 2000 年、NTP 也没同步 → 等满超时后 ok=False。"""
+        from core import remote as R
+        r = self._remote(["946684800\nno"] * 40)      # 2000-01-01
+        res = R.ensure_clock_ready(r, timeout=2)
+        assert res["ok"] is False
+        assert res["epoch"] < 1577836800
+
+    def test_passes_when_synchronized(self):
+        from core import remote as R
+        r = self._remote(["1794904000\nyes"])
+        res = R.ensure_clock_ready(r, timeout=5)
+        assert res["ok"] is True
+        assert res["synchronized"] is True
+
+    def test_passes_when_time_plausible_but_offline(self):
+        """离线车 NTP 同步不上，但只要时间不是 2000 年就放行。"""
+        from core import remote as R
+        r = self._remote(["1794904000\nno"])
+        res = R.ensure_clock_ready(r, timeout=5)
+        assert res["ok"] is True
+        assert res["synchronized"] is False
+
+    def test_runner_checks_clock_before_bringup(self):
+        """runner 必须在 start_launch 之前调用时钟检查。"""
+        import inspect
+        from core import runner
+        src = inspect.getsource(runner.Runner._run_runtime_phase)
+        assert "ensure_clock_ready" in src, "没有时钟检查"
+        assert src.index("ensure_clock_ready") < src.index("start_launch"), \
+            "时钟检查必须在 start_launch 之前"
+
+    def test_hint_detects_time_jump(self):
+        from core import remote as R
+        r = self._remote([
+            "[roslaunch][INFO] 2000-01-01 08:01:27,538: process[master]: started\n"
+            "[roslaunch][ERROR] 2026-11-17 16:15:02,764: RLException: "
+            "ERROR: could not contact master [http://localhost:11311]\n"
+        ])
+        hint = R.roslaunch_failure_hint(r, None)
+        assert "时间" in hint and "跳变" in hint, hint
+
+    def test_hint_returns_empty_when_unknown(self):
+        from core import remote as R
+        r = self._remote(["some unrelated output\n"])
+        assert R.roslaunch_failure_hint(r, None) == ""

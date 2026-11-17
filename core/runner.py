@@ -633,6 +633,27 @@ class Runner:
 
         if self.mode == "auto":
             ctx.say("\n【阶段 2/3】启动整车 bringup")
+
+            # 启动前先确认系统时钟已同步。
+            # RDK X5 无 RTC 电池，开机从 2000-01-01 开始；若 roslaunch
+            # 在 2000 年的时间下起了 rosmaster，而 NTP 随后把时间跳 26 年，
+            # rosmaster 会失联、roslaunch 报 could not contact master。
+            # 实测现象：「有线模式失败、无线模式成功」，看起来像网络问题。
+            # 详见 core/remote.py:ensure_clock_ready 的 docstring。
+            clock = ros_remote.ensure_clock_ready(ctx.remote, timeout=30)
+            if clock["ok"]:
+                if clock["waited_sec"] and clock["waited_sec"] >= 1.5:
+                    ctx.say(f"   系统时钟已同步（等了 {clock['waited_sec']}s）")
+            else:
+                ctx.say(f"   ⚠ 系统时钟未同步（epoch={clock['epoch']}，"
+                        f"等了 {clock['waited_sec']}s），"
+                        "roslaunch 可能因时间跳变失败")
+
+            # 确认 11311 已释放，否则新 roslaunch 起 rosmaster 会撞端口。
+            # 见 core/remote.py:wait_for_port_free 的 docstring（2026-11-17 实测）。
+            if not ros_remote.wait_for_port_free(ctx.remote, timeout=15):
+                ctx.say("   ⚠ 11311 仍被占用，roslaunch 可能起不来")
+
             # 只用 profile 里声明的包名/launch 名。
             # 之前这里残留了一次机械替换的错误调用（多传了 ctx.remote
             # 和写死的包名），异常被 start_launch 的 except 吞掉，
@@ -643,7 +664,10 @@ class Runner:
             if ros_remote.wait_for_master(ctx.remote, profile, timeout=40):
                 ros_remote.start_voltage_tap(ctx.remote, profile)
             else:
+                hint = ros_remote.roslaunch_failure_hint(ctx.remote, profile)
                 ctx.say("    ⚠ rosmaster 未在预期时间内就绪，跳过电压抢订阅")
+                if hint:
+                    ctx.say(f"      可能原因：{hint}")
             status = ros_remote.wait_for_nodes(ctx.remote, profile, timeout=60)
             if not status["ready"]:
                 missing = "、".join(status["missing"])  # type: ignore[arg-type]
