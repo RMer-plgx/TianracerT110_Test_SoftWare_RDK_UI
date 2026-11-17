@@ -550,3 +550,55 @@ class TestNoHardcodedNumbers:
         # 19 应该是里程计
         odom = next(s for s in prof.checks if s.module == "odom")
         assert odom.number == 19
+
+
+class TestModuleNumberMatchesProfile:
+    """每个 check 模块里的 CheckResult 编号必须与 profile.yaml 一致。
+
+    R17-9 / R18-5：重编号时 20 个模块要逐个手改，漏一个不会有任何
+    测试报错 —— 报告会出现两个同号项，与 R17-3 完全同型。
+    这里用 AST 静态比对，不跑真检测，成本最低。
+    """
+
+    def test_every_module_declares_matching_number_and_title(self, prof):
+        import ast
+        import inspect
+        import importlib
+        from pathlib import Path
+
+        problems = []
+        for spec in prof.checks:
+            mod = importlib.import_module(f"checks.{spec.module}")
+            src = Path(inspect.getfile(mod)).read_text(encoding="utf-8")
+            tree = ast.parse(src)
+
+            found = None
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+                if name != "CheckResult":
+                    continue
+                kw = {k.arg: k.value for k in node.keywords}
+                num = kw.get("number")
+                if isinstance(num, ast.Constant) and isinstance(num.value, int):
+                    title = kw.get("title")
+                    found = (
+                        num.value,
+                        title.value if isinstance(title, ast.Constant) else None,
+                    )
+                    break
+
+            if found is None:
+                problems.append(f"{spec.module}: 找不到字面量 number=")
+                continue
+            num, title = found
+            if num != spec.number:
+                problems.append(
+                    f"{spec.module}: 模块写 number={num}，profile 是 {spec.number}")
+            if title is not None and title != spec.title:
+                problems.append(
+                    f"{spec.module}: 模块写 title={title!r}，profile 是 {spec.title!r}")
+
+        assert not problems, "编号/标题与 profile.yaml 不一致：\n" + "\n".join(problems)

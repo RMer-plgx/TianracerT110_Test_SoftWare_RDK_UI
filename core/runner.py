@@ -726,11 +726,18 @@ class Runner:
         verified = bool(getattr(ctx, "spin_verified", False))
         for item in dependents:
             if verified:
-                item.status = Status.PASS
+                # 回填成**转 PENDING 之前的状态**，不是一律 PASS。
+                # verified 只代表「航向已验证」，不代表「静态指标无告警」。
+                # 一律回填 PASS 会把 IMU z 轴偏高等 WARN 抹成绿色，
+                # 整份报告从「有告警」变成「具备交付条件」（2026-11-17 R18-2）。
+                restored = item.pending_from or Status.PASS
+                item.status = restored
                 item.summary = item.summary.replace(
                     "航向精度待落地互校", "航向精度已由落地转向互校确认")
+                note = "转为 PASS" if restored is Status.PASS else \
+                       f"转为 {restored.value.upper()}（静态指标仍有告警）"
                 ctx.say(f"       ↑ [{item.number:02d}] {item.title} "
-                        f"落地互校通过，转为 PASS")
+                        f"落地互校通过，{note}")
             else:
                 # 必须**显式**设 PENDING，不能只改摘要。
                 # 2026-11-13 实测发现：motion="none" 时 imu/odom 走的是

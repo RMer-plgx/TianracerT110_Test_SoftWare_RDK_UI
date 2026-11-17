@@ -612,17 +612,50 @@ class TestGroundDependentsResolution:
         return _Ctx()
 
     def test_verified_turns_pending_into_pass(self):
+        """原来静态指标全 PASS 的项，落地互校后回填 PASS。"""
         from core.verdict import CheckResult, Status
 
         runner = self._runner()
-        imu = CheckResult(number=8, title="IMU", status=Status.PENDING,
-                          needs_ground=True,
-                          summary="50 Hz；频率与静态指标正常，航向精度待落地互校")
+        imu = CheckResult(number=18, title="IMU", status=Status.PENDING,
+                          needs_ground=True, pending_from=Status.PASS,
+                          summary="50 Hz；航向精度待落地互校")
         runner.report.add(imu)
         runner._resolve_ground_dependents(self._ctx(True))
 
         assert imu.status is Status.PASS
         assert "已由落地转向互校确认" in imu.summary
+
+    def test_verified_keeps_warn_from_static_metrics(self):
+        """静态指标判 WARN 的项，落地互校后必须仍是 WARN（R18-2）。
+
+        原来一律回填 PASS，会把 IMU z 轴偏高等告警抹成绿色，
+        整份报告从「有告警」变成「具备交付条件」——
+        而摘要里还留着「偏高，标度待确认」。
+        """
+        from core.verdict import CheckResult, Status
+
+        runner = self._runner()
+        imu = CheckResult(number=18, title="IMU", status=Status.PENDING,
+                          needs_ground=True, pending_from=Status.WARN,
+                          summary="z 轴 10.40 偏高（标称 9.8），标度待确认；航向精度待落地互校")
+        runner.report.add(imu)
+        runner._resolve_ground_dependents(self._ctx(True))
+
+        assert imu.status is Status.WARN, imu.status
+        assert "已由落地转向互校确认" in imu.summary
+        # 告警本身不能被抹掉
+        assert "偏高" in imu.summary
+
+    def test_warn_item_still_counted_in_reported_warnings(self):
+        """回填成 WARN 后，Report.warned 要包含它 —— 否则判定会全绿。"""
+        from core.verdict import CheckResult, Report, Status
+
+        rep = Report(host="x", user="u", started_at="t")
+        imu = CheckResult(number=18, title="IMU", status=Status.WARN,
+                          needs_ground=True, pending_from=Status.WARN,
+                          summary="z 轴偏高；航向精度已由落地转向互校确认")
+        rep.add(imu)
+        assert imu in rep.warned
 
     def test_not_verified_stays_pending(self):
         from core.verdict import CheckResult, Status

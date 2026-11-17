@@ -1,4 +1,4 @@
-"""8. IMU。"""
+"""18. IMU。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,11 @@ from ._util import measure_hz, run_probe
 
 # 架空段测完后追加的固定后缀。runner 在落地段结束时按这个字串回填，
 # 所以它必须是常量、不能各处手写。
-PENDING_SUFFIX = "；频率与静态指标正常，航向精度待落地互校"
+# 后缀不能断言「静态指标正常」—— 这个状态只表示「航向未验证」，
+# 而进入 PENDING 的路径包含 WARN（静态指标可能有告警）。
+# 2026-11-17 审查 R18-1：z=10.4 判 WARN 时摘要曾是
+# 「偏高…；频率与静态指标正常」，自相矛盾。
+PENDING_SUFFIX = "；航向精度待落地互校"
 
 
 def run(ctx) -> CheckResult:
@@ -136,6 +140,10 @@ def run(ctx) -> CheckResult:
     #   SKIP 是连数据都没取到，保持 SKIP 才能让报告显示「未取得数据」
     if result.status in (Status.PASS, Status.WARN):
         level = getattr(ctx, "motion_level", "none")
+        # 记下原状态：落地互校通过后要回填成它，而不是一律 PASS。
+        # 否则静态指标的 WARN（如 z 轴偏高）会被抹成绿色，
+        # 整份报告从「有告警」变成「具备交付条件」（R18-2）。
+        result.pending_from = result.status
         result.status = Status.PENDING
         result.needs_ground = True
         if level != "none":

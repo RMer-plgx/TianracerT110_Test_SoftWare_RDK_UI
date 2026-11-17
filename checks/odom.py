@@ -1,4 +1,4 @@
-"""12. 里程计。"""
+"""19. 里程计。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from core.verdict import CheckResult, Status, judge_all, judge_range
 from ._util import run_probe
 
 # 与 checks/imu.py 保持同一个后缀，runner 按它回填
-PENDING_SUFFIX = "；频率与静止漂移正常，航向精度待落地互校"
+# 同 imu.py：后缀不断言静态指标正常，见 R18-1。
+PENDING_SUFFIX = "；航向精度待落地互校"
 
 
 def run(ctx) -> CheckResult:
@@ -72,6 +73,7 @@ def run(ctx) -> CheckResult:
     # 只对 PASS / WARN 转 PENDING：FAIL 是真故障、SKIP 是没取到数据。
     if result.status in (Status.PASS, Status.WARN):
         level = getattr(ctx, "motion_level", "none")
+        result.pending_from = result.status
         result.status = Status.PENDING
         result.needs_ground = True
         if level != "none":

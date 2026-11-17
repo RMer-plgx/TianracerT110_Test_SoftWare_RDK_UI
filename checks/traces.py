@@ -1,4 +1,4 @@
-"""19. 使用痕迹。
+"""11. 使用痕迹。
 
 两件事：
 - run():     测试时**只读**检查痕迹现状，写进报告
@@ -91,7 +91,12 @@ def cleanup(ctx, keep_bash_history: bool = True) -> dict:
     return data
 
 
-def run(ctx) -> CheckResult:
+def run(ctx, after_cleanup: bool = False) -> CheckResult:
+    """检查车上使用痕迹。
+
+    after_cleanup=True 表示「刚点过『清理使用记录』、这是清理后的复检」：
+    此时不再提示「需要时请点按钮」（用户刚点过，再提示会像是按钮没生效）。
+    """
     result = CheckResult(number=11, title="使用痕迹", status=Status.PASS)
     baseline = ctx.baseline.get("traces", {})
     r = ctx.remote
@@ -131,11 +136,16 @@ def run(ctx) -> CheckResult:
 
     auto = baseline.get("auto_cleanup", False)
     if tips:
-        # 说清楚这是「测试前」的快照 —— 报告读者看到时车上的痕迹可能已经清过
-        prefix = "测试前痕迹：" if auto else ""
-        result.summary = prefix + "；".join(tips)
-        if not auto:
-            result.summary += "（本次不会自动清理，需要时请点「清理使用记录」）"
+        if after_cleanup:
+            # 刚清完还留着告警，说明是「保留历史」的预期结果，不是按钮没生效
+            result.summary = "已清理日志；" + "；".join(tips) + \
+                             "（bash_history 按配置保留，属预期）"
+        else:
+            # 说清楚这是「测试前」的快照 —— 读者看到时车上可能已经清过
+            prefix = "测试前痕迹：" if auto else ""
+            result.summary = prefix + "；".join(tips)
+            if not auto:
+                result.summary += "（本次不会自动清理，需要时请点「清理使用记录」）"
     else:
         result.summary = "痕迹量正常"
 

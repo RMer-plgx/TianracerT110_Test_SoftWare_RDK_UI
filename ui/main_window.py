@@ -456,9 +456,20 @@ class CleanupWorker(QThread):
                     prof = product_profile.load(cfg.get("profile_id"))
                     ctx.baseline = prof.baseline
                     ctx.profile = prof
-                    data["check"] = traces.run(ctx)
+                    # after_cleanup=True：摘要不再提示「请点清理按钮」
+                    # （用户刚点过，再提示像是没生效 —— R18-6）
+                    data["check"] = traces.run(ctx, after_cleanup=True)
                 except Exception as exc:
                     data["rerun_error"] = f"{type(exc).__name__}: {exc}"
+
+            # 把本次清理 + 复检用过的命令带回去，追加到 raw.log。
+            # 否则报告里第 11 项的新数值在 raw.log 里找不到出处
+            # （D9 要求每个数值可回溯）—— 2026-11-17 审查 R18-3。
+            data["history"] = [
+                {"cmd": h.command, "exit": h.exit_code,
+                 "out": h.stdout, "err": h.stderr}
+                for h in (remote.history or [])
+            ]
         except Exception as exc:
             data = {"error": f"{type(exc).__name__}: {exc}"}
         finally:
@@ -1565,6 +1576,25 @@ class MainWindow(QMainWindow):
             f".viminfo：{'已删除' if data.get('vim_after') == 0 else '仍存在'}"
         )
         self._log("✅ 清理完成：" + message.replace("\n", "；"))
+
+        # 把清理+复检的命令追加到 raw.log，补上出处（R18-3）
+        hist = data.get("history") or []
+        if hist and self.record_dir is not None:
+            try:
+                log = self.record_dir / "raw.log"
+                with log.open("a", encoding="utf-8") as fh:
+                    fh.write("\n## 清理与复检（点「清理使用记录」之后）\n")
+                    for i, h in enumerate(hist, 1):
+                        fh.write(f"\n### [{i}] exit={h['exit']}\n```\n")
+                        fh.write("$ " + h["cmd"] + "\n")
+                        if h.get("out"):
+                            fh.write("--- stdout ---\n" + h["out"].rstrip() + "\n")
+                        if h.get("err"):
+                            fh.write("--- stderr ---\n" + h["err"].rstrip() + "\n")
+                        fh.write("```\n")
+                self._log(f"清理记录已归档到 raw.log（{len(hist)} 条命令）")
+            except Exception as exc:
+                self._log(f"⚠ 写 raw.log 失败：{type(exc).__name__}: {exc}")
 
         # 用清理后重算的第 11 项结果刷新卡片与报告，
         # 否则用户清完了、卡片还停在「建议清理」。

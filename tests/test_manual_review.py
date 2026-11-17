@@ -241,7 +241,19 @@ class TestCleanupUpdatesCheck11:
         src = self._src()
         block = src[src.index("class CleanupWorker"):]
         block = block[:block.index("class MainWindow")]
-        assert "traces.run(ctx)" in block, "CleanupWorker 没有重跑第 11 项"
+        # 重跑时必须带 after_cleanup=True（R18-6：刚清完不该再提示去点按钮）
+        assert "traces.run(ctx" in block, "CleanupWorker 没有重跑第 11 项"
+        assert "after_cleanup=True" in block, "重跑时没带 after_cleanup"
+
+    def test_cleanup_history_archived_to_raw_log(self):
+        """清理+复检的命令必须进 raw.log，否则报告数值无出处（R18-3）。"""
+        src = self._src()
+        block = src[src.index("class CleanupWorker"):]
+        block = block[:block.index("class MainWindow")]
+        assert 'data["history"]' in block, "没把 remote.history 带回来"
+
+        done = src[src.index("def _on_cleanup_done"):]
+        assert "清理与复检" in done, "没往 raw.log 追加清理记录"
 
     def test_cleanup_done_refreshes_card_and_report(self):
         src = self._src()

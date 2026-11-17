@@ -1,4 +1,4 @@
-"""10. 雷达以太网链路。"""
+"""8. 雷达以太网链路。"""
 
 from __future__ import annotations
 

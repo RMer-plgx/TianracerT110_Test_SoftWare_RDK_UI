@@ -86,6 +86,13 @@ class CheckResult:
     #   落地互校通过 → PASS；没做落地段 → 保持 PENDING
     # 用例：IMU / 里程计在架空段只能验证频率与静态指标。
     needs_ground: bool = False
+    # 转 PENDING 之前的状态（只记 PASS / WARN）。
+    # 落地互校通过后用它回填 —— 原来一律回填 PASS，会把静态指标的
+    # WARN（如 IMU z 轴偏高）抹成绿色，整份报告从「有告警」变成
+    # 「具备交付条件」。2026-11-17 审查 R18-2。
+    #
+    # 语义：verified 只代表「航向已验证」，不代表「静态指标无告警」。
+    pending_from: Optional["Status"] = None
 
     def add(self, name: str, value: Any, unit: str = "",
             expected: Optional[str] = None, note: str = "") -> None:
