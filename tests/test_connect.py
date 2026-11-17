@@ -601,3 +601,113 @@ class TestClockReadyGuard:
         from core import remote as R
         r = self._remote(["some unrelated output\n"])
         assert R.roslaunch_failure_hint(r, None) == ""
+
+
+class TestPortFreeThreeState:
+    """R21-2：读不到端口状态时必须返回 None，不能判「空闲」。
+
+    这是仓库第四次「读不到 = 没问题」（前三次 R14-2 / R15-5 / R17-5）。
+    """
+
+    def _remote(self, replies):
+        from core.ssh import CommandResult, Remote
+
+        class _R(Remote):
+            def __init__(self):
+                self.host = "x"
+                self.history = []
+                self._replies = list(replies)
+
+            def run(self, cmd, timeout=30, record=True):
+                out = self._replies.pop(0) if self._replies else ""
+                return CommandResult(command=cmd, exit_code=0,
+                                     stdout=out, stderr="", duration_sec=0.0)
+
+        return _R()
+
+    def test_empty_output_returns_none(self):
+        from core import remote as R
+        assert R.wait_for_port_free(self._remote([""]), timeout=1) is None
+
+    def test_no_ss_returns_none(self):
+        from core import remote as R
+        assert R.wait_for_port_free(self._remote(["NOSS\n"]), timeout=1) is None
+
+    def test_zero_means_free(self):
+        from core import remote as R
+        assert R.wait_for_port_free(self._remote(["0\n"]), timeout=1) is True
+
+    def test_nonzero_means_occupied(self):
+        from core import remote as R
+        # 一直返回 1（被占），超时后 False
+        assert R.wait_for_port_free(self._remote(["1\n"] * 10), timeout=2) is False
+
+    def test_garbage_returns_none(self):
+        from core import remote as R
+        assert R.wait_for_port_free(self._remote(["not-a-number\n"]), timeout=1) is None
+
+
+class TestClockReadinessDetails:
+    """R21-3 / R21-4：等待回调、离线短路、条件表达式。"""
+
+    def _remote(self, replies):
+        from core.ssh import CommandResult, Remote
+
+        class _R(Remote):
+            def __init__(self):
+                self.host = "x"
+                self.history = []
+                self._replies = list(replies)
+
+            def run(self, cmd, timeout=30, record=True):
+                out = self._replies.pop(0) if self._replies else ""
+                return CommandResult(command=cmd, exit_code=0,
+                                     stdout=out, stderr="", duration_sec=0.0)
+
+        return _R()
+
+    def test_offline_with_year_2000_returns_immediately(self):
+        """离线 + 时间停在 2000 → 立刻返回，不白等满超时。"""
+        from core import remote as R
+        # epoch, synced, 默认路由数
+        r = self._remote(["946684800\nno\n0\n"] * 10)
+        res = R.ensure_clock_ready(r, timeout=30)
+        assert res["ok"] is False
+        assert res["waited_sec"] < 5, res["waited_sec"]
+        assert "无默认路由" in res.get("reason", "") or res.get("reason")
+
+    def test_on_wait_callback_called(self):
+        """等待期间必须回调，否则界面空屏像卡死。"""
+        from core import remote as R
+        seen = []
+        r = self._remote(["946684800\nyes\n1\n"] * 10)
+        R.ensure_clock_ready(r, timeout=3, on_wait=seen.append)
+        assert seen, "on_wait 从未被调用"
+        assert "epoch" in seen[0] and "has_net" in seen[0]
+
+    def test_online_with_year_2000_keeps_waiting_then_times_out(self):
+        """有网但还没校时 → 一直等，超时后 ok=False 且 reason=等待超时。"""
+        from core import remote as R
+        r = self._remote(["946684800\nno\n1\n"] * 40)
+        res = R.ensure_clock_ready(r, timeout=2)
+        assert res["ok"] is False
+        assert res.get("reason") == "等待超时"
+
+
+class TestBringupFailureDetail:
+    """R21-1：bringup 失败的根因必须进 CheckResult.detail。
+
+    只写 ctx.say 的话，报告（交付物）里只有「缺少节点」，
+    而这是一条 fatal 结论 —— 事后唯一能看到原因的地方就是报告。
+    """
+
+    def test_runner_writes_detail_on_bringup_failure(self):
+        import inspect
+        from core import runner
+        src = inspect.getsource(runner.Runner._run_runtime_phase)
+        # 失败分支里必须有 result.detail = ...
+        assert "result.detail" in src, "bringup 失败时没有写 detail"
+        # hint 与 clock 都应参与
+        assert "hint" in src and "clock" in src
+        # detail 要在 report.add 之前赋值（否则渲染时是空的）
+        assert src.index("result.detail") < src.index("self.report.add(result)")

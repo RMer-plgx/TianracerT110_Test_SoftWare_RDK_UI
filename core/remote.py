@@ -222,7 +222,7 @@ def is_master_running(remote: Remote, profile: Profile) -> bool:
 
 
 def wait_for_port_free(remote: Remote, port: int = 11311,
-                       timeout: int = 15) -> bool:
+                       timeout: int = 15):
     """等 11311 真正释放。
 
     ## 为什么需要（2026-11-17 实测）
@@ -237,20 +237,39 @@ def wait_for_port_free(remote: Remote, port: int = 11311,
 
     这是**时序竞争**，不是配置错误 —— 所以加一道显式等待，
     而不是继续加大 kill_all 里的 sleep。
+    返回 True（空闲）/ False（仍被占）/ **None（读不到，无法判断）**。
+
+    R21-2：原来 stdout 为空或 "0" 一律判空闲。但 `ss` 不存在、SSH 中途断开、
+    输出被截断都会表现为空 —— 连「异常」都看不出来，因为 `2>/dev/null`
+    把错误吞了、`grep -c` 读空输入仍输出 `0`。
+    这是仓库第四次「读不到 = 没问题」（前三次 R14-2 / R15-5 / R17-5）。
     """
     deadline = time.time() + timeout
+    last_seen = None
     while time.time() < deadline:
         out = remote.run(
-            f"ss -tln 2>/dev/null | grep -c ':{port}' || true",
+            f"command -v ss >/dev/null 2>&1 || echo NOSS; "
+            f"ss -tln 2>&1 | grep -c ':{port}'",
             timeout=15, record=False,
         ).stdout or ""
-        if out.strip() in ("0", ""):
+        text = out.strip()
+        if "NOSS" in text:
+            return None                      # 车上没有 ss，判断不了
+        lines = [x.strip() for x in text.splitlines() if x.strip()]
+        if not lines:
+            return None                      # 读不到
+        try:
+            last_seen = int(lines[-1])
+        except ValueError:
+            return None
+        if last_seen == 0:
             return True
         time.sleep(1.0)
-    return False
+    return False if last_seen else None
 
 
-def ensure_clock_ready(remote: Remote, timeout: int = 30) -> Dict[str, object]:
+def ensure_clock_ready(remote: Remote, timeout: int = 60,
+                       on_wait=None) -> Dict[str, object]:
     """启动 bringup 前确认系统时钟已同步。
 
     ## 为什么需要（2026-11-17 实测）
@@ -285,9 +304,15 @@ def ensure_clock_ready(remote: Remote, timeout: int = 30) -> Dict[str, object]:
     """
     started = time.time()
     last_epoch = 0
-    while time.time() - started < timeout:
+    synced = False
+    announced = False
+    while True:
+        elapsed = time.time() - started
+        if elapsed >= timeout:
+            break
         out = remote.run(
-            "date +%s; timedatectl show -p NTPSynchronized --value 2>/dev/null",
+            "date +%s; timedatectl show -p NTPSynchronized --value 2>/dev/null; "
+            "ip route show default 2>/dev/null | wc -l",
             timeout=15, record=False,
         ).stdout or ""
         parts = out.split()
@@ -296,24 +321,52 @@ def ensure_clock_ready(remote: Remote, timeout: int = 30) -> Dict[str, object]:
         except ValueError:
             last_epoch = 0
         synced = len(parts) > 1 and parts[1].strip().lower() == "yes"
+        # 有默认路由 = 有网，NTP 才有可能校时
+        has_net = len(parts) > 2 and parts[2].strip() not in ("", "0")
 
         # 2020-01-01 = 1577836800。低于它一定是「还没校时」。
-        plausible = last_epoch > 1577836800
-        if plausible and (synced or last_epoch > 0):
-            # 时钟合理就放行：synced 为假时（离线车）只要时间不是 2000 年也能用
+        # 只要时间合理就放行，**不强制 NTP 同步**：离线车（车间、无 WiFi）
+        # 永远等不到 NTP，但时间不是 2000 年就够用，不该因此禁止检测。
+        # （R21-4：原来写成 `plausible and (synced or last_epoch > 0)`，
+        #  后半段被 plausible 蕴含、恒为真，纯属误导。）
+        if last_epoch > 1577836800:
             return {
                 "ok": True,
                 "epoch": last_epoch,
                 "synchronized": synced,
-                "waited_sec": round(time.time() - started, 1),
+                "waited_sec": round(elapsed, 1),
+            }
+
+        # R21-3：等待期间必须给反馈，否则界面 30 秒空屏像卡死。
+        if on_wait is not None and (not announced or elapsed >= 5.0):
+            try:
+                on_wait({
+                    "epoch": last_epoch,
+                    "has_net": has_net,
+                    "waited_sec": round(elapsed, 1),
+                })
+            except Exception:
+                pass
+            announced = True
+
+        # R21-3：离线且时间停在 2000 年 —— 再等也不会有结果，立刻返回。
+        # 让调用方明确告警，而不是白等满 30 秒。
+        if not has_net and last_epoch and last_epoch < 1577836800:
+            return {
+                "ok": False,
+                "epoch": last_epoch,
+                "synchronized": False,
+                "waited_sec": round(elapsed, 1),
+                "reason": "车时间停在 2000 年且没有默认路由，NTP 无法校时",
             }
         time.sleep(1.5)
 
     return {
         "ok": False,
         "epoch": last_epoch,
-        "synchronized": False,
+        "synchronized": synced,
         "waited_sec": round(time.time() - started, 1),
+        "reason": "等待超时" if last_epoch <= 1577836800 else "",
     }
 
 
@@ -327,12 +380,22 @@ def roslaunch_failure_hint(remote: Remote, profile: Profile,
 
     返回空串表示没识别出具体原因，调用方不要瞎猜。
     """
-    out = remote.run(
-        f"tail -40 {shquote(log_path)} 2>/dev/null; "
-        "ls -t ~/.ros/log/*/roslaunch-*.log 2>/dev/null | head -1 | "
-        "xargs -r tail -20 2>/dev/null",
+    res = remote.run(
+        f"if [ -s {shquote(log_path)} ]; then echo '---CURRENT---'; "
+        f"tail -40 {shquote(log_path)}; "
+        "else echo '---EMPTY---'; fi",
         timeout=20, record=False,
-    ).stdout or ""
+    )
+    out = res.stdout or ""
+
+    # R21-5：本次日志为空时**不要**回退到历史日志。
+    # roslaunch 连 launch 文件都没加载完时 /tmp/tt_launch.log 是 0 字节，
+    # 读「最新那份 roslaunch-*.log」会拿到上一次失败的原因，写进报告
+    # 就变成「基于别人那一轮的证据下结论」。
+    if "---EMPTY---" in out:
+        return ("本次 roslaunch 未产生任何输出，launch 文件可能没被加载"
+                "（检查包名是否正确、文件是否可读）")
+
     low = out.lower()
 
     if "could not contact master" in low:

@@ -640,18 +640,33 @@ class Runner:
             # rosmaster 会失联、roslaunch 报 could not contact master。
             # 实测现象：「有线模式失败、无线模式成功」，看起来像网络问题。
             # 详见 core/remote.py:ensure_clock_ready 的 docstring。
-            clock = ros_remote.ensure_clock_ready(ctx.remote, timeout=30)
+            def _clock_wait(info):
+                # R21-3：等待期间给反馈，否则界面空屏像卡死
+                ctx.say(f"      仍在等系统时钟（epoch={info['epoch']}，"
+                        f"已等 {info['waited_sec']}s"
+                        + ("，车有网络" if info["has_net"] else "，车无网络")
+                        + "）…")
+
+            clock = ros_remote.ensure_clock_ready(
+                ctx.remote, timeout=60, on_wait=_clock_wait)
             if clock["ok"]:
                 if clock["waited_sec"] and clock["waited_sec"] >= 1.5:
                     ctx.say(f"   系统时钟已同步（等了 {clock['waited_sec']}s）")
             else:
+                reason = clock.get("reason") or "等待超时"
                 ctx.say(f"   ⚠ 系统时钟未同步（epoch={clock['epoch']}，"
-                        f"等了 {clock['waited_sec']}s），"
-                        "roslaunch 可能因时间跳变失败")
+                        f"等了 {clock['waited_sec']}s）：{reason}")
+                ctx.say("      roslaunch 可能因时间跳变失败；"
+                        "该状态会写进报告")
 
             # 确认 11311 已释放，否则新 roslaunch 起 rosmaster 会撞端口。
             # 见 core/remote.py:wait_for_port_free 的 docstring（2026-11-17 实测）。
-            if not ros_remote.wait_for_port_free(ctx.remote, timeout=15):
+            port_free = ros_remote.wait_for_port_free(ctx.remote, timeout=15)
+            if port_free is None:
+                # R21-2：读不到 ≠ 空闲。只警告，不下「被占用」的结论 ——
+                # 那会误导用户去 pkill 无关进程。
+                ctx.say("   ⚠ 无法确认 11311 端口状态（ss 不可用或读取失败）")
+            elif port_free is False:
                 ctx.say("   ⚠ 11311 仍被占用，roslaunch 可能起不来")
 
             # 只用 profile 里声明的包名/launch 名。
@@ -661,6 +676,8 @@ class Runner:
             ros_remote.start_launch(ctx.remote, profile)
             # 先等 rosmaster 真的监听 11311，再抢订阅电压。
             # 直接 tap 会立即报 Unable to communicate 并退出，tap 白做（Round 3）。
+            # hint 提到外层：bringup 失败时它要写进 result.detail
+            hint = ""
             if ros_remote.wait_for_master(ctx.remote, profile, timeout=40):
                 ros_remote.start_voltage_tap(ctx.remote, profile)
             else:
@@ -680,6 +697,33 @@ class Runner:
                 )
                 result.add("已出现的节点", len(status["nodes"]))  # type: ignore[arg-type]
                 result.add("等待时长", status["waited_sec"], "s")
+
+                # 把根因写进 detail —— 只进 ctx.say 的话，报告里只有
+                # 「缺少节点」，而这是一条 fatal 结论、中止整份检测。
+                # 用户事后打开 report.html 才是唯一能看到原因的地方
+                # （2026-11-17 审查 R21-1）。
+                detail = []
+                if hint:
+                    detail.append(f"可能原因：{hint}")
+                    detail.append("")
+                if not clock["ok"]:
+                    detail.append(
+                        f"系统时钟未同步：epoch={clock['epoch']}，"
+                        f"NTPSynchronized={'是' if clock['synchronized'] else '否'}，"
+                        f"已等 {clock['waited_sec']}s。"
+                    )
+                    detail.append(
+                        "RDK X5 无 RTC 电池，断电后时间从 2000-01-01 开始；"
+                        "若 roslaunch 启动过程中 NTP 跳变，rosmaster 会失联。"
+                    )
+                    detail.append("")
+                detail.append("排查顺序：")
+                detail.append("  tail -40 /tmp/tt_launch.log")
+                detail.append(
+                    "  ls -t ~/.ros/log/*/roslaunch-*.log | head -1 | xargs tail -30")
+                detail.append("  systemctl --failed")
+                result.detail = "\n".join(detail)
+
                 self.report.add(result)
                 self.report.aborted_reason = "bringup 启动失败"
                 ctx.say(f"❌ bringup 未就绪，缺少：{missing}")
